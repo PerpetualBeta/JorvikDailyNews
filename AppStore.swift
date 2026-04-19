@@ -23,9 +23,10 @@ final class AppStore {
     var lastRefreshError: String?
     var lastImportSummary: String?
     var pageIndex: Int = 0
-    var hideReadItems: Bool = false {
+    var hideReadItems: Bool = UserDefaults.standard.bool(forKey: "hideReadItems") {
         didSet {
             guard oldValue != hideReadItems else { return }
+            UserDefaults.standard.set(hideReadItems, forKey: "hideReadItems")
             recomputeVisibleEdition()
         }
     }
