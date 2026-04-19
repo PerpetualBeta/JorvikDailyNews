@@ -1,0 +1,175 @@
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: #fafafa;
+    color: #1a1a1a;
+    font-family: "Charter", "Iowan Old Style", "Palatino", "Georgia", serif;
+    font-size: 18px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+}
+
+article {
+    max-width: 680px;
+    margin: 56px auto 96px;
+    padding: 0 32px;
+}
+
+article header { margin-bottom: 40px; }
+
+/* Force legible colour on EVERY descendant so embedded blockquotes, tweet
+   cards, and any source-shipped inline `style="color: ..."` can't dim the
+   text below readable contrast. More specific selectors below handle
+   headings, links, bylines, and captions. */
+article, article * {
+    color: #1a1a1a !important;
+}
+
+article h1 {
+    font-family: "Didot", "Bodoni 72", Georgia, serif;
+    font-weight: 400;
+    font-size: 42px;
+    line-height: 1.15;
+    margin: 12px 0 20px;
+    letter-spacing: -0.01em;
+    color: #000 !important;
+}
+
+article h2, article h3, article h4 {
+    font-family: "Didot", "Bodoni 72", Georgia, serif;
+    font-weight: 600;
+    margin-top: 1.8em;
+    margin-bottom: 0.5em;
+    line-height: 1.25;
+    color: #000 !important;
+}
+
+article h2 { font-size: 28px; }
+article h3 { font-size: 22px; }
+article h4 { font-size: 18px; }
+
+p.byline {
+    font-family: "Charter", Georgia, serif;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #555 !important;
+    margin: 0;
+}
+
+p { margin: 0 0 1.1em; }
+
+/* Links need to beat the `article *` blanket — descendants of `<a>` too,
+   in case the source wraps link text in spans / strongs. */
+a, a *, article a, article a * {
+    color: #0057b7 !important;
+}
+a {
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+
+img, video {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 28px auto;
+}
+
+blockquote {
+    border-left: 3px solid #888 !important;
+    margin: 28px 0;
+    padding: 6px 28px;
+    font-style: italic;
+}
+
+pre, code {
+    font-family: "SF Mono", Menlo, Monaco, "Courier New", monospace;
+    font-size: 0.85em;
+    color: #1a1a1a !important;
+}
+
+pre {
+    background: rgba(0, 0, 0, 0.06) !important;
+    padding: 16px;
+    overflow: auto;
+    border-radius: 4px;
+    line-height: 1.5;
+}
+
+code { padding: 1px 4px; border-radius: 3px; }
+
+hr {
+    border: none;
+    border-top: 1px solid #ccc !important;
+    margin: 40px 0;
+}
+
+figure { margin: 28px 0; }
+figcaption {
+    font-size: 0.85em;
+    color: #444 !important;
+    text-align: center;
+    margin-top: 10px;
+    font-style: italic;
+}
+
+ul, ol { padding-left: 1.5em; }
+li { margin-bottom: 0.4em; }
+
+table {
+    border-collapse: collapse;
+    margin: 28px 0;
+    width: 100%;
+}
+th, td {
+    border-bottom: 1px solid #ccc;
+    padding: 8px 12px;
+    text-align: left;
+    color: #1a1a1a !important;
+}
+
+/* ----------- Dark mode: strong contrast, override source styles --------- */
+
+@media (prefers-color-scheme: dark) {
+    html, body {
+        background: #111 !important;
+        color: #ededed !important;
+    }
+
+    /* Blanket: every descendant, regardless of wrapper element or inline
+       style, lands at readable contrast. */
+    article, article * {
+        color: #ededed !important;
+    }
+
+    article h1 { color: #ffffff !important; }
+    article h2, article h3, article h4 { color: #ffffff !important; }
+
+    a, a *, article a, article a * {
+        color: #8ec0ff !important;
+    }
+
+    blockquote {
+        border-left-color: #b8b8b8 !important;
+    }
+
+    pre, code, pre *, code * {
+        color: #f0f0f0 !important;
+    }
+    pre {
+        background: rgba(255, 255, 255, 0.08) !important;
+    }
+
+    hr { border-top-color: #444 !important; }
+
+    p.byline, p.byline * { color: #9a9a9a !important; }
+    figcaption, figcaption * { color: #b0b0b0 !important; }
+
+    th, td {
+        border-bottom-color: #3a3a3a !important;
+    }
+}

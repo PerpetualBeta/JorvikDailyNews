@@ -1,0 +1,343 @@
+import Foundation
+
+enum FeedFetchError: Error, LocalizedError {
+    case invalidResponse(Int)
+    case parseFailure
+    case emptyFeed
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse(let code): "Server returned \(code)"
+        case .parseFailure: "Could not parse feed"
+        case .emptyFeed: "Feed contained no items"
+        }
+    }
+}
+
+struct FetchedFeed {
+    let title: String
+    let items: [FeedItem]
+}
+
+final class FeedFetcher: Sendable {
+    func fetch(_ feed: Feed) async throws -> FetchedFeed {
+        var request = URLRequest(url: feed.url)
+        request.setValue(
+            "JorvikDailyNews/0.1 (+https://jorviksoftware.cc)",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue("application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 20
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw FeedFetchError.invalidResponse(http.statusCode)
+        }
+
+        let parser = RSSAtomParser(data: data, feed: feed)
+        guard let result = parser.parse() else { throw FeedFetchError.parseFailure }
+        return result
+    }
+}
+
+private final class RSSAtomParser: NSObject, XMLParserDelegate {
+    private let parser: XMLParser
+    private let feed: Feed
+
+    private var channelTitle = ""
+    private var items: [FeedItem] = []
+
+    private enum Flavour { case unknown, rss, atom }
+    private var flavour: Flavour = .unknown
+
+    private var path: [String] = []
+    private var buffer = ""
+
+    private struct ItemBuilder {
+        var title = ""
+        var link = ""
+        var guid = ""
+        var description = ""
+        var contentEncoded = ""
+        var pubDate = ""
+        var updated = ""
+        var published = ""
+        var imageURL: String?
+    }
+    private var current: ItemBuilder?
+
+    init(data: Data, feed: Feed) {
+        self.parser = XMLParser(data: data)
+        self.feed = feed
+        super.init()
+        self.parser.delegate = self
+    }
+
+    func parse() -> FetchedFeed? {
+        guard parser.parse() else { return nil }
+        return FetchedFeed(title: channelTitle, items: items)
+    }
+
+    // MARK: - XMLParserDelegate
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        let name = elementName.lowercased()
+        path.append(name)
+        buffer = ""
+
+        if flavour == .unknown {
+            if name == "rss" { flavour = .rss }
+            else if name == "feed" { flavour = .atom }
+        }
+
+        switch name {
+        case "item", "entry":
+            current = ItemBuilder()
+        case "link":
+            // Atom: <link href="..."/> with optional rel
+            if flavour == .atom {
+                let href = attributeDict["href"] ?? ""
+                let rel = attributeDict["rel"] ?? "alternate"
+                if current != nil {
+                    if rel == "alternate" && current!.link.isEmpty {
+                        current!.link = href
+                    }
+                    if rel == "enclosure", let type = attributeDict["type"], type.hasPrefix("image/") {
+                        if current!.imageURL == nil { current!.imageURL = href }
+                    }
+                }
+            }
+        case "enclosure":
+            // RSS: <enclosure url="..." type="image/..."/>
+            if let type = attributeDict["type"], type.hasPrefix("image/"),
+               let url = attributeDict["url"], current?.imageURL == nil {
+                current?.imageURL = url
+            }
+        case "media:thumbnail", "media:content":
+            if let url = attributeDict["url"], current?.imageURL == nil {
+                current?.imageURL = url
+            }
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        buffer.append(string)
+    }
+
+    func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+        if let s = String(data: CDATABlock, encoding: .utf8) {
+            buffer.append(s)
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        defer {
+            if !path.isEmpty { path.removeLast() }
+            buffer = ""
+        }
+
+        let name = elementName.lowercased()
+        let text = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Channel / feed title (outside an item/entry)
+        if current == nil {
+            let inChannel = path.contains("channel") || path.contains("feed")
+            if inChannel && name == "title" && channelTitle.isEmpty {
+                channelTitle = text
+            }
+        }
+
+        guard current != nil else {
+            if name == "channel" || name == "feed" { /* nothing */ }
+            return
+        }
+
+        switch name {
+        case "title":
+            if current!.title.isEmpty { current!.title = text }
+        case "link":
+            if flavour == .rss && current!.link.isEmpty { current!.link = text }
+        case "guid", "id":
+            if current!.guid.isEmpty { current!.guid = text }
+        case "description", "summary":
+            if current!.description.isEmpty { current!.description = text }
+        case "content:encoded", "content":
+            if current!.contentEncoded.isEmpty { current!.contentEncoded = text }
+        case "pubdate":
+            current!.pubDate = text
+        case "updated":
+            current!.updated = text
+        case "published":
+            current!.published = text
+        case "item", "entry":
+            if let built = finalise(current!) {
+                items.append(built)
+            }
+            current = nil
+        default:
+            break
+        }
+    }
+
+    // MARK: - Finalisation
+
+    private func finalise(_ b: ItemBuilder) -> FeedItem? {
+        let title = decodeEntities(b.title).trimmed
+        guard !title.isEmpty else { return nil }
+        guard let originalLink = URL(string: b.link.trimmingCharacters(in: .whitespacesAndNewlines)),
+              originalLink.scheme?.hasPrefix("http") == true else { return nil }
+
+        let bodyHTML = !b.contentEncoded.isEmpty ? b.contentEncoded : b.description
+        // Link aggregators (HN, Reddit, Lobste.rs, etc.) give you the
+        // discussion URL where an article URL would be. For those, look in
+        // the body HTML for the first external href and use that instead —
+        // the target matters more than the meta-commentary.
+        let link = resolveTargetURL(originalLink, in: bodyHTML)
+        let summary = cleanSummary(htmlToPlain(bodyHTML))
+        let imageURL: URL? = b.imageURL.flatMap { URL(string: $0) } ?? firstImageURL(in: bodyHTML)
+
+        // Undated items rank LAST on the front page rather than masquerading
+        // as "newest" (Date()) which would dominate anything correctly dated.
+        let date = parseDate(b.published, b.updated, b.pubDate) ?? Date.distantPast
+        let itemId = b.guid.isEmpty ? link.absoluteString : b.guid
+        let sourceTitle = feed.title?.isEmpty == false ? feed.title! : channelTitle
+
+        return FeedItem(
+            feedId: feed.id,
+            itemId: itemId,
+            title: title,
+            link: link,
+            summary: summary,
+            imageURL: imageURL,
+            publishedAt: date,
+            section: feed.section,
+            sourceTitle: sourceTitle
+        )
+    }
+
+    private func parseDate(_ candidates: String...) -> Date? {
+        for s in candidates where !s.isEmpty {
+            if let d = Self.rfc3339.date(from: s) { return d }
+            if let d = Self.rfc822.date(from: s) { return d }
+            if let d = Self.rfc822Alt.date(from: s) { return d }
+        }
+        return nil
+    }
+
+    private static let rfc3339: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+        return f
+    }()
+    private static let rfc822: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        return f
+    }()
+    private static let rfc822Alt: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return f
+    }()
+
+    /// Aggregator proxies (hnrss.org) and some podcast feeds inject metadata
+    /// boilerplate like "Article URL: ... Comments URL: ... Points: 3" in
+    /// place of an actual standfirst. Suppress that entirely — it's noise.
+    private func cleanSummary(_ s: String) -> String {
+        let lower = s.lowercased()
+        let boilerplatePrefixes = [
+            "article url:",
+            "comments url:",
+            "submitted by",
+            "link: ",
+            "url: "
+        ]
+        if boilerplatePrefixes.contains(where: { lower.hasPrefix($0) }) {
+            return ""
+        }
+        return s
+    }
+
+    private func htmlToPlain(_ html: String) -> String {
+        var s = html
+        s = s.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        s = decodeEntities(s)
+        s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Aggregator target resolution
+
+    private static let aggregatorHosts: Set<String> = [
+        "news.ycombinator.com",
+        "hn.algolia.com",
+        "hnrss.org",
+        "lobste.rs",
+        "reddit.com",
+        "www.reddit.com",
+        "old.reddit.com",
+        "slashdot.org"
+    ]
+
+    private static func isAggregatorHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        if aggregatorHosts.contains(host) { return true }
+        if host.hasSuffix(".reddit.com") { return true }
+        return false
+    }
+
+    private func resolveTargetURL(_ link: URL, in html: String) -> URL {
+        guard Self.isAggregatorHost(link.host) else { return link }
+        guard let target = firstExternalURL(in: html) else { return link }
+        return target
+    }
+
+    /// First http(s) URL inside an `href` attribute whose host is not a
+    /// known aggregator. Skips self-referential and discussion links.
+    private func firstExternalURL(in html: String) -> URL? {
+        guard let regex = try? NSRegularExpression(pattern: "href=[\"']([^\"']+)[\"']", options: .caseInsensitive) else { return nil }
+        let range = NSRange(html.startIndex..., in: html)
+        for match in regex.matches(in: html, range: range) {
+            guard match.numberOfRanges > 1,
+                  let r = Range(match.range(at: 1), in: html) else { continue }
+            let href = String(html[r])
+            guard let url = URL(string: href),
+                  let scheme = url.scheme, scheme == "http" || scheme == "https",
+                  url.host != nil else { continue }
+            if Self.isAggregatorHost(url.host) { continue }
+            return url
+        }
+        return nil
+    }
+
+    private func firstImageURL(in html: String) -> URL? {
+        guard let regex = try? NSRegularExpression(pattern: "<img[^>]+src=[\"']([^\"']+)[\"']", options: .caseInsensitive) else { return nil }
+        let range = NSRange(html.startIndex..., in: html)
+        guard let match = regex.firstMatch(in: html, range: range),
+              match.numberOfRanges > 1,
+              let r = Range(match.range(at: 1), in: html) else { return nil }
+        return URL(string: String(html[r]))
+    }
+
+    private func decodeEntities(_ s: String) -> String {
+        var out = s
+        let pairs: [(String, String)] = [
+            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+            ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"),
+            ("&nbsp;", " "), ("&ndash;", "\u{2013}"), ("&mdash;", "\u{2014}"),
+            ("&hellip;", "\u{2026}"), ("&rsquo;", "\u{2019}"), ("&lsquo;", "\u{2018}"),
+            ("&ldquo;", "\u{201C}"), ("&rdquo;", "\u{201D}"), ("&#8217;", "\u{2019}")
+        ]
+        for (from, to) in pairs { out = out.replacingOccurrences(of: from, with: to) }
+        return out
+    }
+}
+
+private extension String {
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+}
