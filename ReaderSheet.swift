@@ -176,6 +176,15 @@ struct ReaderWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        // Ephemeral: no keychain prompts, no leftover cookies between
+        // sessions. The reader renders static extracted HTML only.
+        config.websiteDataStore = .nonPersistent()
+        // We're showing extracted + stylesheet-applied HTML. Any residual
+        // scripts Readability didn't strip don't need to run — they'd only
+        // call trackers or embeds that we don't want in a reader view.
+        let pagePrefs = WKWebpagePreferences()
+        pagePrefs.allowsContentJavaScript = false
+        config.defaultWebpagePreferences = pagePrefs
         let web = WKWebView(frame: .zero, configuration: config)
         web.setValue(false, forKey: "drawsBackground")
         return web

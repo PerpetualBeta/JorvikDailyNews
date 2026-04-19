@@ -16,6 +16,13 @@ struct Masthead: View {
                 .font(.custom("Didot", size: 64))
                 .kerning(1)
                 .fixedSize()
+            Text("Nuntii ex orbe terrarum")
+                .font(.custom("Didot", size: 15))
+                .italic()
+                .kerning(1.2)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+                .padding(.bottom, 2)
             HStack(spacing: 12) {
                 Rectangle().fill(Color.primary).frame(height: 1)
                 Text(dateline)

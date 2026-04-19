@@ -23,14 +23,25 @@ final class AppStore {
     var lastRefreshError: String?
     var lastImportSummary: String?
     var pageIndex: Int = 0
+    var hideReadItems: Bool = false {
+        didSet {
+            guard oldValue != hideReadItems else { return }
+            recomputeVisibleEdition()
+        }
+    }
+
+    /// In-memory, reflowed edition. The edition on disk is always the full,
+    /// unfiltered build; this is what the UI actually renders. Recomputed
+    /// when filters change (pause, hide-read) or a fresh edition is saved.
+    private(set) var visibleEdition: Edition?
 
     var totalPages: Int {
-        guard let edition = editionStore.today else { return 1 }
+        guard let edition = visibleEdition ?? editionStore.today else { return 1 }
         return max(1, 1 + edition.sections.count)
     }
 
     var currentPageTitle: String {
-        guard let edition = editionStore.today else { return "Front Page" }
+        guard let edition = visibleEdition ?? editionStore.today else { return "Front Page" }
         if pageIndex == 0 { return "Front Page" }
         let idx = pageIndex - 1
         guard idx < edition.sections.count else { return "Front Page" }
@@ -39,10 +50,14 @@ final class AppStore {
 
     /// Open an article in the reader and mark it read. Single entry point so
     /// every headline click — lead, secondary, brief, section card — gets the
-    /// same treatment.
+    /// same treatment. When hide-read is on, reflow the paper so the next
+    /// unread item fills the vacated slot by the time the reader closes.
     func openArticle(_ item: FeedItem) {
         readStore.markRead(item.itemId)
         selectedArticle = item
+        if hideReadItems {
+            recomputeVisibleEdition()
+        }
     }
 
     func goToPage(_ index: Int) {
@@ -58,12 +73,15 @@ final class AppStore {
         // Kick the update checker on the shipping schedule; it manages its
         // own cadence and persists its last-check timestamp.
         updateChecker.checkOnSchedule()
+        // Rebuild the visible edition from whatever was loaded from disk
+        // so filters apply immediately on relaunch.
+        recomputeVisibleEdition()
 
         guard !feedStore.feeds.isEmpty else { return }
-        let needsPublish = !editionStore.hasTodayEdition() || (editionStore.today?.isEmpty ?? true)
-        if needsPublish {
-            await refreshAndPublish()
-        }
+        // Always refresh on launch so today-items that published since the
+        // last save come in. `refreshAndPublish` will keep the cached
+        // edition if the refresh itself returns nothing (offline).
+        await refreshAndPublish()
     }
 
     func refreshAndPublish() async {
@@ -119,7 +137,16 @@ final class AppStore {
         let merged = enrichedSlice + tail
 
         let edition = builder.build(from: merged, date: Date())
+        // Don't blow away a populated cached edition when a refresh yields
+        // nothing — the user is probably offline, or every feed 404'd. Keep
+        // showing whatever we last had.
+        if edition.isEmpty, let existing = editionStore.today, !existing.isEmpty {
+            return
+        }
         editionStore.save(edition)
+        // Reflow the visible edition from the new base so hide-read and
+        // paused filters apply to the freshly-built edition too.
+        recomputeVisibleEdition()
         // Clamp page index if the new edition has fewer pages than we were on.
         if pageIndex >= totalPages { pageIndex = 0 }
 
@@ -136,9 +163,23 @@ final class AppStore {
 
     /// Discover a feed from an arbitrary URL (feed URL or page URL), then add it.
     /// Returns the feed actually added so the caller can surface its title.
+    /// Dedupes: if the resolved feed URL already exists in the store, throws
+    /// `FeedDiscoveryError.alreadyAdded` naming the existing subscription.
     func discoverAndAdd(url: URL, section: String) async throws -> DiscoveredFeed {
         let candidates = try await discovery.discover(from: url)
         guard let first = candidates.first else { throw FeedDiscoveryError.noFeedsFound }
+
+        let candidateKey = first.url.absoluteString.lowercased()
+        if let existing = feedStore.feeds.first(where: {
+            $0.url.absoluteString.lowercased() == candidateKey
+        }) {
+            let label = existing.title
+                ?? first.title
+                ?? existing.url.host
+                ?? existing.url.absoluteString
+            throw FeedDiscoveryError.alreadyAdded(existingTitle: label)
+        }
+
         await addFeed(url: first.url, section: section)
         return first
     }
@@ -148,33 +189,42 @@ final class AppStore {
         await refreshAndPublish()
     }
 
-    /// Toggle pause for a feed. Pausing strips that feed's items from today's
-    /// edition instantly via a local rebuild (no network round-trip).
+    /// Toggle pause for a feed. Pausing instantly reflows the visible
+    /// edition (no network round-trip) by excluding that feed's items.
     /// Un-pausing triggers a full refresh so the feed's items come back.
     func togglePause(_ feed: Feed) async {
         let newPaused = !feed.isPaused
         feedStore.setPaused(feedId: feed.id, paused: newPaused)
         if newPaused {
-            rebuildCachedEditionExcludingPaused()
+            recomputeVisibleEdition()
         } else {
             await refreshAndPublish()
         }
     }
 
-    /// Re-slot today's edition from its cached items, dropping anything from
-    /// currently-paused feeds. Used when the user pauses a feed — avoids the
-    /// cost of a full refetch.
-    private func rebuildCachedEditionExcludingPaused() {
-        guard let edition = editionStore.today else { return }
-        let pausedIds = Set(feedStore.feeds.filter { $0.isPaused }.map { $0.id })
+    /// Reflow the visible edition from the saved (unfiltered) base, applying
+    /// the current pause + hide-read filters. Used whenever a filter changes
+    /// or a fresh edition is saved. The on-disk edition is never a
+    /// filtered view — only this in-memory representation is.
+    func recomputeVisibleEdition() {
+        guard let base = editionStore.today else {
+            visibleEdition = nil
+            return
+        }
+
         var all: [FeedItem] = []
-        if let lead = edition.lead { all.append(lead) }
-        all.append(contentsOf: edition.secondaries)
-        all.append(contentsOf: edition.briefs)
-        all.append(contentsOf: edition.sections.flatMap { $0.items })
-        let kept = all.filter { !pausedIds.contains($0.feedId) }
-        let rebuilt = builder.build(from: kept, date: edition.date)
-        editionStore.save(rebuilt)
+        if let lead = base.lead { all.append(lead) }
+        all.append(contentsOf: base.secondaries)
+        all.append(contentsOf: base.briefs)
+        all.append(contentsOf: base.sections.flatMap { $0.items })
+
+        let pausedIds = Set(feedStore.feeds.filter { $0.isPaused }.map { $0.id })
+        var kept = all.filter { !pausedIds.contains($0.feedId) }
+        if hideReadItems {
+            kept = kept.filter { !readStore.isRead($0.itemId) }
+        }
+
+        visibleEdition = builder.build(from: kept, date: base.date)
         if pageIndex >= totalPages { pageIndex = 0 }
     }
 

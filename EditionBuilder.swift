@@ -4,10 +4,22 @@ struct EditionBuilder {
     // Front-page slot budgets, chosen so a quiet day still looks like a paper
     // and a busy day doesn't overfill the front.
     let secondariesCap = 3
-    let briefsCap = 8
+    let briefsCap = 12
 
     func build(from items: [FeedItem], date: Date) -> Edition {
-        let sorted = items.sorted { $0.publishedAt > $1.publishedAt }
+        // Daily News means: only items whose published date falls inside today
+        // (local calendar). Older items never appear, even if they'd otherwise
+        // rank highly — hence "Daily". Refreshes during the day pick up new
+        // today-items as they publish.
+        let startOfDay = Calendar.current.startOfDay(for: date)
+        let endOfDay = Calendar.current.date(byAdding: .day, value: 1, to: startOfDay)
+            ?? startOfDay.addingTimeInterval(86_400)
+        let todayOnly = items.filter { $0.publishedAt >= startOfDay && $0.publishedAt < endOfDay }
+        // Dedupe by canonical link (multiple feeds often carry the same
+        // article, e.g. Guardian main + Guardian football), then by itemId
+        // as a fallback for feeds that share guids but not URLs.
+        let deduped = dedupeByLink(todayOnly)
+        let sorted = deduped.sorted { $0.publishedAt > $1.publishedAt }
         let interleaved = roundRobinByFeed(sorted)
 
         // Lead must have an image whenever one is available anywhere in the
@@ -44,6 +56,24 @@ struct EditionBuilder {
             briefs: briefs,
             sections: sections
         )
+    }
+
+    /// Remove items that share a canonical link or itemId with an earlier
+    /// item. First-seen wins, preserving date ordering.
+    private func dedupeByLink(_ items: [FeedItem]) -> [FeedItem] {
+        var seenLinks = Set<String>()
+        var seenIds = Set<String>()
+        var result: [FeedItem] = []
+        result.reserveCapacity(items.count)
+        for item in items {
+            let linkKey = item.link.absoluteString.lowercased()
+            if seenLinks.contains(linkKey) { continue }
+            if seenIds.contains(item.itemId) { continue }
+            seenLinks.insert(linkKey)
+            seenIds.insert(item.itemId)
+            result.append(item)
+        }
+        return result
     }
 
     /// Round-robin across feeds so no single source dominates the front page.

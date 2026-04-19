@@ -16,6 +16,7 @@ swiftc -O -o "$APP_BUNDLE/Contents/MacOS/$APP_NAME" \
     "$SCRIPT_DIR/FrontPage.swift" \
     "$SCRIPT_DIR/SectionPageView.swift" \
     "$SCRIPT_DIR/MasonryColumns.swift" \
+    "$SCRIPT_DIR/StoryCard.swift" \
     "$SCRIPT_DIR/OptionalImage.swift" \
     "$SCRIPT_DIR/AddFeedSheet.swift" \
     "$SCRIPT_DIR/ManageFeedsSheet.swift" \

@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppStore.self) private var store
+    @FocusState private var scrollFocused: Bool
 
     // Accept .opml (common OPML extension) plus any XML. If the system
     // doesn't recognise .opml as a UTType, fall back to XML only.
@@ -59,6 +60,13 @@ struct ContentView: View {
             ) { _ in }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
+                    Toggle(isOn: $bindable.hideReadItems) {
+                        Label("Unread only", systemImage: "eye.slash")
+                    }
+                    .toggleStyle(.switch)
+                    .help("Hide items you\u{2019}ve already read")
+                }
+                ToolbarItem(placement: .primaryAction) {
                     Button {
                         bindable.showAddFeedSheet = true
                     } label: {
@@ -96,27 +104,53 @@ struct ContentView: View {
                 .transition(.opacity)
         } else if store.feedStore.feeds.isEmpty {
             EmptyStateView()
-        } else if let edition = store.editionStore.today, !edition.isEmpty {
-            ZStack(alignment: .bottom) {
+        } else if let edition = store.visibleEdition ?? store.editionStore.today, !edition.isEmpty {
+            ScrollViewReader { proxy in
                 ScrollView {
-                    currentPage(for: edition)
-                        .padding(.horizontal, 48)
-                        .padding(.top, 32)
-                        // Extra bottom padding clears the floating page
-                        // indicator pill so trailing content (e.g. "N more
-                        // in archive") isn't obscured.
-                        .padding(.bottom, store.totalPages > 1 ? 72 : 32)
-                        .frame(maxWidth: 1100)
-                        .frame(maxWidth: .infinity)
-                        .id(store.pageIndex)
-                        .transition(.opacity)
+                    VStack(spacing: 0) {
+                        // Invisible anchors at top + bottom — Home / End and
+                        // page-turn transitions scrollTo these ids.
+                        Color.clear.frame(height: 0.1).id("top")
+                        currentPage(for: edition)
+                            .padding(.horizontal, 48)
+                            .padding(.top, 32)
+                            .padding(.bottom, store.totalPages > 1 ? 72 : 32)
+                            .frame(maxWidth: 1100)
+                            .frame(maxWidth: .infinity)
+                            .id(store.pageIndex)
+                            .transition(.opacity)
+                        Color.clear.frame(height: 0.1).id("bottom")
+                    }
+                }
+                // Let the scroll view accept key presses. Home/End scroll to
+                // anchors; PgUp/PgDn/space fall through to the underlying
+                // NSScrollView which handles them natively once focused.
+                .focusable()
+                .focusEffectDisabled()
+                .focused($scrollFocused)
+                .onAppear { scrollFocused = true }
+                .onKeyPress(.home) {
+                    proxy.scrollTo("top", anchor: .top)
+                    return .handled
+                }
+                .onKeyPress(.end) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                    return .handled
                 }
                 .animation(.easeInOut(duration: 0.18), value: store.pageIndex)
-
-                if store.totalPages > 1 {
-                    PageIndicator()
-                        .environment(store)
-                        .padding(.bottom, 12)
+                .onChange(of: store.pageIndex) { _, _ in
+                    proxy.scrollTo("top", anchor: .top)
+                }
+                // Floating page-indicator as an overlay on the ScrollView's
+                // frame. Overlay alignment is relative to the viewport, so
+                // the pill is always bottom-centred regardless of the
+                // scroll content's settled size.
+                .overlay(alignment: .bottom) {
+                    if store.totalPages > 1 {
+                        PageIndicator()
+                            .environment(store)
+                            .padding(.bottom, 12)
+                    }
                 }
             }
         } else if store.isRefreshing {
@@ -171,11 +205,14 @@ private struct PageIndicator: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 6) {
             Button {
                 store.previousPage()
             } label: {
                 Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(store.pageIndex == 0)
@@ -186,18 +223,22 @@ private struct PageIndicator: View {
                 .kerning(1.5)
                 .foregroundStyle(.primary)
                 .monospacedDigit()
+                .padding(.horizontal, 8)
 
             Button {
                 store.nextPage()
             } label: {
                 Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(store.pageIndex >= store.totalPages - 1)
             .help("Next page (\u{2318}\u{2192})")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
         .background(
             Capsule()
                 .fill(.regularMaterial)

@@ -62,7 +62,11 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
         var pubDate = ""
         var updated = ""
         var published = ""
-        var imageURL: String?
+        // All image candidates with declared widths (0 = unknown). Some feeds
+        // (e.g. The Guardian) ship multiple `<media:content>` elements at
+        // different sizes; we pick the widest so we don't render a 140-pixel
+        // thumbnail at 280-pixel height.
+        var imageCandidates: [(url: String, width: Int)] = []
     }
     private var current: ItemBuilder?
 
@@ -103,19 +107,21 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
                         current!.link = href
                     }
                     if rel == "enclosure", let type = attributeDict["type"], type.hasPrefix("image/") {
-                        if current!.imageURL == nil { current!.imageURL = href }
+                        let width = Int(attributeDict["length"] ?? "") ?? 0
+                        current!.imageCandidates.append((href, width))
                     }
                 }
             }
         case "enclosure":
             // RSS: <enclosure url="..." type="image/..."/>
             if let type = attributeDict["type"], type.hasPrefix("image/"),
-               let url = attributeDict["url"], current?.imageURL == nil {
-                current?.imageURL = url
+               let url = attributeDict["url"] {
+                current?.imageCandidates.append((url, 0))
             }
         case "media:thumbnail", "media:content":
-            if let url = attributeDict["url"], current?.imageURL == nil {
-                current?.imageURL = url
+            if let url = attributeDict["url"] {
+                let width = Int(attributeDict["width"] ?? "") ?? 0
+                current?.imageCandidates.append((url, width))
             }
         default:
             break
@@ -196,7 +202,7 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
         // the target matters more than the meta-commentary.
         let link = resolveTargetURL(originalLink, in: bodyHTML)
         let summary = cleanSummary(htmlToPlain(bodyHTML))
-        let imageURL: URL? = b.imageURL.flatMap { URL(string: $0) } ?? firstImageURL(in: bodyHTML)
+        let imageURL = pickBestImage(candidates: b.imageCandidates, bodyHTML: bodyHTML)
 
         // Undated items rank LAST on the front page rather than masquerading
         // as "newest" (Date()) which would dominate anything correctly dated.
@@ -313,6 +319,18 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
             return url
         }
         return nil
+    }
+
+    /// Pick the best image candidate from the feed, preferring the widest
+    /// declared size. If the widest is known to be < 400px (thumbnail-only
+    /// feeds like some Guardian category feeds), skip it and fall through to
+    /// body HTML images or downstream og:image enrichment.
+    private func pickBestImage(candidates: [(url: String, width: Int)], bodyHTML: String) -> URL? {
+        let widest = candidates.max(by: { $0.width < $1.width })
+        if let best = widest, best.width == 0 || best.width >= 400 {
+            if let url = URL(string: best.url) { return url }
+        }
+        return firstImageURL(in: bodyHTML)
     }
 
     private func firstImageURL(in html: String) -> URL? {

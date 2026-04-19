@@ -48,6 +48,11 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     override init() {
         let config = WKWebViewConfiguration()
         config.suppressesIncrementalRendering = true
+        // Ephemeral data store — don't persist cookies, local storage, or
+        // WebCrypto keys across launches. Prevents the first-run macOS
+        // keychain prompt for "WebCrypto Master Key" that a site's inline
+        // script can otherwise trigger on an extraction load.
+        config.websiteDataStore = .nonPersistent()
         self.webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
         super.init()
         self.webView.navigationDelegate = self

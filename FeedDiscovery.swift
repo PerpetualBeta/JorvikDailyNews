@@ -9,11 +9,13 @@ struct DiscoveredFeed: Hashable, Identifiable {
 enum FeedDiscoveryError: Error, LocalizedError {
     case fetchFailed(String)
     case noFeedsFound
+    case alreadyAdded(existingTitle: String)
 
     var errorDescription: String? {
         switch self {
         case .fetchFailed(let msg): "Couldn\u{2019}t reach that URL: \(msg)"
         case .noFeedsFound: "No feeds found on that page"
+        case .alreadyAdded(let title): "You already subscribe to \u{201C}\(title)\u{201D}"
         }
     }
 }
