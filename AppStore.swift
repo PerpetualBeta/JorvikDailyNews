@@ -7,6 +7,7 @@ final class AppStore {
     let feedStore = FeedStore()
     let editionStore = EditionStore()
     let readStore = ReadStore()
+    let classifier = ArticleClassifier()
     let updateChecker = JorvikUpdateChecker(repoName: "JorvikDailyNews")
     private let fetcher = FeedFetcher()
     private let discovery = FeedDiscovery()
@@ -211,6 +212,27 @@ final class AppStore {
         recomputeVisibleEdition()
     }
 
+    /// Move a single article to a different section. Pins the article
+    /// permanently (future classifier guesses can't move it) and trains
+    /// the classifier on this correction so similar future articles get
+    /// the same treatment. Reflows the visible edition immediately.
+    func moveArticle(_ item: FeedItem, to section: String) {
+        let text = item.title + " " + item.summary
+        classifier.move(itemId: item.itemId, text: text, to: section)
+        recomputeVisibleEdition()
+    }
+
+    /// Union of every section name the paper currently knows about —
+    /// those assigned to feeds plus those the classifier has been trained
+    /// on. Used by the article and feed "Move to…" menus so the sections
+    /// list stays consistent once the user has pinned articles into a
+    /// section no feed belongs to.
+    var allSections: [String] {
+        var set = Set(feedStore.feeds.map { $0.section })
+        set.formUnion(classifier.knownSections)
+        return set.sorted { $0.lowercased() < $1.lowercased() }
+    }
+
     /// Reflow the visible edition from the saved (unfiltered) base, applying
     /// the current pause + hide-read filters. Used whenever a filter changes
     /// or a fresh edition is saved. The on-disk edition is never a
@@ -232,18 +254,28 @@ final class AppStore {
         if hideReadItems {
             kept = kept.filter { !readStore.isRead($0.itemId) }
         }
-        // Re-stamp section from the feed's current value so recategorising a
-        // feed immediately reflows the paper without refetching.
+        // Re-stamp each item's section through three layers, in order:
+        // 1. A user pin wins (explicit per-article correction, survives relaunch).
+        // 2. Otherwise the classifier's confident prediction, if it has one.
+        // 3. Otherwise the feed's current section (cold-start fallback).
         let sectionByFeed = Dictionary(uniqueKeysWithValues: feedStore.feeds.map { ($0.id, $0.section) })
         kept = kept.map { item in
-            guard let section = sectionByFeed[item.feedId], section != item.section else { return item }
+            let resolved = resolvedSection(for: item, sectionByFeed: sectionByFeed)
+            guard resolved != item.section else { return item }
             var updated = item
-            updated.section = section
+            updated.section = resolved
             return updated
         }
 
         visibleEdition = builder.build(from: kept, date: base.date)
         if pageIndex >= totalPages { pageIndex = 0 }
+    }
+
+    private func resolvedSection(for item: FeedItem, sectionByFeed: [UUID: String]) -> String {
+        if let pinned = classifier.pinnedSection(itemId: item.itemId) { return pinned }
+        let text = item.title + " " + item.summary
+        if let predicted = classifier.predict(text: text) { return predicted }
+        return sectionByFeed[item.feedId] ?? item.section
     }
 
     // MARK: - OPML import

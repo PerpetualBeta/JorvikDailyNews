@@ -75,5 +75,6 @@ private struct LeadStoryView: View {
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .opacity(isRead ? 0.55 : 1.0)
+        .storySectionContextMenu(for: item)
     }
 }

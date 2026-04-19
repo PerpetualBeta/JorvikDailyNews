@@ -22,6 +22,7 @@ swiftc -O -o "$APP_BUNDLE/Contents/MacOS/$APP_NAME" \
     "$SCRIPT_DIR/ManageFeedsSheet.swift" \
     "$SCRIPT_DIR/ReaderSheet.swift" \
     "$SCRIPT_DIR/ArticleExtractor.swift" \
+    "$SCRIPT_DIR/ArticleClassifier.swift" \
     "$SCRIPT_DIR/AppStore.swift" \
     "$SCRIPT_DIR/Feed.swift" \
     "$SCRIPT_DIR/Edition.swift" \

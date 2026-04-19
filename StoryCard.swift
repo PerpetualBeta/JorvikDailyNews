@@ -44,6 +44,7 @@ struct StoryCard: View {
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .opacity(isRead ? 0.55 : 1.0)
+        .storySectionContextMenu(for: item)
     }
 
     /// Rough height estimate used by the masonry distributor. Doesn't need
@@ -59,5 +60,57 @@ struct StoryCard: View {
             h += bodyChars / 60 * 22
         }
         return max(80, h)
+    }
+}
+
+/// Right-click "Move to…" menu shared by every card on the paper. Lists
+/// known sections (current one ticked), plus a "New section…" option that
+/// opens an alert to create one on the fly. Each pick trains the
+/// classifier, pins the article, and reflows the visible edition.
+extension View {
+    func storySectionContextMenu(for item: FeedItem) -> some View {
+        modifier(StorySectionContextMenu(item: item))
+    }
+}
+
+private struct StorySectionContextMenu: ViewModifier {
+    @Environment(AppStore.self) private var store
+    let item: FeedItem
+    @State private var promptOpen = false
+    @State private var newSectionName = ""
+
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            let current = store.classifier.pinnedSection(itemId: item.itemId) ?? item.section
+            ForEach(store.allSections, id: \.self) { section in
+                if section == current {
+                    Label(section, systemImage: "checkmark")
+                } else {
+                    Button("Move to \(section)") {
+                        store.moveArticle(item, to: section)
+                    }
+                }
+            }
+            Divider()
+            Button("New section\u{2026}") {
+                newSectionName = ""
+                promptOpen = true
+            }
+        }
+        .alert(
+            "Move to new section",
+            isPresented: $promptOpen
+        ) {
+            TextField("Section name", text: $newSectionName)
+            Button("Move") {
+                let trimmed = newSectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { store.moveArticle(item, to: trimmed) }
+                promptOpen = false
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { promptOpen = false }
+        } message: {
+            Text("Move \u{201C}\(item.title)\u{201D} to a new section. The paper learns from this correction.")
+        }
     }
 }
