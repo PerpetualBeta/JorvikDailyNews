@@ -48,11 +48,28 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     override init() {
         let config = WKWebViewConfiguration()
         config.suppressesIncrementalRendering = true
-        // Ephemeral data store — don't persist cookies, local storage, or
-        // WebCrypto keys across launches. Prevents the first-run macOS
-        // keychain prompt for "WebCrypto Master Key" that a site's inline
-        // script can otherwise trigger on an extraction load.
+        // Ephemeral data store — don't persist cookies across launches.
         config.websiteDataStore = .nonPersistent()
+        // Site scripts that call `crypto.subtle.generateKey` etc. trigger a
+        // macOS keychain prompt for "WebCrypto Master Key" — because WebKit
+        // reaches the system keychain directly, independent of the data
+        // store. Neutralise SubtleCrypto at document-start so any site
+        // script's call becomes a rejected promise instead of a prompt.
+        // Readability.js doesn't use WebCrypto, so this costs us nothing.
+        let controller = WKUserContentController()
+        let neutraliseWebCrypto = """
+        (function() {
+            try {
+                var noop = function() { return Promise.reject(new Error('disabled')); };
+                var stub = new Proxy({}, { get: function() { return noop; } });
+                Object.defineProperty(window.crypto, 'subtle', { get: function() { return stub; }, configurable: false });
+            } catch (e) {}
+        })();
+        """
+        controller.addUserScript(WKUserScript(source: neutraliseWebCrypto,
+                                              injectionTime: .atDocumentStart,
+                                              forMainFrameOnly: false))
+        config.userContentController = controller
         self.webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
         super.init()
         self.webView.navigationDelegate = self
