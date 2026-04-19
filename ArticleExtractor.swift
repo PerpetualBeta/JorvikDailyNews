@@ -50,26 +50,19 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         config.suppressesIncrementalRendering = true
         // Ephemeral data store — don't persist cookies across launches.
         config.websiteDataStore = .nonPersistent()
-        // Site scripts that call `crypto.subtle.generateKey` etc. trigger a
-        // macOS keychain prompt for "WebCrypto Master Key" — because WebKit
-        // reaches the system keychain directly, independent of the data
-        // store. Neutralise SubtleCrypto at document-start so any site
-        // script's call becomes a rejected promise instead of a prompt.
-        // Readability.js doesn't use WebCrypto, so this costs us nothing.
-        let controller = WKUserContentController()
-        let neutraliseWebCrypto = """
-        (function() {
-            try {
-                var noop = function() { return Promise.reject(new Error('disabled')); };
-                var stub = new Proxy({}, { get: function() { return noop; } });
-                Object.defineProperty(window.crypto, 'subtle', { get: function() { return stub; }, configurable: false });
-            } catch (e) {}
-        })();
-        """
-        controller.addUserScript(WKUserScript(source: neutraliseWebCrypto,
-                                              injectionTime: .atDocumentStart,
-                                              forMainFrameOnly: false))
-        config.userContentController = controller
+        // Disable page-script execution entirely. Readability runs on the
+        // static DOM that came down in the HTML, not on anything a page
+        // script would render later; for SPAs that needed JS to render
+        // their article body, we already fall back to the feed summary.
+        // Turning page scripts off stops them ever calling `crypto.subtle`,
+        // which is what reaches the system keychain and triggers the
+        // "WebCrypto Master Key" prompt — no amount of JS-level stubbing
+        // is reliable because sites can beat `.atDocumentStart` in races
+        // or refuse the redefinition entirely (Ars Technica, 2026-04).
+        // `evaluateJavaScript` still works and is how we inject Readability.
+        let pagePrefs = WKWebpagePreferences()
+        pagePrefs.allowsContentJavaScript = false
+        config.defaultWebpagePreferences = pagePrefs
         self.webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
         super.init()
         self.webView.navigationDelegate = self
