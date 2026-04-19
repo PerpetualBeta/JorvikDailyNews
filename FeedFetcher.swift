@@ -224,31 +224,52 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
     }
 
     private func parseDate(_ candidates: String...) -> Date? {
-        for s in candidates where !s.isEmpty {
-            if let d = Self.rfc3339.date(from: s) { return d }
-            if let d = Self.rfc822.date(from: s) { return d }
-            if let d = Self.rfc822Alt.date(from: s) { return d }
+        for raw in candidates where !raw.isEmpty {
+            let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            // ISO8601DateFormatter handles RFC3339 including the `.SSS`
+            // fractional-seconds variant that many Atom feeds ship — a form
+            // DateFormatter with a fixed pattern rejects.
+            if let d = Self.iso8601FS.date(from: s) { return d }
+            if let d = Self.iso8601.date(from: s) { return d }
+            // RFC822 variants: named timezone vs. numeric offset, with and
+            // without seconds, with and without the leading day-name.
+            for f in Self.fallbackFormatters {
+                if let d = f.date(from: s) { return d }
+            }
         }
         return nil
     }
 
-    private static let rfc3339: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+    private static let iso8601: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
         return f
     }()
-    private static let rfc822: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+    private static let iso8601FS: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
-    private static let rfc822Alt: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-        return f
+    private static let fallbackFormatters: [DateFormatter] = {
+        let patterns = [
+            "EEE, dd MMM yyyy HH:mm:ss Z",
+            "EEE, dd MMM yyyy HH:mm:ss zzz",
+            "EEE, dd MMM yyyy HH:mm Z",
+            "EEE, dd MMM yyyy HH:mm zzz",
+            "dd MMM yyyy HH:mm:ss Z",
+            "dd MMM yyyy HH:mm:ss zzz",
+            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
+            "yyyy-MM-dd HH:mm:ss Z",
+            "yyyy-MM-dd"
+        ]
+        return patterns.map { p in
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = TimeZone(secondsFromGMT: 0)
+            f.dateFormat = p
+            return f
+        }
     }()
 
     /// Aggregator proxies (hnrss.org) and some podcast feeds inject metadata
