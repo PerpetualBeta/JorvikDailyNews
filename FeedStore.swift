@@ -67,6 +67,15 @@ final class FeedStore {
         save()
     }
 
+    func setSection(feedId: UUID, section: String) {
+        let trimmed = section.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let idx = feeds.firstIndex(where: { $0.id == feedId }) else { return }
+        guard feeds[idx].section != trimmed else { return }
+        feeds[idx].section = trimmed
+        save()
+    }
+
     /// Bulk import: appends feeds whose URL isn't already in the store.
     /// Returns the (addedCount, skippedCount) for caller feedback.
     @discardableResult

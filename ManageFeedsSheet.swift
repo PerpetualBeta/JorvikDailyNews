@@ -7,6 +7,8 @@ struct ManageFeedsSheet: View {
     @State private var pendingRemoval: Feed?
     @State private var searchText = ""
     @FocusState private var searchFocused: Bool
+    @State private var recategorising: Feed?
+    @State private var newSectionName: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -105,9 +107,17 @@ struct ManageFeedsSheet: View {
                                     ForEach(feeds) { feed in
                                         FeedRow(
                                             feed: feed,
+                                            existingSections: allSections,
                                             onRemove: { pendingRemoval = feed },
                                             onTogglePause: {
                                                 Task { await store.togglePause(feed) }
+                                            },
+                                            onMove: { target in
+                                                store.setSection(feed, to: target)
+                                            },
+                                            onNewSection: {
+                                                newSectionName = ""
+                                                recategorising = feed
                                             }
                                         )
                                         Divider()
@@ -148,6 +158,30 @@ struct ManageFeedsSheet: View {
         } message: { _ in
             Text("Its stories will disappear from today\u{2019}s edition on the next refresh.")
         }
+        .alert(
+            "New section",
+            isPresented: Binding(
+                get: { recategorising != nil },
+                set: { if !$0 { recategorising = nil } }
+            ),
+            presenting: recategorising
+        ) { feed in
+            TextField("Section name", text: $newSectionName)
+            Button("Move") {
+                let trimmed = newSectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { store.setSection(feed, to: trimmed) }
+                recategorising = nil
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { recategorising = nil }
+        } message: { feed in
+            Text("Move \u{201C}\(feed.title ?? feed.url.host ?? "this feed")\u{201D} to a new section.")
+        }
+    }
+
+    private var allSections: [String] {
+        let unique = Set(store.feedStore.feeds.map { $0.section })
+        return unique.sorted { $0.lowercased() < $1.lowercased() }
     }
 
     private var filteredFeeds: [Feed] {
@@ -181,8 +215,11 @@ struct ManageFeedsSheet: View {
 
 private struct FeedRow: View {
     let feed: Feed
+    let existingSections: [String]
     let onRemove: () -> Void
     let onTogglePause: () -> Void
+    let onMove: (String) -> Void
+    let onNewSection: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -207,6 +244,24 @@ private struct FeedRow: View {
                     .truncationMode(.middle)
             }
             Spacer()
+            Menu {
+                ForEach(existingSections, id: \.self) { section in
+                    if section == feed.section {
+                        Label(section, systemImage: "checkmark")
+                    } else {
+                        Button(section) { onMove(section) }
+                    }
+                }
+                Divider()
+                Button("New section\u{2026}", action: onNewSection)
+            } label: {
+                Image(systemName: "folder")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Move to section")
+
             Button(action: onTogglePause) {
                 Image(systemName: feed.isPaused ? "play.fill" : "pause.fill")
             }

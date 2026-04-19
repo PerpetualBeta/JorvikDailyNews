@@ -203,6 +203,14 @@ final class AppStore {
         }
     }
 
+    /// Move a feed to a different section. Rebuilds the visible edition so
+    /// the feed's existing cached items reappear under the new section
+    /// immediately, with no network round-trip.
+    func setSection(_ feed: Feed, to section: String) {
+        feedStore.setSection(feedId: feed.id, section: section)
+        recomputeVisibleEdition()
+    }
+
     /// Reflow the visible edition from the saved (unfiltered) base, applying
     /// the current pause + hide-read filters. Used whenever a filter changes
     /// or a fresh edition is saved. The on-disk edition is never a
@@ -223,6 +231,15 @@ final class AppStore {
         var kept = all.filter { !pausedIds.contains($0.feedId) }
         if hideReadItems {
             kept = kept.filter { !readStore.isRead($0.itemId) }
+        }
+        // Re-stamp section from the feed's current value so recategorising a
+        // feed immediately reflows the paper without refetching.
+        let sectionByFeed = Dictionary(uniqueKeysWithValues: feedStore.feeds.map { ($0.id, $0.section) })
+        kept = kept.map { item in
+            guard let section = sectionByFeed[item.feedId], section != item.section else { return item }
+            var updated = item
+            updated.section = section
+            return updated
         }
 
         visibleEdition = builder.build(from: kept, date: base.date)

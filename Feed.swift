@@ -46,6 +46,6 @@ struct FeedItem: Codable, Hashable, Identifiable {
     let summary: String
     let imageURL: URL?
     let publishedAt: Date
-    let section: String
+    var section: String
     let sourceTitle: String
 }
