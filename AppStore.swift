@@ -127,6 +127,28 @@ final class AppStore {
             }
         }
 
+        // Carry over the previously-saved today edition so items accumulate
+        // through the day. Feeds expose a rolling window of recent items; an
+        // article published at 9am can rotate out of the feed's response by
+        // noon, and without this merge it'd vanish from the paper even though
+        // it was published today and was on page 1 an hour ago.
+        //
+        // Fresh items come first so the builder's first-seen-wins dedupe
+        // prefers them over any staler copy in the prior edition (fresh may
+        // have tightened summaries or newly-enriched image URLs). Removed
+        // feeds are filtered out so deleting a feed still erases its items
+        // from today's paper on the next refresh.
+        if let existing = editionStore.today,
+           Calendar.current.isDate(existing.date, inSameDayAs: Date()) {
+            let activeFeedIds = Set(feedStore.feeds.map { $0.id })
+            var priorItems: [FeedItem] = []
+            if let lead = existing.lead { priorItems.append(lead) }
+            priorItems.append(contentsOf: existing.secondaries)
+            priorItems.append(contentsOf: existing.briefs)
+            priorItems.append(contentsOf: existing.sections.flatMap { $0.items })
+            allItems.append(contentsOf: priorItems.filter { activeFeedIds.contains($0.feedId) })
+        }
+
         // Enrich image-less top candidates with og:image / twitter:image
         // extracted from the target article. Capped at the top 24 by date so
         // aggregator items (HN, DF, Tsai, Objective-See) pick up a thumbnail
