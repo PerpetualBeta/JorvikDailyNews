@@ -4,6 +4,12 @@ import SwiftUI
 struct JorvikDailyNewsApp: App {
     @State private var store = AppStore()
 
+    init() {
+        // Tugboat-cooperative dock visibility. Listens for hide/show
+        // toggles broadcast by Tugboat and self-applies via setActivationPolicy.
+        JorvikDockVisibility.adopt()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
