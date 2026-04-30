@@ -88,14 +88,16 @@ public enum JorvikDockVisibility {
             return
         }
 
-        var token: NSObjectProtocol?
-        token = NotificationCenter.default.addObserver(
+        // didFinishLaunching fires exactly once per app lifetime, so the
+        // observer is harmless after it fires — we don't bother
+        // self-removing. (Self-removal needs a `var token` captured in its
+        // own closure, which Swift 6's Sendable checker rejects.)
+        NotificationCenter.default.addObserver(
             forName: NSApplication.didFinishLaunchingNotification,
             object: nil,
             queue: .main
         ) { _ in
             applyPolicy(hidden: hidden)
-            if let token { NotificationCenter.default.removeObserver(token) }
         }
     }
 
