@@ -86,6 +86,10 @@ Everything under `~/Library/Application Support/JorvikDailyNews/`:
 
 No database. No telemetry. No cloud. No cookies — the reader pane uses ephemeral WebKit data stores that don't persist anything to disk or keychain.
 
+## Updates
+
+Updates are handled by [Sparkle](https://sparkle-project.org). The app checks for new versions automatically once a day in the background; **Jorvik Daily News → Check for Updates…** runs an on-demand check.
+
 ## Technical Details
 
 - Pure Swift + SwiftUI. `swiftc -O` single-binary build — no Xcode project required.

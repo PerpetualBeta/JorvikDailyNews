@@ -7,8 +7,12 @@ APP_BUNDLE="$SCRIPT_DIR/$APP_NAME.app"
 
 echo "Building $APP_NAME..."
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks"
 
+# Embed Sparkle.framework into the bundle
+cp -R "$SCRIPT_DIR/Sparkle.framework" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+
+# rpath @executable_path/../Frameworks lets the runtime find the embedded framework.
 swiftc -O -o "$APP_BUNDLE/Contents/MacOS/$APP_NAME" \
     "$SCRIPT_DIR/JorvikDailyNewsApp.swift" \
     "$SCRIPT_DIR/ContentView.swift" \
@@ -36,9 +40,12 @@ swiftc -O -o "$APP_BUNDLE/Contents/MacOS/$APP_NAME" \
     "$SCRIPT_DIR/OPMLImporter.swift" \
     "$SCRIPT_DIR/OPMLExporter.swift" \
     "$SCRIPT_DIR"/JorvikKit/*.swift \
+    -F "$SCRIPT_DIR" \
     -framework Cocoa \
     -framework SwiftUI \
-    -framework WebKit
+    -framework WebKit \
+    -framework Sparkle \
+    -Xlinker -rpath -Xlinker '@executable_path/../Frameworks'
 
 cp "$SCRIPT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
@@ -50,7 +57,7 @@ if [ -d "$SCRIPT_DIR/Resources" ]; then
 fi
 
 # Ad-hoc sign for local development. Release Manager performs the Developer ID
-# signing and notarization when cutting a release.
+# signing (incl. nested Sparkle code) and notarisation when cutting a release.
 codesign --force --sign - "$APP_BUNDLE"
 
 echo "Built: $APP_BUNDLE"

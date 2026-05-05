@@ -1,13 +1,23 @@
 import SwiftUI
+import Sparkle
 
 @main
 struct JorvikDailyNewsApp: App {
     @State private var store = AppStore()
+    private let sparkleUpdater: SPUStandardUpdaterController
 
     init() {
         // Tugboat-cooperative dock visibility. Listens for hide/show
         // toggles broadcast by Tugboat and self-applies via setActivationPolicy.
         JorvikDockVisibility.adopt()
+
+        // Sparkle handles update checking/installation. Started immediately so
+        // the once-a-day background check honours the schedule in Info.plist.
+        sparkleUpdater = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
     }
 
     var body: some Scene {
@@ -27,7 +37,7 @@ struct JorvikDailyNewsApp: App {
                     )
                 }
                 Button("Check for Updates\u{2026}") {
-                    Task { await store.updateChecker.checkNow() }
+                    sparkleUpdater.checkForUpdates(nil)
                 }
             }
             CommandGroup(replacing: .newItem) {

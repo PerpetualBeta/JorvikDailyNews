@@ -72,9 +72,10 @@ final class AppStore {
     func goToFrontPage() { goToPage(0) }
 
     func onLaunch() async {
-        // Kick the update checker on the shipping schedule; it manages its
-        // own cadence and persists its last-check timestamp.
-        updateChecker.checkOnSchedule()
+        // Sparkle handles the scheduled update check (see JorvikDailyNewsApp).
+        // Legacy JorvikUpdateChecker is kept for API continuity but its
+        // scheduled check is suppressed.
+        // updateChecker.checkOnSchedule()
         // Rebuild the visible edition from whatever was loaded from disk
         // so filters apply immediately on relaunch.
         recomputeVisibleEdition()
