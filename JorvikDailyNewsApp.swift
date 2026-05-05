@@ -5,6 +5,7 @@ import Sparkle
 struct JorvikDailyNewsApp: App {
     @State private var store = AppStore()
     private let sparkleUpdater: SPUStandardUpdaterController
+    private let sparkleUserDriverDelegate = JorvikDailyNewsUserDriverDelegate()
 
     init() {
         // Tugboat-cooperative dock visibility. Listens for hide/show
@@ -16,7 +17,7 @@ struct JorvikDailyNewsApp: App {
         sparkleUpdater = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
-            userDriverDelegate: nil
+            userDriverDelegate: sparkleUserDriverDelegate
         )
     }
 
@@ -37,6 +38,7 @@ struct JorvikDailyNewsApp: App {
                     )
                 }
                 Button("Check for Updates\u{2026}") {
+                    NSRunningApplication.current.activate(options: [.activateAllWindows])
                     sparkleUpdater.checkForUpdates(nil)
                 }
             }
@@ -92,6 +94,61 @@ struct JorvikDailyNewsApp: App {
                 .keyboardShortcut(.rightArrow, modifiers: .command)
                 .disabled(store.pageIndex >= store.totalPages - 1)
             }
+        }
+    }
+}
+
+/// Keeps Sparkle's update UI visible across the whole session, including
+/// when the user switches to another app mid-download. See KB:
+/// `conventions/sparkle-integration.md` §6 for the rationale.
+final class JorvikDailyNewsUserDriverDelegate: NSObject, SPUStandardUserDriverDelegate {
+    private var sessionObserver: NSObjectProtocol?
+    private var elevatedWindows: [(window: NSWindow, originalLevel: NSWindow.Level)] = []
+
+    func standardUserDriverWillShowModalAlert() {
+        bringForward()
+    }
+
+    func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
+        startFocusGuard()
+        bringForward()
+    }
+
+    func standardUserDriverWillFinishUpdateSession() {
+        stopFocusGuard()
+    }
+
+    private func bringForward() {
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        elevateAllWindows()
+    }
+
+    private func startFocusGuard() {
+        guard sessionObserver == nil else { return }
+        sessionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.bringForward()
+        }
+    }
+
+    private func stopFocusGuard() {
+        if let obs = sessionObserver {
+            NotificationCenter.default.removeObserver(obs)
+            sessionObserver = nil
+        }
+        for entry in elevatedWindows {
+            entry.window.level = entry.originalLevel
+        }
+        elevatedWindows.removeAll()
+    }
+
+    private func elevateAllWindows() {
+        for window in NSApp.windows where window.isVisible && window.level == .normal {
+            elevatedWindows.append((window, window.level))
+            window.level = .floating
         }
     }
 }
