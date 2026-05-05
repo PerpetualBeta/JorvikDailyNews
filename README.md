@@ -1,6 +1,6 @@
 # Jorvik Daily News
 
-A macOS RSS reader shaped like a daily newspaper. The paper only shows items whose published date falls inside today's local calendar — older items never appear, no matter how unread they are. Launch refreshes automatically; `⌘R` republishes on demand. Anti-doomscroll: no unread counts, no infinite stream, finite by design.
+A macOS RSS reader shaped like a daily newspaper. The paper only shows items whose published date falls inside today's local calendar — older items never appear, no matter how unread they are. Launch refreshes automatically and the paper re-fetches on each clock hour while it's open; `⌘R` republishes on demand. Anti-doomscroll: no unread counts, no infinite stream, finite by design.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ A newspaper is the other shape. It publishes for a specific day, it's finite, yo
 
 ## How It Works
 
-The paper is rebuilt from whatever your feeds have published today. Refreshes during the day pick up newly-published items so the paper stays current without ever showing stale content. Previous days' editions are saved on disk; once the clock rolls past midnight, yesterday's paper is archived and today's starts fresh.
+The paper is rebuilt from whatever your feeds have published today. While the app is open it re-fetches on each clock-hour boundary (09:00, 10:00, 11:00…) and again on wake-from-sleep, so the paper stays current without ever showing stale content. Previous days' editions are saved on disk; once the clock rolls past midnight, yesterday's paper is archived and today's starts fresh.
 
 The front page is a full-width lead story above a 3-column masonry of the rest of the day's news. Section pages follow if you've tagged feeds by topic (News / Tech / Culture / …). Click any headline to read the article in a clean reader pane — extracted via Mozilla's Readability, rendered in serif type, no ads, no trackers.
 

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AppKit
 
 @Observable
 @MainActor
@@ -13,6 +14,8 @@ final class AppStore {
     private let discovery = FeedDiscovery()
     private let builder = EditionBuilder()
     private let enricher = ImageEnricher()
+    private var hourlyTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
 
     var showAddFeedSheet = false
     var showManageFeedsSheet = false
@@ -80,11 +83,56 @@ final class AppStore {
         // so filters apply immediately on relaunch.
         recomputeVisibleEdition()
 
+        startHourlyRefresh()
+
         guard !feedStore.feeds.isEmpty else { return }
         // Always refresh on launch so today-items that published since the
         // last save come in. `refreshAndPublish` will keep the cached
         // edition if the refresh itself returns nothing (offline).
         await refreshAndPublish()
+    }
+
+    // MARK: - Hourly auto-refresh
+
+    /// Fires `refreshAndPublish` on each clock-hour boundary (09:00, 10:00, …)
+    /// and re-arms after wake-from-sleep, since a Timer scheduled before sleep
+    /// can fire late or be skipped entirely on long sleeps.
+    private func startHourlyRefresh() {
+        scheduleNextHourlyRefresh()
+
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.scheduleNextHourlyRefresh()
+                await self.refreshAndPublish()
+            }
+        }
+    }
+
+    private func scheduleNextHourlyRefresh() {
+        hourlyTimer?.invalidate()
+        let now = Date()
+        guard let nextHour = Calendar.current.nextDate(
+            after: now,
+            matching: DateComponents(minute: 0, second: 0),
+            matchingPolicy: .nextTime
+        ) else { return }
+        let interval = nextHour.timeIntervalSince(now)
+        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.refreshAndPublish()
+                self.scheduleNextHourlyRefresh()
+            }
+        }
+        timer.tolerance = 30
+        RunLoop.main.add(timer, forMode: .common)
+        hourlyTimer = timer
     }
 
     func refreshAndPublish() async {
