@@ -1,5 +1,12 @@
 *.app
 _build/
+_BuildOutput/
 .DS_Store
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
+
+# swiftc -typecheck / -emit-module side-effects
+*.swiftmodule
+*.swiftdoc
+*.swiftsourceinfo
+*.abi.json
