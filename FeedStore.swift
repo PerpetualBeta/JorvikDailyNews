@@ -30,9 +30,27 @@ final class FeedStore {
         try? data.write(to: storeURL, options: .atomic)
     }
 
-    func add(_ feed: Feed) {
+    /// Append a feed to the list, ignoring it if a feed with the same
+    /// normalised URL is already present. Returns true if the feed was
+    /// added, false if it was a duplicate.
+    @discardableResult
+    func add(_ feed: Feed) -> Bool {
+        let key = Self.normalisedKey(feed.url)
+        guard !feeds.contains(where: { Self.normalisedKey($0.url) == key }) else {
+            return false
+        }
         feeds.append(feed)
         save()
+        return true
+    }
+
+    /// URL-comparison key for dedup. Lowercases scheme/host and strips a
+    /// single trailing slash so `https://example.com/feed/` and
+    /// `https://example.com/feed` are treated as the same feed.
+    private static func normalisedKey(_ url: URL) -> String {
+        var s = url.absoluteString.lowercased()
+        if s.hasSuffix("/") { s.removeLast() }
+        return s
     }
 
     func remove(_ feed: Feed) {
@@ -76,23 +94,48 @@ final class FeedStore {
         save()
     }
 
-    /// Bulk import: appends feeds whose URL isn't already in the store.
+    /// Bulk import: appends feeds whose URL isn't already in the store
+    /// **and** isn't a duplicate of an earlier candidate within the same
+    /// batch. The inner `seen` set is what makes the within-batch dedup
+    /// work — a 300-feed OPML that lists Hacker News three times under
+    /// different categories now adds it once, not three times.
     /// Returns the (addedCount, skippedCount) for caller feedback.
     @discardableResult
     func importFeeds(_ candidates: [Feed]) -> (added: Int, skipped: Int) {
-        let existingURLs = Set(feeds.map { $0.url.absoluteString.lowercased() })
+        var seen = Set(feeds.map { Self.normalisedKey($0.url) })
         var added = 0
         var skipped = 0
         for candidate in candidates {
-            let key = candidate.url.absoluteString.lowercased()
-            if existingURLs.contains(key) {
+            let key = Self.normalisedKey(candidate.url)
+            if seen.contains(key) {
                 skipped += 1
                 continue
             }
+            seen.insert(key)
             feeds.append(candidate)
             added += 1
         }
         if added > 0 { save() }
         return (added, skipped)
+    }
+
+    /// Mark a feed as having just succeeded a fetch. Updates the
+    /// successful-fetch timestamp and clears the failure timestamp so the
+    /// status pill flips back to green even if the feed had been red.
+    func recordFetchSuccess(feedId: UUID, at date: Date = Date()) {
+        guard let idx = feeds.firstIndex(where: { $0.id == feedId }) else { return }
+        feeds[idx].lastSuccessfulFetchAt = date
+        feeds[idx].lastFailedFetchAt = nil
+        save()
+    }
+
+    /// Mark a feed as having just failed a fetch. Updates the failure
+    /// timestamp; leaves the last-successful timestamp alone so the pill
+    /// can colour amber (recent failure with a recent prior success) vs
+    /// red (failed > 30 days, or never succeeded).
+    func recordFetchFailure(feedId: UUID, at date: Date = Date()) {
+        guard let idx = feeds.firstIndex(where: { $0.id == feedId }) else { return }
+        feeds[idx].lastFailedFetchAt = date
+        save()
     }
 }

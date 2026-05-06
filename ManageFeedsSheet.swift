@@ -125,6 +125,9 @@ struct ManageFeedsSheet: View {
                                 }
                             }
                         }
+                        // Reserve a gutter so the macOS overlay scrollbar
+                        // doesn't sit on top of the trailing trash button.
+                        .padding(.trailing, 16)
                     }
                 }
                 .frame(maxHeight: 520)
@@ -223,6 +226,15 @@ private struct FeedRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
+            // Health pill — colour-coded by Feed.fetchStatus. Hidden for
+            // paused feeds because we deliberately stopped fetching them
+            // and a "stale" red pill would mislead.
+            if !feed.isPaused {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                    .help(statusTooltip)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(feed.title ?? feed.url.host ?? feed.url.absoluteString)
@@ -277,4 +289,38 @@ private struct FeedRow: View {
         .padding(.vertical, 8)
         .opacity(feed.isPaused ? 0.55 : 1.0)
     }
+
+    private var statusColor: Color {
+        switch feed.fetchStatus {
+        case .healthy: .green
+        case .recent: .orange
+        case .stale: .red
+        }
+    }
+
+    private var statusTooltip: String {
+        switch feed.fetchStatus {
+        case .healthy:
+            if let s = feed.lastSuccessfulFetchAt {
+                return "Last fetched \(Self.relativeFormatter.localizedString(for: s, relativeTo: Date()))"
+            }
+            return "Not yet fetched"
+        case .recent:
+            if let s = feed.lastSuccessfulFetchAt {
+                return "Currently unreachable. Last successful fetch \(Self.relativeFormatter.localizedString(for: s, relativeTo: Date()))."
+            }
+            return "Currently unreachable."
+        case .stale:
+            if let s = feed.lastSuccessfulFetchAt {
+                return "Unreachable for over 30 days. Last successful fetch \(Self.relativeFormatter.localizedString(for: s, relativeTo: Date()))."
+            }
+            return "Has never fetched successfully."
+        }
+    }
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }()
 }

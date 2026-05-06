@@ -171,8 +171,10 @@ final class AppStore {
                 if !outcome.fetched.title.isEmpty && feed.title != outcome.fetched.title {
                     feedStore.updateTitle(feedId: feed.id, title: outcome.fetched.title)
                 }
+                feedStore.recordFetchSuccess(feedId: feed.id)
             case .failure(let error):
                 errors.append("\(feed.url.host ?? feed.url.absoluteString): \(error.localizedDescription)")
+                feedStore.recordFetchFailure(feedId: feed.id)
             }
         }
 
