@@ -7,18 +7,18 @@ struct ContentView: View {
 
     // Accept .opml (common OPML extension) plus any XML. If the system
     // doesn't recognise .opml as a UTType, fall back to XML only.
-    private static let opmlTypes: [UTType] = {
+    static let opmlTypes: [UTType] = {
         if let opml = UTType(filenameExtension: "opml") {
             return [opml, .xml]
         }
         return [.xml]
     }()
 
-    private static let opmlWriteType: UTType = {
+    static let opmlWriteType: UTType = {
         UTType(filenameExtension: "opml") ?? .xml
     }()
 
-    private static var exportFilename: String {
+    static var exportFilename: String {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         f.locale = Locale(identifier: "en_US_POSIX")

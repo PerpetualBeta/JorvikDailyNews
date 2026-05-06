@@ -9,6 +9,15 @@ struct ManageFeedsSheet: View {
     @FocusState private var searchFocused: Bool
     @State private var recategorising: Feed?
     @State private var newSectionName: String = ""
+    /// Sheet-local trigger for the OPML file importer. The app-level
+    /// `store.showOPMLImporter` flag drives the importer attached to
+    /// ContentView for the menu-bar command (⌘⇧O), but a `.fileImporter`
+    /// presented from a view that's *behind* a modal sheet doesn't show
+    /// on macOS — the picker gets lost behind the sheet. So this sheet
+    /// owns its own importer state, presenting from inside the sheet
+    /// where the user clicked.
+    @State private var showImporterFromSheet = false
+    @State private var showExporterFromSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -18,14 +27,14 @@ struct ManageFeedsSheet: View {
                     .fontWeight(.semibold)
                 Spacer()
                 Button {
-                    store.showOPMLImporter = true
+                    showImporterFromSheet = true
                 } label: {
                     Label("Import OPML\u{2026}", systemImage: "square.and.arrow.down")
                 }
                 .help("Bulk-add feeds from an OPML file")
                 .disabled(store.isImporting)
                 Button {
-                    store.showOPMLExporter = true
+                    showExporterFromSheet = true
                 } label: {
                     Label("Export OPML\u{2026}", systemImage: "square.and.arrow.up")
                 }
@@ -180,6 +189,24 @@ struct ManageFeedsSheet: View {
         } message: { feed in
             Text("Move \u{201C}\(feed.title ?? feed.url.host ?? "this feed")\u{201D} to a new section.")
         }
+        .fileImporter(
+            isPresented: $showImporterFromSheet,
+            allowedContentTypes: ContentView.opmlTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            let didAccess = url.startAccessingSecurityScopedResource()
+            Task {
+                await store.importOPML(from: url)
+                if didAccess { url.stopAccessingSecurityScopedResource() }
+            }
+        }
+        .fileExporter(
+            isPresented: $showExporterFromSheet,
+            document: OPMLDocument(text: OPMLExporter.export(feeds: store.feedStore.feeds)),
+            contentType: ContentView.opmlWriteType,
+            defaultFilename: ContentView.exportFilename
+        ) { _ in }
     }
 
     private var allSections: [String] {
