@@ -9,7 +9,6 @@ final class AppStore {
     let editionStore = EditionStore()
     let readStore = ReadStore()
     let classifier = ArticleClassifier()
-    let updateChecker = JorvikUpdateChecker(repoName: "JorvikDailyNews")
     private let fetcher = FeedFetcher()
     private let discovery = FeedDiscovery()
     private let builder = EditionBuilder()
@@ -76,9 +75,6 @@ final class AppStore {
 
     func onLaunch() async {
         // Sparkle handles the scheduled update check (see JorvikDailyNewsApp).
-        // Legacy JorvikUpdateChecker is kept for API continuity but its
-        // scheduled check is suppressed.
-        // updateChecker.checkOnSchedule()
         // Rebuild the visible edition from whatever was loaded from disk
         // so filters apply immediately on relaunch.
         recomputeVisibleEdition()
