@@ -1,6 +1,6 @@
 *.app
+.build/
 _build/
-_BuildOutput/
 .DS_Store
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/

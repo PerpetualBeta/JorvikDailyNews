@@ -104,11 +104,11 @@ Updates are handled by [Sparkle](https://sparkle-project.org). The app checks fo
 ```bash
 git clone https://github.com/PerpetualBeta/JorvikDailyNews.git
 cd JorvikDailyNews
-bash build.sh
-open JorvikDailyNews.app
+gmake build
+open .build/JorvikDailyNews.app
 ```
 
-`build.sh` compiles with `swiftc -O` and ad-hoc-signs for local use. JorvikKit files are compiled in from `JorvikKit/`. Release Manager handles Developer ID signing and notarization for release builds.
+Requires GNU Make 4.x — `brew install make` installs it as `gmake`. `gmake build` compiles with `swiftc -O` and ad-hoc-signs for local use. JorvikKit files are compiled in from `JorvikKit/`. Release Manager handles Developer ID signing and notarization for release builds.
 
 To regenerate the app icon (Didot "N" over a dark ink gradient with newspaper masthead rules):
 
