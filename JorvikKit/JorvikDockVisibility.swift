@@ -104,10 +104,21 @@ public enum JorvikDockVisibility {
     private static func applyPolicy(hidden: Bool) {
         let policy: NSApplication.ActivationPolicy = hidden ? .accessory : .regular
         NSApp.setActivationPolicy(policy)
-        // After a transition back to .regular, the Dock tile sometimes
-        // needs a nudge to reappear; explicit activation is the
-        // documented cure.
-        if !hidden {
+
+        // Activation policy alone only governs the Dock tile and ⌘-Tab
+        // presence — the app's open windows stay on screen. For the
+        // full "this app is hidden" effect users expect from Tugboat,
+        // also drive AppKit's standard hide/unhide on the windows.
+        // `NSApp.hide(_:)` is the public equivalent of Cmd-H; reversed
+        // by `NSApp.unhide(_:)`.
+        if hidden {
+            NSApp.hide(nil)
+        } else {
+            NSApp.unhide(nil)
+            // After a transition back to .regular, the Dock tile
+            // sometimes needs a nudge to reappear; explicit activation
+            // covers both the Dock tile and bringing the windows
+            // forward.
             if #available(macOS 14.0, *) {
                 NSApp.activate()
             } else {
