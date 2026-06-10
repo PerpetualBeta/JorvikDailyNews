@@ -136,4 +136,4 @@ Not every feed ships images, and not every article has an `og:image`. Hacker New
 
 ---
 
-Jorvik Daily News is provided by [Jorvik Software](https://jorviksoftware.cc/). Public Domain — do whatever you like with it.
+Jorvik Daily News is provided by [Jorvik Software](https://jorviksoftware.cc/). If you find it useful, consider [buying me a coffee](https://jorviksoftware.cc/donate).
