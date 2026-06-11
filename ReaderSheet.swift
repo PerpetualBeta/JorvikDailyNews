@@ -10,6 +10,12 @@ struct ReaderView: View {
 
     @State private var state: ReaderState = .loading
 
+    /// The article's current section, shown in (and editable from) the header
+    /// re-classify menu. Seeded from the resolved section when the reader opens.
+    @State private var section: String = ""
+    @State private var newSectionPrompt = false
+    @State private var newSectionName = ""
+
     enum ReaderState {
         case loading
         case ready(ArticleExtractor.Article)
@@ -23,7 +29,10 @@ struct ReaderView: View {
             content
         }
         .background(Color(nsColor: .textBackgroundColor))
-        .task(id: item.id) { await extract() }
+        .task(id: item.id) {
+            section = store.classifier.pinnedSection(itemId: item.itemId) ?? item.section
+            await extract()
+        }
     }
 
     private var header: some View {
@@ -47,6 +56,8 @@ struct ReaderView: View {
 
             Spacer()
 
+            sectionMenu
+
             Button {
                 NSWorkspace.shared.open(item.link)
             } label: {
@@ -57,6 +68,53 @@ struct ReaderView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.regularMaterial)
+        .alert("Move to new section", isPresented: $newSectionPrompt) {
+            TextField("Section name", text: $newSectionName)
+            Button("Move") {
+                let trimmed = newSectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { reclassify(to: trimmed) }
+                newSectionPrompt = false
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { newSectionPrompt = false }
+        } message: {
+            Text("Move this article to a new section. The paper learns from this correction.")
+        }
+    }
+
+    /// Re-classify the current article without leaving the reader. Defaults to
+    /// (and ticks) the article's current section so the user can see what it's
+    /// filed under, and picking another section pins + trains the classifier
+    /// exactly as the right-click "Move to…" menu on the paper does.
+    private var sectionMenu: some View {
+        Menu {
+            ForEach(store.allSections, id: \.self) { s in
+                Button {
+                    reclassify(to: s)
+                } label: {
+                    if s == section {
+                        Label(s, systemImage: "checkmark")
+                    } else {
+                        Text(s)
+                    }
+                }
+            }
+            Divider()
+            Button("New section\u{2026}") {
+                newSectionName = ""
+                newSectionPrompt = true
+            }
+        } label: {
+            Label(section.isEmpty ? "Section" : section, systemImage: "tag")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Re-classify this article — change the section it files under")
+    }
+
+    private func reclassify(to newSection: String) {
+        section = newSection
+        store.moveArticle(item, to: newSection)
     }
 
     @ViewBuilder
@@ -74,35 +132,12 @@ struct ReaderView: View {
         case .ready(let article):
             ReaderWebView(html: renderHTML(article), baseURL: item.link)
 
-        case .failed(let reason):
-            ScrollView {
-                VStack(spacing: 18) {
-                    Text("Can\u{2019}t render a reader view")
-                        .font(.custom("Didot", size: 28))
-                    Text(reason)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    if !item.summary.isEmpty {
-                        Text(item.summary)
-                            .font(.custom("Charter", size: 15))
-                            .lineSpacing(4)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: 620)
-                            .padding(.top, 12)
-                    }
-                    Button {
-                        NSWorkspace.shared.open(item.link)
-                    } label: {
-                        Label("Open in Browser", systemImage: "safari")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .padding(.top, 8)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(48)
-            }
+        case .failed:
+            // No clean reader view (link lists like HN, paywalls, SPA-rendered
+            // pages). Rather than dead-ending the user out to a browser, render
+            // the real page inline in a full web view. The header's "Open in
+            // Browser" stays as the escape hatch for anyone who wants it.
+            LiveWebView(url: item.link)
         }
     }
 
@@ -192,5 +227,32 @@ struct ReaderWebView: NSViewRepresentable {
 
     func updateNSView(_ web: WKWebView, context: Context) {
         web.loadHTMLString(html, baseURL: baseURL)
+    }
+}
+
+// MARK: - Live page fallback
+
+/// Full-fidelity render of the original page, used when article extraction
+/// can't produce a clean reader view. Unlike `ReaderWebView` (which shows
+/// stripped, script-free reader HTML), this loads the real URL with
+/// JavaScript enabled — it's a genuine in-app page render so the user never
+/// has to leave for a browser. Ephemeral data store: nothing persists between
+/// sessions; back/forward swipe gestures are enabled for normal browsing.
+struct LiveWebView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.allowsBackForwardNavigationGestures = true
+        return web
+    }
+
+    func updateNSView(_ web: WKWebView, context: Context) {
+        // Load once — don't reload on every SwiftUI update pass.
+        if web.url == nil {
+            web.load(URLRequest(url: url))
+        }
     }
 }

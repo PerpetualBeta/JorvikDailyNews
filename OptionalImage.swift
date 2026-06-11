@@ -15,11 +15,21 @@ struct OptionalImage: View {
     let url: URL
     let height: CGFloat?
 
-    @State private var state: LoadState = .loading
+    @State private var state: LoadState
 
     init(url: URL, height: CGFloat? = nil) {
         self.url = url
         self.height = height
+        // Seed from the cache synchronously so a cached image renders on the
+        // very first frame — no placeholder flash, no reflow when paging back
+        // to a page we've already shown.
+        if let cached = ImageCache.shared.image(for: url) {
+            _state = State(initialValue: .loaded(cached))
+        } else if ImageCache.shared.isFailed(url) {
+            _state = State(initialValue: .failed)
+        } else {
+            _state = State(initialValue: .loading)
+        }
     }
 
     private enum LoadState {
@@ -68,16 +78,29 @@ struct OptionalImage: View {
     }
 
     private func load() async {
-        state = .loading
+        // Cache hit — nothing to fetch (also covers the case where `init`
+        // already seeded `.loaded`/`.failed`).
+        if let cached = ImageCache.shared.image(for: url) {
+            state = .loaded(cached)
+            return
+        }
+        if ImageCache.shared.isFailed(url) {
+            state = .failed
+            return
+        }
+
         guard let (data, response) = try? await URLSession.shared.data(from: url) else {
+            ImageCache.shared.markFailed(url)
             state = .failed
             return
         }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            ImageCache.shared.markFailed(url)
             state = .failed
             return
         }
         guard let img = NSImage(data: data) else {
+            ImageCache.shared.markFailed(url)
             state = .failed
             return
         }
@@ -85,9 +108,11 @@ struct OptionalImage: View {
         // point to when they have no real hero image.
         let size = img.size
         if size.width < 48 || size.height < 48 {
+            ImageCache.shared.markFailed(url)
             state = .failed
             return
         }
+        ImageCache.shared.store(img, for: url)
         state = .loaded(img)
     }
 }

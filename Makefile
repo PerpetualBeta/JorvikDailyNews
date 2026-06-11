@@ -22,6 +22,7 @@ SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                     MasonryColumns.swift \
                     StoryCard.swift \
                     OptionalImage.swift \
+                    ImageCache.swift \
                     AddFeedSheet.swift \
                     ManageFeedsSheet.swift \
                     ReaderSheet.swift \
