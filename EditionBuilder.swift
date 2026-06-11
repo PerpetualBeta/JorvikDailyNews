@@ -22,20 +22,22 @@ struct EditionBuilder {
         let sorted = deduped.sorted { $0.publishedAt > $1.publishedAt }
         let interleaved = roundRobinByFeed(sorted)
 
-        // Lead must have an image whenever one is available anywhere in the
-        // queue. Round-robin already biases ordering by recency + diversity,
-        // so `.first(where:)` naturally picks the newest image-bearing item
-        // from the strongest available feed. Fall back to the outright newest
-        // only when every item is text-only.
+        // The lead *must* display an image — a text-only hero looks like a
+        // mistake at full-width span. An item qualifies only if it has an
+        // image URL that isn't already known to have failed to load (a 404'd
+        // og:image, a dead host, etc. — `ImageCache` records these as they
+        // fail at render). Round-robin biases ordering by recency + diversity,
+        // so `.first(where:)` picks the newest usable-image item from the
+        // strongest feed. If none qualify, drop the lead entirely (lead = nil)
+        // and let every item flow into the 3 columns instead.
         var remaining = interleaved
         let lead: FeedItem?
-        if let imageBearing = remaining.first(where: { $0.imageURL != nil }),
+        if let imageBearing = remaining.first(where: { Self.hasUsableImage($0) }),
            let idx = remaining.firstIndex(of: imageBearing) {
             lead = imageBearing
             remaining.remove(at: idx)
         } else {
-            lead = remaining.first
-            if !remaining.isEmpty { remaining.removeFirst() }
+            lead = nil
         }
 
         let secondaries = Array(remaining.prefix(secondariesCap))
@@ -56,6 +58,15 @@ struct EditionBuilder {
             briefs: briefs,
             sections: sections
         )
+    }
+
+    /// An item can anchor the full-width lead only if it has an image URL we
+    /// haven't already seen fail to load (`ImageCache` records failures as
+    /// they happen at render). A merely-slow image still qualifies — only a
+    /// confirmed failure disqualifies it.
+    static func hasUsableImage(_ item: FeedItem) -> Bool {
+        guard let url = item.imageURL else { return false }
+        return !ImageCache.shared.isFailed(url)
     }
 
     /// Remove items that share a canonical link or itemId with an earlier

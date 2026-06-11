@@ -14,16 +14,21 @@ import AppKit
 struct OptionalImage: View {
     let url: URL
     let height: CGFloat?
+    /// Called when the image fails to load (bad URL, non-2xx, undecodable, or
+    /// tracker-sized). The lead uses this to demote itself when its image
+    /// can't be shown; ordinary cards leave it nil and just collapse.
+    let onFailure: (() -> Void)?
 
     @State private var state: LoadState
 
-    init(url: URL, height: CGFloat? = nil) {
+    init(url: URL, height: CGFloat? = nil, onFailure: (() -> Void)? = nil) {
         self.url = url
         self.height = height
+        self.onFailure = onFailure
         // Seed from the cache synchronously so a cached image renders on the
         // very first frame — no placeholder flash, no reflow when paging back
         // to a page we've already shown.
-        if let cached = ImageCache.shared.image(for: url) {
+        if let cached = ImageCache.shared.cachedImage(for: url) {
             _state = State(initialValue: .loaded(cached))
         } else if ImageCache.shared.isFailed(url) {
             _state = State(initialValue: .failed)
@@ -42,15 +47,7 @@ struct OptionalImage: View {
         Group {
             switch state {
             case .loading:
-                if let h = height {
-                    Color.secondary.opacity(0.08)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: h)
-                } else {
-                    Color.secondary.opacity(0.08)
-                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                        .frame(maxWidth: .infinity)
-                }
+                loadingPlaceholder
             case .loaded(let img):
                 if let h = height {
                     // Fixed height: top-align the crop so faces stay in frame.
@@ -77,42 +74,36 @@ struct OptionalImage: View {
         .task(id: url) { await load() }
     }
 
+    /// A clearly-visible skeleton with a photo glyph, so a slow load reads as
+    /// "image loading" rather than an empty/broken hero.
+    @ViewBuilder
+    private var loadingPlaceholder: some View {
+        let fill = Color.secondary.opacity(0.12)
+        let glyph = Image(systemName: "photo")
+            .font(.system(size: 22))
+            .foregroundStyle(Color.secondary.opacity(0.45))
+        if let h = height {
+            fill.frame(maxWidth: .infinity).frame(height: h).overlay(glyph)
+        } else {
+            fill.aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .overlay(glyph)
+        }
+    }
+
     private func load() async {
-        // Cache hit — nothing to fetch (also covers the case where `init`
-        // already seeded `.loaded`/`.failed`).
-        if let cached = ImageCache.shared.image(for: url) {
+        // Synchronous hit — already decoded (covers an `init` that seeded
+        // `.loaded`). The async `image(for:)` coalesces with any prefetch /
+        // sibling view fetching the same URL, so the image is downloaded once.
+        if let cached = ImageCache.shared.cachedImage(for: url) {
             state = .loaded(cached)
             return
         }
-        if ImageCache.shared.isFailed(url) {
+        if let img = await ImageCache.shared.image(for: url) {
+            state = .loaded(img)
+        } else {
             state = .failed
-            return
+            onFailure?()
         }
-
-        guard let (data, response) = try? await URLSession.shared.data(from: url) else {
-            ImageCache.shared.markFailed(url)
-            state = .failed
-            return
-        }
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            ImageCache.shared.markFailed(url)
-            state = .failed
-            return
-        }
-        guard let img = NSImage(data: data) else {
-            ImageCache.shared.markFailed(url)
-            state = .failed
-            return
-        }
-        // Filter out 1×1 trackers and icon-sized placeholders some feeds
-        // point to when they have no real hero image.
-        let size = img.size
-        if size.width < 48 || size.height < 48 {
-            ImageCache.shared.markFailed(url)
-            state = .failed
-            return
-        }
-        ImageCache.shared.store(img, for: url)
-        state = .loaded(img)
     }
 }

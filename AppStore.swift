@@ -213,7 +213,10 @@ final class AppStore {
         let enrichedSlice = await enricher.enrich(topSlice)
         let merged = enrichedSlice + tail
 
-        let edition = builder.build(from: merged, date: Date())
+        var edition = builder.build(from: merged, date: Date())
+        // Validate + warm the lead's image before publishing, so the hero
+        // renders instantly and a slow/dead image never anchors the lead.
+        edition = await validatedLeadEdition(edition, from: merged)
         // Don't blow away a populated cached edition when a refresh yields
         // nothing — the user is probably offline, or every feed 404'd. Keep
         // showing whatever we last had.
@@ -230,6 +233,32 @@ final class AppStore {
         if allItems.isEmpty && !errors.isEmpty {
             lastRefreshError = errors.joined(separator: "\n")
         }
+    }
+
+    /// Ensure the built edition's lead has an image that actually loads within
+    /// a reasonable time — warming the cache so it renders instantly. A slow
+    /// or dead lead image is marked failed and the edition rebuilt, which
+    /// re-picks the next usable-image item as lead (or drops the lead). The
+    /// loop is bounded; in the common case the first lead validates on the
+    /// first pass.
+    private func validatedLeadEdition(_ edition: Edition, from items: [FeedItem]) async -> Edition {
+        var current = edition
+        var attempts = 0
+        while attempts < 8, let img = current.lead?.imageURL {
+            attempts += 1
+            if await Self.validateImage(img) { break }      // lead image good — keep it
+            // Bad/slow: validateImage marked it failed, so the rebuild skips it.
+            current = builder.build(from: items, date: current.date)
+        }
+        return current
+    }
+
+    /// Load + warm the lead's image through the shared cache (coalesced with
+    /// the on-screen view's fetch, so the URL is hit once). Returns whether it
+    /// loaded — `image(for:)` caches it on success and records failure on
+    /// timeout/error, which is exactly what the lead picker keys off.
+    private nonisolated static func validateImage(_ url: URL) async -> Bool {
+        await ImageCache.shared.image(for: url) != nil
     }
 
     func addFeed(url: URL, section: String) async {

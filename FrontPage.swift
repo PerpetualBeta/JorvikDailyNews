@@ -24,7 +24,11 @@ struct FrontPage: View {
             }
 
             if !masonryItems.isEmpty {
-                Rectangle().fill(Color.primary.opacity(0.3)).frame(height: 1)
+                // Divider only when a lead sits above it; with no lead the
+                // masthead's heavy rule already tops the columns.
+                if edition.lead != nil {
+                    Rectangle().fill(Color.primary.opacity(0.3)).frame(height: 1)
+                }
 
                 MasonryColumns(
                     items: masonryItems,
@@ -51,7 +55,11 @@ private struct LeadStoryView: View {
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 if let img = item.imageURL {
-                    OptionalImage(url: img)
+                    // If the lead's image can't actually load, demote it: a
+                    // recompute re-picks the next usable-image item as lead
+                    // (or drops the lead). `ImageCache` has already recorded
+                    // the failure, so the builder skips this one next time.
+                    OptionalImage(url: img, onFailure: { store.recomputeVisibleEdition() })
                 }
                 Text(item.sourceTitle.uppercased())
                     .font(.custom("Charter", size: 10))
