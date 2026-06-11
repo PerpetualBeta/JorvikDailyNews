@@ -96,6 +96,12 @@ private struct StorySectionContextMenu: ViewModifier {
                 newSectionName = ""
                 promptOpen = true
             }
+            if let host = store.displayHost(for: item) {
+                Divider()
+                Button("Exclude \(host)") {
+                    store.excludeSource(item)
+                }
+            }
         }
         .alert(
             "Move to new section",

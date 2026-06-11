@@ -1,6 +1,8 @@
 import SwiftUI
 import WebKit
 import PDFKit
+import AVKit
+import AVFoundation
 import AppKit
 
 /// Reader view rendered inline inside the main window (not a modal sheet) —
@@ -21,7 +23,17 @@ struct ReaderView: View {
         case loading
         case ready(ArticleExtractor.Article)
         case pdf(URL)
+        case video(VideoTarget)
         case failed(String)
+    }
+
+    /// How a video link is played in-app: a YouTube/Vimeo player embedded
+    /// chrome-free (as an `<iframe>` in a host page so the player gets a valid
+    /// origin), or a native `AVPlayer` for a direct media file.
+    enum VideoTarget {
+        case youTube(String)   // video id
+        case vimeo(String)     // video id
+        case native(URL)
     }
 
     var body: some View {
@@ -46,6 +58,14 @@ struct ReaderView: View {
             }
             .keyboardShortcut(.cancelAction)
             .help("Back to the newspaper (Esc)")
+
+            Button {
+                store.excludeSource(item)
+                store.selectedArticle = nil
+            } label: {
+                Label("Exclude Source", systemImage: "nosign")
+            }
+            .help("Never show \(store.displayHost(for: item) ?? "this source") in your paper again")
 
             Spacer()
 
@@ -137,6 +157,20 @@ struct ReaderView: View {
         case .pdf(let url):
             PDFReader(url: url)
 
+        case .video(let target):
+            switch target {
+            case .youTube(let id):
+                VideoEmbedView(html: Self.youTubeEmbedHTML(id),
+                               baseURL: URL(string: "https://jorviksoftware.cc"))
+                    .background(Color.black)
+            case .vimeo(let id):
+                VideoEmbedView(html: Self.vimeoEmbedHTML(id),
+                               baseURL: URL(string: "https://player.vimeo.com"))
+                    .background(Color.black)
+            case .native(let mediaURL):
+                NativeVideoView(url: mediaURL)
+            }
+
         case .failed:
             // No clean reader view (link lists like HN, paywalls, SPA-rendered
             // pages). Rather than dead-ending the user out to a browser, render
@@ -153,6 +187,11 @@ struct ReaderView: View {
             state = .pdf(item.link)
             return
         }
+        // Video links play in-app, chrome-free, rather than opening a browser.
+        if let video = Self.detectVideo(item.link) {
+            state = .video(video)
+            return
+        }
         let extractor = ArticleExtractor()
         do {
             let article = try await extractor.extract(url: item.link)
@@ -163,6 +202,75 @@ struct ReaderView: View {
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    // MARK: - Video detection
+
+    /// Classify a link as a playable video, or nil if it isn't one. Direct
+    /// media files play natively; YouTube / Vimeo resolve to a chrome-free
+    /// embed URL (autoplay, no surrounding page).
+    static func detectVideo(_ url: URL) -> VideoTarget? {
+        let host = url.host?.lowercased() ?? ""
+        let ext = url.pathExtension.lowercased()
+
+        if ["mp4", "m4v", "mov", "webm"].contains(ext) {
+            return .native(url)
+        }
+        if host.contains("youtube.com") || host == "youtu.be" || host.hasSuffix(".youtu.be") {
+            if let id = youTubeID(url) { return .youTube(id) }
+        }
+        if host.contains("vimeo.com") {
+            if let id = vimeoID(url) { return .vimeo(id) }
+        }
+        return nil
+    }
+
+    /// Host page wrapping a YouTube `<iframe>`, loaded via
+    /// `loadHTMLString(_, baseURL: jorviksoftware.cc)` so the player sees a
+    /// legitimate **third-party** origin. Loading the bare `/embed/` URL as a
+    /// top-level document gives "Error 153"; claiming youtube.com as the
+    /// origin (a self-referential embed) gives "Error 152". A normal
+    /// third-party origin is what a real embed has.
+    private static func youTubeEmbedHTML(_ id: String) -> String {
+        """
+        <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}
+        iframe{position:absolute;inset:0;width:100%;height:100%;border:0}</style></head>
+        <body><iframe src="https://www.youtube.com/embed/\(id)?playsinline=1&autoplay=1&rel=0&origin=https://jorviksoftware.cc"
+        allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe></body></html>
+        """
+    }
+
+    private static func vimeoEmbedHTML(_ id: String) -> String {
+        """
+        <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}
+        iframe{position:absolute;inset:0;width:100%;height:100%;border:0}</style></head>
+        <body><iframe src="https://player.vimeo.com/video/\(id)?autoplay=1"
+        allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe></body></html>
+        """
+    }
+
+    private static func youTubeID(_ url: URL) -> String? {
+        let host = url.host?.lowercased() ?? ""
+        let parts = url.pathComponents.filter { $0 != "/" }
+        if host.hasSuffix("youtu.be") { return parts.first }
+        if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "v" })?.value, !v.isEmpty {
+            return v
+        }
+        // /embed/ID, /shorts/ID, /v/ID
+        if let idx = parts.firstIndex(where: { ["embed", "shorts", "v"].contains($0) }),
+           idx + 1 < parts.count {
+            return parts[idx + 1]
+        }
+        return nil
+    }
+
+    private static func vimeoID(_ url: URL) -> String? {
+        // vimeo.com/123456789 or player.vimeo.com/video/123456789
+        let parts = url.pathComponents.filter { $0 != "/" }
+        return parts.last(where: { !$0.isEmpty && $0.allSatisfy(\.isNumber) })
     }
 
     private func renderHTML(_ article: ArticleExtractor.Article) -> String {
@@ -327,4 +435,71 @@ struct PDFKitView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: PDFView, context: Context) {}
+}
+
+// MARK: - Embedded video (YouTube / Vimeo)
+
+/// Loads a small host page containing the platform's `<iframe>` player, with
+/// a `baseURL` matching the platform so the embed gets a valid origin. JS on
+/// (the player needs it) and autoplay permitted; ephemeral data store.
+struct VideoEmbedView: NSViewRepresentable {
+    let html: String
+    let baseURL: URL?
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.mediaTypesRequiringUserActionForPlayback = []   // allow autoplay
+        let web = WKWebView(frame: .zero, configuration: config)
+        // Restricted videos (age/region/embed-blocked) render YouTube's own
+        // "Watch video on YouTube" link as target="_blank", which a WKWebView
+        // would otherwise swallow. Route it into the same view so the full
+        // watch page loads in-app and plays, instead of doing nothing.
+        web.uiDelegate = context.coordinator
+        return web
+    }
+
+    func updateNSView(_ web: WKWebView, context: Context) {
+        guard !context.coordinator.loaded else { return }
+        context.coordinator.loaded = true
+        web.loadHTMLString(html, baseURL: baseURL)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator: NSObject, WKUIDelegate {
+        var loaded = false
+
+        func webView(_ webView: WKWebView,
+                     createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction,
+                     windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if let url = navigationAction.request.url {
+                webView.load(URLRequest(url: url))
+            }
+            return nil
+        }
+    }
+}
+
+// MARK: - Native video
+
+/// Basic native player for direct media files (`.mp4`, `.mov`, …). Just the
+/// `AVPlayer` transport over a black backdrop — no page chrome. The player is
+/// held in `@State` so it isn't recreated on every redraw, and paused when
+/// the view goes away.
+private struct NativeVideoView: View {
+    let url: URL
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        VideoPlayer(player: player)
+            .background(Color.black)
+            .onAppear {
+                let p = AVPlayer(url: url)
+                player = p
+                p.play()
+            }
+            .onDisappear { player?.pause() }
+    }
 }

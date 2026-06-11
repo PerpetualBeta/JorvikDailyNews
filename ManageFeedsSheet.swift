@@ -97,14 +97,14 @@ struct ManageFeedsSheet: View {
                 .padding(.bottom, 6)
 
                 ScrollView {
-                    if filteredSections.isEmpty {
-                        Text("No feeds match \u{201C}\(searchText)\u{201D}")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, 32)
-                    } else {
-                        VStack(spacing: 0) {
+                    VStack(spacing: 0) {
+                        if filteredSections.isEmpty {
+                            Text("No feeds match \u{201C}\(searchText)\u{201D}")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 32)
+                        } else {
                             ForEach(filteredSections, id: \.0) { section, feeds in
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(section.uppercased())
@@ -134,10 +134,12 @@ struct ManageFeedsSheet: View {
                                 }
                             }
                         }
-                        // Reserve a gutter so the macOS overlay scrollbar
-                        // doesn't sit on top of the trailing trash button.
-                        .padding(.trailing, 16)
+
+                        excludedSourcesSection
                     }
+                    // Reserve a gutter so the macOS overlay scrollbar
+                    // doesn't sit on top of the trailing trash button.
+                    .padding(.trailing, 16)
                 }
                 .frame(maxHeight: 520)
             }
@@ -207,6 +209,42 @@ struct ManageFeedsSheet: View {
             contentType: ContentView.opmlWriteType,
             defaultFilename: ContentView.exportFilename
         ) { _ in }
+    }
+
+    /// Destination hosts the user has excluded (see `AppStore.excludeSource`).
+    /// Listed here so an exclusion can be lifted — the only place to undo one,
+    /// since an excluded source has no card left to right-click.
+    @ViewBuilder
+    private var excludedSourcesSection: some View {
+        if !store.excludedHosts.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("EXCLUDED SOURCES")
+                    .font(.caption)
+                    .kerning(1.5)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 18)
+                Divider()
+                ForEach(store.excludedHostsSorted, id: \.self) { host in
+                    HStack(spacing: 10) {
+                        Image(systemName: "nosign")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                        Text(host)
+                            .font(.body)
+                        Spacer()
+                        Button {
+                            store.includeSource(host)
+                        } label: {
+                            Image(systemName: "arrow.uturn.left")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Show \(host) in the paper again")
+                    }
+                    .padding(.vertical, 8)
+                    Divider()
+                }
+            }
+        }
     }
 
     private var allSections: [String] {

@@ -22,15 +22,37 @@ struct MasonryColumns<Item: Identifiable, Content: View>: View {
         return cols
     }
 
+    /// Ink colour for the separating rules — a hairline that reads clearly
+    /// in both light and dark mode without shouting.
+    private var ruleColor: Color { Color.primary.opacity(0.18) }
+
     var body: some View {
-        HStack(alignment: .top, spacing: spacing) {
+        // Half-spacing on each side of a rule keeps the original column gap
+        // (e.g. 28 → 14 + rule + 14) with the line centred in it.
+        HStack(alignment: .top, spacing: spacing / 2) {
             ForEach(0..<columns, id: \.self) { idx in
-                VStack(alignment: .leading, spacing: spacing) {
-                    ForEach(distributed[idx]) { item in
-                        content(item)
-                    }
+                if idx > 0 {
+                    // Continuous vertical rule spanning the full masonry height
+                    // (a Rectangle stretched to the tallest column).
+                    ruleColor
+                        .frame(width: 1)
+                        .frame(maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                column(idx)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func column(_ idx: Int) -> some View {
+        VStack(alignment: .leading, spacing: spacing / 2) {
+            ForEach(Array(distributed[idx].enumerated()), id: \.element.id) { offset, item in
+                if offset > 0 {
+                    // Horizontal rule between stacked cards, centred in the gap.
+                    ruleColor.frame(height: 1)
+                }
+                content(item)
             }
         }
     }

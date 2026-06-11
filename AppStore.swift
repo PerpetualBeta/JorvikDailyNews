@@ -34,6 +34,12 @@ final class AppStore {
         }
     }
 
+    /// Destination hosts the user never wants to see. An item is filtered out
+    /// of the paper when its **resolved link** host matches — independent of
+    /// which feed surfaced it, so you can ban one paywalled site without
+    /// muting the aggregator (HN etc.) that linked to it. Persisted.
+    private(set) var excludedHosts: Set<String> = AppStore.loadExcludedHosts()
+
     /// In-memory, reflowed edition. The edition on disk is always the full,
     /// unfiltered build; this is what the UI actually renders. Recomputed
     /// when filters change (pause, hide-read) or a fresh edition is saved.
@@ -291,6 +297,48 @@ final class AppStore {
         recomputeVisibleEdition()
     }
 
+    // MARK: - Excluded sources
+
+    /// Normalised destination host for an item — lowercased, `www.` stripped.
+    /// The unit the exclude list works in.
+    static func normalizedHost(_ url: URL) -> String? {
+        guard var host = url.host?.lowercased() else { return nil }
+        if host.hasPrefix("www.") { host.removeFirst(4) }
+        return host.isEmpty ? nil : host
+    }
+
+    /// Display/host string for an item, or nil if its link has no host.
+    func displayHost(for item: FeedItem) -> String? {
+        Self.normalizedHost(item.link)
+    }
+
+    var excludedHostsSorted: [String] { excludedHosts.sorted() }
+
+    /// Exclude an item's destination host from the paper and reflow. The
+    /// aggregator feed that surfaced it keeps flowing — only items pointing
+    /// at this host are dropped.
+    func excludeSource(_ item: FeedItem) {
+        guard let host = Self.normalizedHost(item.link) else { return }
+        excludedHosts.insert(host)
+        saveExcludedHosts()
+        recomputeVisibleEdition()
+    }
+
+    /// Lift an exclusion (from the Manage Feeds sheet) and reflow.
+    func includeSource(_ host: String) {
+        guard excludedHosts.remove(host) != nil else { return }
+        saveExcludedHosts()
+        recomputeVisibleEdition()
+    }
+
+    private static func loadExcludedHosts() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: "excludedHosts") ?? [])
+    }
+
+    private func saveExcludedHosts() {
+        UserDefaults.standard.set(Array(excludedHosts), forKey: "excludedHosts")
+    }
+
     /// Union of every section name the paper currently knows about —
     /// those assigned to feeds plus those the classifier has been trained
     /// on. Used by the article and feed "Move to…" menus so the sections
@@ -320,6 +368,12 @@ final class AppStore {
 
         let pausedIds = Set(feedStore.feeds.filter { $0.isPaused }.map { $0.id })
         var kept = all.filter { !pausedIds.contains($0.feedId) }
+        if !excludedHosts.isEmpty {
+            kept = kept.filter { item in
+                guard let host = Self.normalizedHost(item.link) else { return true }
+                return !excludedHosts.contains(host)
+            }
+        }
         if hideReadItems {
             kept = kept.filter { !readStore.isRead($0.itemId) }
         }
