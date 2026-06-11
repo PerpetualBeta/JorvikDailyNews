@@ -2,8 +2,10 @@ import Foundation
 import Observation
 
 /// Per-article section classifier. Multinomial naive Bayes with Laplace
-/// smoothing, trained purely from explicit user corrections — never from
-/// implicit "didn't move this" signal, which is how classifiers drift.
+/// smoothing and a uniform class prior, trained purely from explicit user
+/// corrections — never from implicit "didn't move this" signal, which is how
+/// classifiers drift. The prior is uniform by design: see `predict` for why a
+/// volume-weighted prior turns the most-corrected section into a magnet.
 ///
 /// Cold-start behaviour: `predict` returns nil until at least three
 /// sections have three or more training docs each. Before that, callers
@@ -65,14 +67,20 @@ final class ArticleClassifier {
         let freqs = Self.tokenFrequencies(Self.tokenise(text))
         guard !freqs.isEmpty else { return nil }
 
-        let totalDocs = state.sectionDocs.values.reduce(0, +)
-        let numClasses = max(1, state.sectionDocs.count)
         let vocabSize = max(1, state.vocabulary.count)
         var scored: [(section: String, logP: Double)] = []
         scored.reserveCapacity(state.sectionDocs.count)
 
-        for (section, docCount) in state.sectionDocs {
-            let priorLog = log(Double(docCount + 1)) - log(Double(totalDocs + numClasses))
+        // Uniform class prior. The natural Bayesian prior, log(docs+1) over the
+        // corpus, encodes how *often* you correct into a section — not how well
+        // an article *fits* it. With one section far ahead on volume (e.g. AI),
+        // that prior turns into a magnet: ambiguous articles tip to the biggest
+        // class regardless of content, and the genuine token signal gets buried
+        // below the margin so everything else falls to the catch-all. Section
+        // assignment here is a topical judgement, not a base-rate bet, so we
+        // drop the prior and let the per-token likelihood decide alone.
+        for (section, _) in state.sectionDocs {
+            let priorLog = 0.0
             let denom = Double((state.sectionTotalTokens[section] ?? 0) + vocabSize)
             var score = priorLog
             for (token, count) in freqs {
