@@ -65,7 +65,7 @@ private struct LeadStoryView: View {
                     .font(.custom("Charter", size: 10))
                     .kerning(1.8)
                     .foregroundStyle(.secondary)
-                Text(item.title)
+                Text(item.displayTitle)
                     .font(.custom("Didot", size: 38))
                     .lineSpacing(4)
                     .multilineTextAlignment(.leading)

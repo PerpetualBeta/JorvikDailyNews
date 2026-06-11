@@ -92,4 +92,20 @@ struct FeedItem: Codable, Hashable, Identifiable {
     let publishedAt: Date
     var section: String
     let sourceTitle: String
+
+    /// Title as shown in the paper, with a " [VIDEO]" affordance appended when
+    /// the link plays in-app as a video (YouTube / Vimeo / direct media) and
+    /// nothing in the title or summary already signals that. Computed at
+    /// display time rather than baked into `title`, so it applies uniformly to
+    /// every item — freshly fetched, carried over from an earlier refresh, or
+    /// loaded from a previously-saved edition — without depending on when the
+    /// item was parsed. Most video feeds label their own items; this catches
+    /// the few submitters who don't, so you're never sent to a video unawares.
+    var displayTitle: String {
+        guard ReaderView.detectVideo(link) != nil else { return title }
+        let haystack = (title + " " + summary).lowercased()
+        let alreadyFlagged = ["video", "watch", "▶", "📺", "🎥", "🎬"]
+            .contains { haystack.contains($0) }
+        return alreadyFlagged ? title : title + " [VIDEO]"
+    }
 }

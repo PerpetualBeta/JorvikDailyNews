@@ -25,7 +25,7 @@ struct StoryCard: View {
                     .font(.custom("Charter", size: 9))
                     .kerning(1.5)
                     .foregroundStyle(.secondary)
-                Text(item.title)
+                Text(item.displayTitle)
                     .font(.custom("Didot", size: 20))
                     .lineSpacing(2)
                     .multilineTextAlignment(.leading)
