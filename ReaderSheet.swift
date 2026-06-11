@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import PDFKit
 import AppKit
 
 /// Reader view rendered inline inside the main window (not a modal sheet) —
@@ -19,6 +20,7 @@ struct ReaderView: View {
     enum ReaderState {
         case loading
         case ready(ArticleExtractor.Article)
+        case pdf(URL)
         case failed(String)
     }
 
@@ -132,6 +134,9 @@ struct ReaderView: View {
         case .ready(let article):
             ReaderWebView(html: renderHTML(article), baseURL: item.link)
 
+        case .pdf(let url):
+            PDFReader(url: url)
+
         case .failed:
             // No clean reader view (link lists like HN, paywalls, SPA-rendered
             // pages). Rather than dead-ending the user out to a browser, render
@@ -143,10 +148,18 @@ struct ReaderView: View {
 
     private func extract() async {
         state = .loading
+        // Fast path: an obvious .pdf link skips the HTML extractor entirely.
+        if item.link.pathExtension.lowercased() == "pdf" {
+            state = .pdf(item.link)
+            return
+        }
         let extractor = ArticleExtractor()
         do {
             let article = try await extractor.extract(url: item.link)
             state = .ready(article)
+        } catch ArticleExtractor.ExtractionError.isPDF {
+            // PDF without a .pdf extension — detected by content-type / magic.
+            state = .pdf(item.link)
         } catch {
             state = .failed(error.localizedDescription)
         }
@@ -255,4 +268,63 @@ struct LiveWebView: NSViewRepresentable {
             web.load(URLRequest(url: url))
         }
     }
+}
+
+// MARK: - PDF rendering
+
+/// Native PDF reader for items that link straight to a PDF. PDFKit gives a
+/// proper document experience — continuous scroll, pinch-zoom, selection,
+/// `⌘F` find — rather than the page of mojibake you'd get from running the
+/// raw PDF stream through the HTML reader. A spinner covers the view while
+/// the (possibly large) file downloads.
+private struct PDFReader: View {
+    let url: URL
+    @State private var loading = true
+
+    var body: some View {
+        ZStack {
+            PDFKitView(url: url) { loading = false }
+            if loading {
+                VStack(spacing: 14) {
+                    ProgressView()
+                    Text("Loading PDF\u{2026}")
+                        .font(.custom("Charter", size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .textBackgroundColor))
+            }
+        }
+    }
+}
+
+/// Bytes are fetched with a Safari user agent (some hosts gate on it) and
+/// handed to `PDFDocument(data:)`. `onLoaded` fires once the attempt finishes
+/// — success or failure — so the wrapper can dismiss its spinner either way.
+struct PDFKitView: NSViewRepresentable {
+    let url: URL
+    var onLoaded: () -> Void = {}
+
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.backgroundColor = .textBackgroundColor
+
+        Task { @MainActor in
+            defer { onLoaded() }
+            var request = URLRequest(url: url)
+            request.setValue(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+                forHTTPHeaderField: "User-Agent"
+            )
+            guard let (data, _) = try? await URLSession.shared.data(for: request),
+                  let document = PDFDocument(data: data) else { return }
+            view.document = document
+        }
+        return view
+    }
+
+    func updateNSView(_ view: PDFView, context: Context) {}
 }

@@ -27,6 +27,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         case noArticle
         case tooShort(Int)
         case timedOut
+        case isPDF
 
         var errorDescription: String? {
             switch self {
@@ -36,6 +37,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             case .noArticle: "No article content found on this page"
             case .tooShort(let n): "Article content too thin (\(n) characters)"
             case .timedOut: "The page took too long to load"
+            case .isPDF: "This link is a PDF document"
             }
         }
     }
@@ -116,6 +118,16 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
 
         if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
             throw ExtractionError.fetchFailed("HTTP \(http.statusCode)")
+        }
+
+        // Detect PDFs before we ever treat the bytes as HTML — by declared
+        // Content-Type or the "%PDF" magic number. Otherwise Readability runs
+        // on the raw PDF stream and "succeeds" with pages of mojibake.
+        let contentType = (response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+        if contentType.contains("application/pdf")
+            || data.starts(with: Data([0x25, 0x50, 0x44, 0x46])) {   // %PDF
+            throw ExtractionError.isPDF
         }
 
         let finalURL = response.url ?? url
