@@ -69,12 +69,29 @@ struct ReaderView: View {
 
             Spacer()
 
-            Text(item.sourceTitle)
-                .font(.custom("Charter", size: 11))
-                .kerning(1.8)
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            // Always-visible provenance. The source title names the feed; the
+            // host names where the material actually lives. The host matters
+            // most for video/PDF (where there's no article chrome to read it
+            // off) and for aggregators — "Hacker News" tells you nothing, but
+            // "youtube.com" tells you exactly what you're about to open. Both
+            // sit outside the content switch, so they persist across every
+            // reader state.
+            VStack(spacing: 1) {
+                Text(item.sourceTitle)
+                    .font(.custom("Charter", size: 11))
+                    .kerning(1.8)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let host = store.displayHost(for: item) {
+                    Label(host, systemImage: "globe")
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .help("Source of this material: \(host)")
+                }
+            }
 
             Spacer()
 
