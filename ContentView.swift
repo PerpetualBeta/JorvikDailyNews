@@ -98,61 +98,29 @@ struct ContentView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let article = store.selectedArticle {
+        if store.feedStore.feeds.isEmpty {
+            EmptyStateView()
+        } else if let edition = store.visibleEdition ?? store.editionStore.today, !edition.isEmpty {
+            // The reader lays *over* the still-mounted paper rather than
+            // replacing it, so the paper's NSScrollView keeps its scroll
+            // offset. Back to Paper then returns you to the exact spot you
+            // left from, not the top of the page.
+            paper(for: edition)
+                .overlay {
+                    if let article = store.selectedArticle {
+                        ReaderView(item: article)
+                            .environment(store)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .transition(.opacity)
+                    }
+                }
+        } else if let article = store.selectedArticle {
+            // Edge case: hide-read emptied the edition out from under us while
+            // an article was open. Keep the reader rather than dumping the
+            // user back to an empty paper.
             ReaderView(item: article)
                 .environment(store)
                 .transition(.opacity)
-        } else if store.feedStore.feeds.isEmpty {
-            EmptyStateView()
-        } else if let edition = store.visibleEdition ?? store.editionStore.today, !edition.isEmpty {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        // Invisible anchors at top + bottom — Home / End and
-                        // page-turn transitions scrollTo these ids.
-                        Color.clear.frame(height: 0.1).id("top")
-                        currentPage(for: edition)
-                            .padding(.horizontal, 48)
-                            .padding(.top, 32)
-                            .padding(.bottom, store.totalPages > 1 ? 72 : 32)
-                            .frame(maxWidth: 1100)
-                            .frame(maxWidth: .infinity)
-                            .id(store.pageIndex)
-                            .transition(.opacity)
-                        Color.clear.frame(height: 0.1).id("bottom")
-                    }
-                }
-                // Let the scroll view accept key presses. Home/End scroll to
-                // anchors; PgUp/PgDn/space fall through to the underlying
-                // NSScrollView which handles them natively once focused.
-                .focusable()
-                .focusEffectDisabled()
-                .focused($scrollFocused)
-                .onAppear { scrollFocused = true }
-                .onKeyPress(.home) {
-                    proxy.scrollTo("top", anchor: .top)
-                    return .handled
-                }
-                .onKeyPress(.end) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                    return .handled
-                }
-                .animation(.easeInOut(duration: 0.18), value: store.pageIndex)
-                .onChange(of: store.pageIndex) { _, _ in
-                    proxy.scrollTo("top", anchor: .top)
-                }
-                // Floating page-indicator as an overlay on the ScrollView's
-                // frame. Overlay alignment is relative to the viewport, so
-                // the pill is always bottom-centred regardless of the
-                // scroll content's settled size.
-                .overlay(alignment: .bottom) {
-                    if store.totalPages > 1 {
-                        PageIndicator()
-                            .environment(store)
-                            .padding(.bottom, 12)
-                    }
-                }
-            }
         } else if store.isRefreshing {
             VStack(spacing: 12) {
                 ProgressView()
@@ -178,6 +146,66 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func paper(for edition: Edition) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    // Invisible anchors at top + bottom — Home / End and
+                    // page-turn transitions scrollTo these ids.
+                    Color.clear.frame(height: 0.1).id("top")
+                    currentPage(for: edition)
+                        .padding(.horizontal, 48)
+                        .padding(.top, 32)
+                        .padding(.bottom, store.totalPages > 1 ? 72 : 32)
+                        .frame(maxWidth: 1100)
+                        .frame(maxWidth: .infinity)
+                        .id(store.pageIndex)
+                        .transition(.opacity)
+                    Color.clear.frame(height: 0.1).id("bottom")
+                }
+            }
+            // Let the scroll view accept key presses. Home/End scroll to
+            // anchors; PgUp/PgDn/space fall through to the underlying
+            // NSScrollView which handles them natively once focused.
+            .focusable()
+            .focusEffectDisabled()
+            .focused($scrollFocused)
+            // Hold key focus only while the paper is the front-most view. With
+            // the reader open over the top, the paper must not catch Home / End
+            // / PgUp / PgDn and scroll itself behind the article.
+            .onAppear { scrollFocused = store.selectedArticle == nil }
+            .onChange(of: store.selectedArticle == nil) { _, paperIsFront in
+                scrollFocused = paperIsFront
+            }
+            .onKeyPress(.home) {
+                guard store.selectedArticle == nil else { return .ignored }
+                proxy.scrollTo("top", anchor: .top)
+                return .handled
+            }
+            .onKeyPress(.end) {
+                guard store.selectedArticle == nil else { return .ignored }
+                proxy.scrollTo("bottom", anchor: .bottom)
+                return .handled
+            }
+            .animation(.easeInOut(duration: 0.18), value: store.pageIndex)
+            .onChange(of: store.pageIndex) { _, _ in
+                proxy.scrollTo("top", anchor: .top)
+            }
+            // Floating page-indicator as an overlay on the ScrollView's
+            // frame. Overlay alignment is relative to the viewport, so
+            // the pill is always bottom-centred regardless of the
+            // scroll content's settled size.
+            .overlay(alignment: .bottom) {
+                if store.totalPages > 1 {
+                    PageIndicator()
+                        .environment(store)
+                        .padding(.bottom, 12)
+                }
+            }
         }
     }
 
