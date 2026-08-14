@@ -146,14 +146,18 @@ Updates are handled by [Sparkle](https://sparkle-project.org). The app checks fo
 
 ## Building from Source
 
+The build is driven by the shared [`release.mk`](https://github.com/PerpetualBeta/jorvik-release) Make include, so `jorvik-release` has to be checked out **beside this repo** — the Makefile looks for it at `../jorvik-release/`. macOS ships GNU Make 3.81 as `make`, which is too old, so `gmake` comes from Homebrew.
+
 ```bash
+brew install make   # GNU Make 4+, if you do not already have gmake
+git clone https://github.com/PerpetualBeta/jorvik-release.git
 git clone https://github.com/PerpetualBeta/JorvikDailyNews.git
 cd JorvikDailyNews
 gmake build
 open .build/JorvikDailyNews.app
 ```
 
-Requires GNU Make 4.x — `brew install make` installs it as `gmake`. `gmake build` compiles with `swiftc -O` and ad-hoc-signs for local use. JorvikKit files are compiled in from `JorvikKit/`. Release Manager handles Developer ID signing and notarization for release builds.
+`gmake build` compiles with `swiftc -O` and ad-hoc-signs for local use. JorvikKit files are compiled in from `JorvikKit/`. Release Manager handles Developer ID signing and notarization for release builds.
 
 To regenerate the app icon (Didot "N" over a dark ink gradient with newspaper masthead rules):
 
