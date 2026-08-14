@@ -16,6 +16,12 @@ Two formats on every release — both signed and notarised:
 - **[Installer (`.pkg`)](https://github.com/PerpetualBeta/JorvikDailyNews/releases/latest/download/JorvikDailyNews.pkg)** — recommended for first-time installs. Double-click to run; macOS Installer places the app in `/Applications` without quarantine or App Translocation.
 - **[Download (`.zip`)](https://github.com/PerpetualBeta/JorvikDailyNews/releases/latest)** — unzip and drag `JorvikDailyNews.app` to your Applications folder.
 
+Or install it with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask perpetualbeta/jorvik/jorvik-daily-news
+```
+
 ## Why
 
 RSS readers are streams. Streams never end. You open the reader, scroll past the same headlines you already ignored, and close it again no better informed.
