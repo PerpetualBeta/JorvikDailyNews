@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct ContentView: View {
     @Environment(AppStore.self) private var store
@@ -29,6 +30,13 @@ struct ContentView: View {
         @Bindable var bindable = store
         content
             .background(Color(nsColor: .textBackgroundColor))
+            .overlay {
+                BackspaceKeyMonitor {
+                    guard store.selectedArticle != nil else { return false }
+                    store.selectedArticle = nil
+                    return true
+                }
+            }
             .task { await store.onLaunch() }
             .sheet(isPresented: $bindable.showAddFeedSheet) {
                 AddFeedSheet()
@@ -224,6 +232,55 @@ struct ContentView: View {
                 )
             } else {
                 FrontPage(edition: edition)
+            }
+        }
+    }
+}
+
+private struct BackspaceKeyMonitor: NSViewRepresentable {
+    let action: () -> Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.start()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.action = action
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    final class Coordinator {
+        var action: () -> Bool
+        private var monitor: Any?
+
+        init(action: @escaping () -> Bool) {
+            self.action = action
+        }
+
+        func start() {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard event.keyCode == 51,
+                      event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                      self?.action() == true else {
+                    return event
+                }
+                return nil
+            }
+        }
+
+        func stop() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
             }
         }
     }
