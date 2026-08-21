@@ -43,11 +43,6 @@ struct ReaderView: View {
             content
         }
         .background(Color(nsColor: .textBackgroundColor))
-        .focusable()
-        .onKeyPress(.delete) {
-            store.selectedArticle = nil
-            return .handled
-        }
         .task(id: item.id) {
             section = store.classifier.pinnedSection(itemId: item.itemId) ?? item.section
             await extract()

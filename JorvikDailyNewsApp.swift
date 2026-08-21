@@ -49,6 +49,14 @@ struct JorvikDailyNewsApp: App {
                 .keyboardShortcut("n", modifiers: .command)
             }
             CommandMenu("Edition") {
+                Button("Back to Paper") {
+                    store.selectedArticle = nil
+                }
+                .keyboardShortcut(.delete)
+                .disabled(store.selectedArticle == nil)
+
+                Divider()
+
                 Button("Refresh Feeds") {
                     Task { await store.refreshAndPublish() }
                 }
