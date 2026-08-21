@@ -30,7 +30,7 @@ struct ContentView: View {
         @Bindable var bindable = store
         content
             .background(Color(nsColor: .textBackgroundColor))
-            .overlay {
+            .background {
                 BackspaceKeyMonitor {
                     guard store.selectedArticle != nil else { return false }
                     store.selectedArticle = nil
