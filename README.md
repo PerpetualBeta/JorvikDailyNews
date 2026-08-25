@@ -1,6 +1,6 @@
 # Jorvik Daily News
 
-A macOS RSS reader shaped like a daily newspaper. The paper only shows items whose published date falls inside today's local calendar — older items never appear, no matter how unread they are. Launch refreshes automatically and the paper re-fetches on each clock hour while it's open; `⌘R` republishes on demand. Anti-doomscroll: no unread counts, no infinite stream, finite by design.
+A macOS RSS reader shaped like a daily newspaper. The paper only shows items whose published date falls inside today's local calendar — older items never appear, no matter how unread they are. Launch refreshes automatically and the paper re-fetches on each clock hour while it's open; `command` `R` republishes on demand. Anti-doomscroll: no unread counts, no infinite stream, finite by design.
 
 ![The front page — a full-width lead above a three-column masonry](docs/screenshots/front-page.png)
 
@@ -47,29 +47,29 @@ The front page is a full-width lead story above a 3-column masonry of the rest o
 
 | Action | Shortcut |
 |---|---|
-| Add Feed | `⌘N` |
-| Refresh | `⌘R` |
-| Manage Feeds | `⇧⌘F` |
-| Import OPML | `⇧⌘O` |
-| Export OPML | `⇧⌘E` |
-| Front Page | `⌘1` |
-| Previous Page | `⌘←` |
-| Next Page | `⌘→` |
+| Add Feed | `command` `N` |
+| Refresh | `command` `R` |
+| Manage Feeds | `shift` `command` `F` |
+| Import OPML | `shift` `command` `O` |
+| Export OPML | `shift` `command` `E` |
+| Front Page | `command` `1` |
+| Previous Page | `command` `left` |
+| Next Page | `command` `right` |
 | Scroll to top / bottom | `Home` / `End` |
 | Scroll by viewport | `PgUp` / `PgDn` |
-| Back to paper (from reader) | `Esc` |
+| Back to paper (from reader) | `esc` |
 
 ### Adding feeds
 
-`⌘N` → paste a feed URL *or a site's home page* → optionally tag with a section → Add. The app auto-discovers feeds: paste `https://arstechnica.com` and it finds the feed via `<link rel="alternate">` in the page head. If the page declares no feed, common paths (`/feed`, `/rss`, `/atom.xml`, `/feed.xml`, …) are probed as a fallback. Duplicates are rejected after resolution — you can't accidentally add the same subscription twice.
+`command` `N` → paste a feed URL *or a site's home page* → optionally tag with a section → Add. The app auto-discovers feeds: paste `https://arstechnica.com` and it finds the feed via `<link rel="alternate">` in the page head. If the page declares no feed, common paths (`/feed`, `/rss`, `/atom.xml`, `/feed.xml`, …) are probed as a fallback. Duplicates are rejected after resolution — you can't accidentally add the same subscription twice.
 
 ### Bulk import / export
 
-`⇧⌘O` imports an OPML subscription list from any reader. Nested `<outline>` categorisation becomes sections. Duplicates against your existing feeds are skipped. `⇧⌘E` exports your feed list back out as OPML 2.0 — round-trips cleanly.
+`shift` `command` `O` imports an OPML subscription list from any reader. Nested `<outline>` categorisation becomes sections. Duplicates against your existing feeds are skipped. `shift` `command` `E` exports your feed list back out as OPML 2.0 — round-trips cleanly.
 
 ### Pausing a feed
 
-Manage Feeds (`⇧⌘F`) → pause icon on any row. The feed's items vanish from today's paper immediately (no network round-trip); un-pausing triggers a refresh so they come back. Useful when a feed is too noisy on a given day and you want to mute it without deleting the subscription.
+Manage Feeds (`shift` `command` `F`) → pause icon on any row. The feed's items vanish from today's paper immediately (no network round-trip); un-pausing triggers a refresh so they come back. Useful when a feed is too noisy on a given day and you want to mute it without deleting the subscription.
 
 ### Unread only
 
@@ -77,7 +77,7 @@ Toggle in the toolbar. When on, read items are removed from the paper and the fr
 
 ### Reader pane
 
-Clicking a headline replaces the paper with an inline reader view (not a separate window). Mozilla Readability extracts the article's main content; a hand-tuned stylesheet renders it in Charter at 680 px column width, dark-mode aware. High-contrast colour rules override anything low-contrast the source page ships. `Esc` or **Back to Paper** returns. **Open in Browser** in the header bar takes you to the original article at any time.
+Clicking a headline replaces the paper with an inline reader view (not a separate window). Mozilla Readability extracts the article's main content; a hand-tuned stylesheet renders it in Charter at 680 px column width, dark-mode aware. High-contrast colour rules override anything low-contrast the source page ships. `esc` or **Back to Paper** returns. **Open in Browser** in the header bar takes you to the original article at any time.
 
 The reader header always shows where the material comes from: the feed's name, and beneath it the destination **host** (`economist.com`, `youtube.com`, …) in plain monospace. It's there in every reader state — article, live page, PDF, or video — so even a chrome-free embedded video tells you its source at a glance.
 
@@ -154,7 +154,7 @@ git clone https://github.com/PerpetualBeta/jorvik-release.git
 git clone https://github.com/PerpetualBeta/JorvikDailyNews.git
 cd JorvikDailyNews
 gmake build
-open .build/JorvikDailyNews.app
+open.build/JorvikDailyNews.app
 ```
 
 `gmake build` compiles with `swiftc -O` and ad-hoc-signs for local use. JorvikKit files are compiled in from `JorvikKit/`. Release Manager handles Developer ID signing and notarization for release builds.
@@ -169,7 +169,7 @@ swift generate_icon.swift
 
 ### The paper is empty today
 
-Either no feeds have published today yet, or every feed fetch failed (check your internet connection and hit `⌘R`). The today-only filter is strict — items dated before midnight local time don't appear. If you've just added feeds and they don't seem to have today's items, some feeds only publish weekly or less frequently.
+Either no feeds have published today yet, or every feed fetch failed (check your internet connection and hit `command` `R`). The today-only filter is strict — items dated before midnight local time don't appear. If you've just added feeds and they don't seem to have today's items, some feeds only publish weekly or less frequently.
 
 ### Readability fails on a site
 
