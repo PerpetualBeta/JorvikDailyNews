@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Vision
 
 /// Process-wide cache + loader for hero images, keyed by source URL.
 ///
@@ -90,5 +91,70 @@ final class ImageCache: @unchecked Sendable {
         // Reject 1×1 trackers and icon-sized placeholders.
         guard let image = NSImage(data: data), image.size.width >= 48, image.size.height >= 48 else { return nil }
         return image
+    }
+}
+
+/// Where the eye goes in a picture, so an over-tall picture is cropped around
+/// its subject instead of blindly from the top.
+///
+/// Uses Vision's attention-based saliency (the technique in Apple's "Cropping
+/// Images Using Saliency"): it returns the region a person would look at
+/// first. We keep only the centre point of that region, normalised, because
+/// the crop window's size is decided by the layout, not by Vision.
+///
+/// Results are cached per URL for the session. A picture with no salient
+/// region — a flat illustration, a site icon, a solid colour — yields nil, and
+/// the caller falls back to the old top-aligned crop.
+final class SaliencyCache: @unchecked Sendable {
+    static let shared = SaliencyCache()
+
+    private let lock = NSLock()
+    /// Normalised centre in VISION coordinates: origin bottom-left, so y = 1
+    /// is the top of the picture. Cached as `.some(nil)` when Vision ran and
+    /// found nothing, so we don't run it twice.
+    private var centres: [URL: CGPoint?] = [:]
+
+    /// Vertical centre of the salient region, normalised, Vision coordinates.
+    /// Runs Vision at most once per URL; subsequent calls return the cache.
+    func centreY(for url: URL, image: NSImage) async -> CGFloat? {
+        if let hit = cached(url) { return hit?.y }
+        let centre = await Task.detached(priority: .utility) {
+            Self.salientCentre(of: image)
+        }.value
+        store(centre, for: url)
+        return centre?.y
+    }
+
+    // The lock is taken and released inside these two, never across the `await`
+    // above: NSLock is not safe to hold over a suspension point.
+
+    /// Doubly optional on purpose: the outer layer is "have we run Vision on
+    /// this URL", the inner is "did Vision find anything".
+    private func cached(_ url: URL) -> CGPoint?? {
+        lock.lock(); defer { lock.unlock() }
+        return centres[url]
+    }
+
+    private func store(_ centre: CGPoint?, for url: URL) {
+        lock.lock(); defer { lock.unlock() }
+        centres[url] = centre
+    }
+
+    private static func salientCentre(of image: NSImage) -> CGPoint? {
+        var rect = CGRect(origin: .zero, size: image.size)
+        guard let cg = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else { return nil }
+
+        let request = VNGenerateAttentionBasedSaliencyImageRequest()
+        let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+        guard (try? handler.perform([request])) != nil,
+              let observation = request.results?.first,
+              let objects = observation.salientObjects,
+              !objects.isEmpty
+        else { return nil }
+
+        // Union of every salient box, so a picture with two subjects crops to
+        // include both rather than centring on whichever Vision listed first.
+        let union = objects.dropFirst().reduce(objects[0].boundingBox) { $0.union($1.boundingBox) }
+        return CGPoint(x: union.midX, y: union.midY)
     }
 }

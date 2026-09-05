@@ -13,7 +13,7 @@ INSTALL_NAME     := Jorvik Daily News.app
 BUNDLE_ID        := cc.jorviksoftware.JorvikDailyNews
 BUILD_SYSTEM     := swiftc
 
-SWIFT_FRAMEWORKS := Cocoa SwiftUI WebKit PDFKit AVKit AVFoundation
+SWIFT_FRAMEWORKS := Cocoa SwiftUI WebKit PDFKit AVKit AVFoundation Vision
 SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                     ContentView.swift \
                     Masthead.swift \

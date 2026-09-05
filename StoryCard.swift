@@ -10,6 +10,11 @@ struct StoryCard: View {
     @Environment(AppStore.self) private var store
     let item: FeedItem
 
+    /// Live knob. `defaults write cc.jorviksoftware.JorvikDailyNews
+    /// cardImageMaxHeight -float 300` retunes every card picture on a running
+    /// build; 0 removes the cap. See `ImageCap` for where 260 comes from.
+    @AppStorage(ImageCap.cardKey) private var imageMaxHeight = ImageCap.cardDefault
+
     private var isRead: Bool { store.readStore.isRead(item.itemId) }
 
     var body: some View {
@@ -18,7 +23,7 @@ struct StoryCard: View {
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 if let img = item.imageURL {
-                    OptionalImage(url: img)
+                    OptionalImage(url: img, maxHeight: ImageCap.resolve(imageMaxHeight))
                         .padding(.bottom, 2)
                 }
                 Text(item.sourceTitle.uppercased())
@@ -47,11 +52,11 @@ struct StoryCard: View {
         .storySectionContextMenu(for: item)
     }
 
-    /// Rough height estimate used by the masonry distributor. Doesn't need
-    /// to be accurate — just good enough to keep columns balanced.
-    static func estimateHeight(_ item: FeedItem) -> CGFloat {
-        var h: CGFloat = 0
-        if item.imageURL != nil { h += 240 }
+    /// Height estimate used by the masonry distributor to choose which column
+    /// an item joins. It reserves no space, so a poor estimate only makes the
+    /// columns uneven — it never leaves a gap.
+    static func estimateHeight(_ item: FeedItem, columnWidth: CGFloat) -> CGFloat {
+        var h = imageHeight(item, columnWidth: columnWidth)
         h += 14
         h += min(CGFloat(item.title.count), 120) * 0.85
         h += 18
@@ -60,6 +65,30 @@ struct StoryCard: View {
             h += bodyChars / 60 * 22
         }
         return max(80, h)
+    }
+
+    /// What the picture will contribute, mirroring `OptionalImage`: never
+    /// upscaled past its own pixels, then height-capped.
+    ///
+    /// Once the picture is decoded this is exact, because we know its real
+    /// aspect. Before that we assume the cap — the upper bound, applied
+    /// identically to every unknown picture so they stay comparable. That is
+    /// why the distribution is snapshot rather than live: the answer here
+    /// sharpens as pictures arrive, and items must not hop columns while the
+    /// reader is looking at them.
+    private static func imageHeight(_ item: FeedItem, columnWidth: CGFloat) -> CGFloat {
+        guard let url = item.imageURL, columnWidth > 0 else { return 0 }
+        let cap = ImageCap.card
+        guard let img = ImageCache.shared.cachedImage(for: url),
+              img.size.width > 0, img.size.height > 0
+        else { return cap ?? columnWidth }
+        // No `displayScale` environment outside a View; the main screen's
+        // backing factor is right for an estimate.
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let pixels = CGFloat(img.representations.map(\.pixelsWide).max() ?? Int(img.size.width))
+        let drawn = min(columnWidth, pixels / scale)
+        let natural = drawn * img.size.height / img.size.width
+        return min(natural, cap ?? natural)
     }
 }
 

@@ -34,7 +34,7 @@ struct FrontPage: View {
                     items: masonryItems,
                     columns: 3,
                     spacing: 28,
-                    estimateHeight: StoryCard.estimateHeight
+                    estimateHeight: StoryCard.estimateHeight(_:columnWidth:)
                 ) { item in
                     StoryCard(item: item)
                 }
@@ -46,6 +46,11 @@ struct FrontPage: View {
 private struct LeadStoryView: View {
     @Environment(AppStore.self) private var store
     let item: FeedItem
+
+    /// Live knob. `defaults write cc.jorviksoftware.JorvikDailyNews
+    /// leadHeroMaxHeight -float 400` retunes the lead picture on a running
+    /// build; 0 removes the cap. See `ImageCap` for where 320 comes from.
+    @AppStorage(ImageCap.leadKey) private var heroMaxHeight = ImageCap.leadDefault
 
     private var isRead: Bool { store.readStore.isRead(item.itemId) }
 
@@ -59,7 +64,11 @@ private struct LeadStoryView: View {
                     // recompute re-picks the next usable-image item as lead
                     // (or drops the lead). `ImageCache` has already recorded
                     // the failure, so the builder skips this one next time.
-                    OptionalImage(url: img, onFailure: { store.recomputeVisibleEdition() })
+                    OptionalImage(
+                        url: img,
+                        maxHeight: ImageCap.resolve(heroMaxHeight),
+                        onFailure: { store.recomputeVisibleEdition() }
+                    )
                 }
                 Text(item.sourceTitle.uppercased())
                     .font(.custom("Charter", size: 10))

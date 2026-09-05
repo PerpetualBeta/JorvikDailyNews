@@ -38,7 +38,7 @@ struct SectionPageView: View {
                 items: page.items,
                 columns: 3,
                 spacing: 28,
-                estimateHeight: StoryCard.estimateHeight
+                estimateHeight: StoryCard.estimateHeight(_:columnWidth:)
             ) { item in
                 StoryCard(item: item)
             }
