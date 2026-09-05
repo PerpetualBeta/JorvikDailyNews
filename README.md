@@ -157,7 +157,7 @@ gmake build
 open.build/JorvikDailyNews.app
 ```
 
-`gmake build` compiles with `swiftc -O` and ad-hoc-signs for local use. JorvikKit files are compiled in from `JorvikKit/`. Release Manager handles Developer ID signing and notarization for release builds.
+`gmake build` compiles with `swiftc -O` and ad-hoc-signs for local use. JorvikKit files are compiled in from `JorvikKit/`. Release builds are Developer ID signed and notarized.
 
 To regenerate the app icon (Didot "N" over a dark ink gradient with newspaper masthead rules):
 
@@ -178,10 +178,6 @@ Paywalled sites, JavaScript-rendered SPAs, and some custom CMSes resist extracti
 ### Images missing from some items
 
 Not every feed ships images, and not every article has an `og:image`. Hacker News items and some text-only blogs won't have thumbnails — the card just shows the headline, which is often fine.
-
-## Relationship to Other Jorvik Tools
-
-- **Notes Editor** — authors the [jorviksoftware.cc](https://jorviksoftware.cc/) blog. Jorvik Daily News reads blogs; Notes Editor writes one. The Jorvik blog's own feed is, naturally, a first-class subscription.
 
 ---
 
