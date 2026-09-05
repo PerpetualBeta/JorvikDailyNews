@@ -68,6 +68,29 @@ struct ImageEnricher: Sendable {
         let scanRange = html.range(of: "</head>", options: .caseInsensitive).map { html[..<$0.lowerBound] } ?? html[...]
         let head = String(scanRange)
 
+        // Some sites declare their APP ICON as their social image. `what2do.me`
+        // publishes the same file twice:
+        //
+        //   <meta property="og:image" content="/icons/icon-512.png" />
+        //   <link rel="icon" sizes="512x512" href="/icons/icon-512.png" />
+        //
+        // That is the site telling us, in its own head, that the picture is an
+        // icon rather than article art — a stated fact, not a guess about
+        // squareness or pixel count. Reject any candidate whose URL is also
+        // declared as a site icon, and try the next candidate instead.
+        //
+        // The comparison must be an EXACT url match, not a resemblance.
+        // `ruby-lang.org` serves `/images/og-image.png` as its social image and
+        // `/images/icon-192.png` as its icon: a purpose-made social card that
+        // happens to be a logo. A "square and small and flat" heuristic would
+        // wrongly throw that away. This test leaves it alone.
+        let icons = iconURLs(in: head, relativeTo: url)
+        return imageCandidates(in: head, relativeTo: url).first { !icons.contains($0) }
+    }
+
+    /// Every picture the head offers as a social image, in preference order,
+    /// deduplicated.
+    private func imageCandidates(in head: String, relativeTo url: URL) -> [URL] {
         let patterns = [
             "<meta[^>]+property=[\"']og:image(:secure_url|:url)?[\"'][^>]+content=[\"']([^\"']+)[\"']",
             "<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+property=[\"']og:image(:secure_url|:url)?[\"']",
@@ -76,6 +99,7 @@ struct ImageEnricher: Sendable {
             "<link[^>]+rel=[\"']image_src[\"'][^>]+href=[\"']([^\"']+)[\"']"
         ]
 
+        var found: [URL] = []
         for pattern in patterns {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
             let range = NSRange(head.startIndex..., in: head)
@@ -86,12 +110,48 @@ struct ImageEnricher: Sendable {
                 guard let r = Range(match.range(at: g), in: head) else { continue }
                 let raw = String(head[r]).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard raw.isEmpty == false, !raw.hasPrefix(":") else { continue }
-                if let resolved = URL(string: raw, relativeTo: url)?.absoluteURL,
-                   let scheme = resolved.scheme, scheme == "http" || scheme == "https" {
-                    return resolved
+                if let resolved = Self.absoluteWebURL(raw, relativeTo: url) {
+                    if !found.contains(resolved) { found.append(resolved) }
+                    break
                 }
             }
         }
-        return nil
+        return found
+    }
+
+    /// Every URL the head declares as a site icon. Covers `icon`,
+    /// `shortcut icon`, `apple-touch-icon`, `apple-touch-icon-precomposed` and
+    /// `mask-icon` in one sweep, because each spells "icon" in its `rel`.
+    private func iconURLs(in head: String, relativeTo url: URL) -> Set<URL> {
+        guard let linkRegex = try? NSRegularExpression(
+            pattern: "<link[^>]*rel=[\"'][^\"']*icon[^\"']*[\"'][^>]*>",
+            options: .caseInsensitive
+        ), let hrefRegex = try? NSRegularExpression(
+            pattern: "href=[\"']([^\"']+)[\"']",
+            options: .caseInsensitive
+        ) else { return [] }
+
+        var icons: Set<URL> = []
+        let range = NSRange(head.startIndex..., in: head)
+        for match in linkRegex.matches(in: head, range: range) {
+            guard let tagRange = Range(match.range, in: head) else { continue }
+            let tag = String(head[tagRange])
+            let tagNSRange = NSRange(tag.startIndex..., in: tag)
+            guard let href = hrefRegex.firstMatch(in: tag, range: tagNSRange),
+                  href.numberOfRanges > 1,
+                  let r = Range(href.range(at: 1), in: tag) else { continue }
+            let raw = String(tag[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let resolved = Self.absoluteWebURL(raw, relativeTo: url) { icons.insert(resolved) }
+        }
+        return icons
+    }
+
+    /// Resolve a possibly-relative href against the page, keeping only http(s).
+    private static func absoluteWebURL(_ raw: String, relativeTo url: URL) -> URL? {
+        guard !raw.isEmpty, !raw.hasPrefix(":"),
+              let resolved = URL(string: raw, relativeTo: url)?.absoluteURL,
+              let scheme = resolved.scheme, scheme == "http" || scheme == "https"
+        else { return nil }
+        return resolved
     }
 }
