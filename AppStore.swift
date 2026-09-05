@@ -202,15 +202,45 @@ final class AppStore {
             allItems.append(contentsOf: priorItems.filter { activeFeedIds.contains($0.feedId) })
         }
 
-        // Enrich image-less top candidates with og:image / twitter:image
-        // extracted from the target article. Capped at the top 24 by date so
-        // aggregator items (HN, DF, Tsai, Objective-See) pick up a thumbnail
-        // from the actual article page rather than rendering text-only.
-        let enrichCap = 24
+        // Enrich image-less candidates with og:image / twitter:image extracted
+        // from the target article, so aggregator items (HN, DF, Tsai,
+        // Objective-See) pick up a thumbnail from the real article page rather
+        // than rendering text-only.
+        //
+        // The cap is PER SECTION, not per edition. A single edition-wide cap
+        // starved the section pages: `EditionBuilder` takes the lead,
+        // secondaries and briefs off the top of the date-sorted list, so the
+        // front page's 16 slots consumed almost the whole allowance and the
+        // sections got the un-enriched tail. Measured on 2026-09-05, the front
+        // page had 9 of 16 items with images while the sections had 2 of 49.
+        //
+        // Cost: with N sections this admits up to N x 24 candidates instead of
+        // 24. Only the image-LESS ones cost an HTTP fetch — `enrich` skips any
+        // item whose feed already supplied a picture.
+        // Bucket by the section the reader will actually SEE, not by
+        // `item.section`. At this point that field still holds the raw feed
+        // section — every item from a news feed says "News" — while the
+        // section pages are stamped later in `recomputeVisibleEdition` from
+        // the user's pins and the classifier. Bucketing on the raw field put
+        // all 55 items in one bucket and the per-section cap did nothing.
+        let enrichCapPerSection = 24
+        let sectionByFeed = Dictionary(uniqueKeysWithValues: feedStore.feeds.map { ($0.id, $0.section) })
         let sortedByDate = allItems.sorted { $0.publishedAt > $1.publishedAt }
-        let topSlice = Array(sortedByDate.prefix(enrichCap))
-        let tail = Array(sortedByDate.dropFirst(enrichCap))
+        var takenPerSection: [String: Int] = [:]
+        var topSlice: [FeedItem] = []
+        var tail: [FeedItem] = []
+        for item in sortedByDate {
+            let section = resolvedSection(for: item, sectionByFeed: sectionByFeed)
+            let taken = takenPerSection[section, default: 0]
+            if taken < enrichCapPerSection {
+                takenPerSection[section] = taken + 1
+                topSlice.append(item)
+            } else {
+                tail.append(item)
+            }
+        }
         let enrichedSlice = await enricher.enrich(topSlice)
+        // Order doesn't matter here — `builder.build` re-sorts by date.
         let merged = enrichedSlice + tail
 
         var edition = builder.build(from: merged, date: Date())
