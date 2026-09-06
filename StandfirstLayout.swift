@@ -17,8 +17,8 @@ extension Standfirst {
 
     // MARK: - Type metrics
 
-    /// The font a standfirst is set in, in the form both AppKit (to measure)
-    /// and SwiftUI (to draw) need.
+    /// A run of type, in the form both AppKit (to measure) and SwiftUI (to
+    /// draw) need. Standfirsts and headlines both, since both get measured.
     struct Metrics: Hashable {
         let fontName: String
         let size: CGFloat
@@ -26,6 +26,8 @@ extension Standfirst {
 
         static let lead = Metrics(fontName: "Charter", size: 14, lineSpacing: 4)
         static let card = Metrics(fontName: "Charter", size: 12, lineSpacing: 2)
+        static let leadHeadline = Metrics(fontName: "Didot", size: 38, lineSpacing: 4)
+        static let cardHeadline = Metrics(fontName: "Didot", size: 20, lineSpacing: 2)
 
         var nsFont: NSFont { NSFont(name: fontName, size: size) ?? .systemFont(ofSize: size) }
     }
@@ -203,6 +205,36 @@ extension Standfirst {
         let heights = columns.map { lineCount($0, width: width, metrics: metrics) }
         guard let high = heights.max(), let low = heights.min() else { return 0 }
         return high - low
+    }
+
+    // MARK: - Runts
+
+    /// A headline with its last two words bound together, if the last line
+    /// would otherwise hold a single word.
+    ///
+    /// A one-word last line is a runt: it reads as though the headline ran out
+    /// rather than ended, and it is most obvious on the side-by-side lead where
+    /// the headline is set to half the measure. Binding the last two words with
+    /// a non-breaking space pulls the previous word down to keep it company,
+    /// which is what a typesetter does.
+    ///
+    /// Applied only when it is actually needed, and only when it actually
+    /// helps: the headline is laid out first to see whether the last line really
+    /// is one word, and the bound pair is measured to be sure it still fits the
+    /// column. A pair too long for the measure would break the line somewhere
+    /// worse than the runt it was meant to fix.
+    static func bindingRunt(_ text: String, width: CGFloat, metrics: Metrics) -> String {
+        guard width > 0 else { return text }
+        let words = text.split(separator: " ")
+        guard words.count >= 3 else { return text }
+
+        let starts = lineStarts(of: text, width: width, metrics: metrics)
+        guard starts.count >= 2, let lastLineStart = starts.last else { return text }
+        guard text[lastLineStart...].split(separator: " ").count == 1 else { return text }
+
+        let pair = words[(words.count - 2)...].joined(separator: "\u{00A0}")
+        guard lineCount(pair, width: width, metrics: metrics) == 1 else { return text }
+        return words[..<(words.count - 2)].joined(separator: " ") + " " + pair
     }
 
     // MARK: - Sentence units

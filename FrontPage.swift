@@ -126,7 +126,7 @@ private struct LeadStoryView: View {
                     hero
                     VStack(alignment: .leading, spacing: 10) {
                         strap
-                        headline
+                        headline(width: halfWidth)
                         standfirst(width: halfWidth)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -135,7 +135,7 @@ private struct LeadStoryView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     hero
                     strap
-                    headline
+                    headline(width: width)
                     standfirst(width: width)
                 }
             }
@@ -169,8 +169,8 @@ private struct LeadStoryView: View {
             .foregroundStyle(.secondary)
     }
 
-    private var headline: some View {
-        Text(item.displayTitle)
+    private func headline(width: CGFloat) -> some View {
+        Text(Standfirst.bindingRunt(item.displayTitle, width: width, metrics: .leadHeadline))
             .font(.custom("Didot", size: 38))
             .lineSpacing(4)
             .multilineTextAlignment(.leading)
