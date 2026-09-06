@@ -13,6 +13,16 @@ final class AppStore {
     private let discovery = FeedDiscovery()
     private let builder = EditionBuilder()
     private let enricher = ImageEnricher()
+    /// Items a page has already been asked about, so one that simply has no
+    /// `og:image` is not fetched again every time the paper reflows.
+    private var enrichmentAttempted: Set<String> = []
+    private var isToppingUp = false
+
+    /// How many of the newest items in a section get an enrichment fetch.
+    /// Shared by the refresh, which measures it against the whole edition, and
+    /// the top-up, which measures it against what the reader can still see.
+    private static let enrichCapPerSection = 24
+
     private var hourlyTimer: Timer?
     private var wakeObserver: NSObjectProtocol?
 
@@ -223,7 +233,6 @@ final class AppStore {
         // section pages are stamped later in `recomputeVisibleEdition` from
         // the user's pins and the classifier. Bucketing on the raw field put
         // all 55 items in one bucket and the per-section cap did nothing.
-        let enrichCapPerSection = 24
         let sectionByFeed = Dictionary(uniqueKeysWithValues: feedStore.feeds.map { ($0.id, $0.section) })
         let sortedByDate = allItems.sorted { $0.publishedAt > $1.publishedAt }
         var takenPerSection: [String: Int] = [:]
@@ -232,13 +241,14 @@ final class AppStore {
         for item in sortedByDate {
             let section = resolvedSection(for: item, sectionByFeed: sectionByFeed)
             let taken = takenPerSection[section, default: 0]
-            if taken < enrichCapPerSection {
+            if taken < Self.enrichCapPerSection {
                 takenPerSection[section] = taken + 1
                 topSlice.append(item)
             } else {
                 tail.append(item)
             }
         }
+        enrichmentAttempted.formUnion(topSlice.map(\.itemId))
         let enrichedSlice = await enricher.enrich(topSlice)
         // Order doesn't matter here — `builder.build` re-sorts by date.
         let merged = enrichedSlice + tail
@@ -451,6 +461,74 @@ final class AppStore {
 
         visibleEdition = builder.build(from: kept, date: base.date)
         if pageIndex >= totalPages { pageIndex = 0 }
+        topUpEnrichment(for: kept)
+    }
+
+    /// Fetch pictures for what the reader can still SEE, not for what the
+    /// edition happens to contain.
+    ///
+    /// A refresh enriches the newest 24 per section of the WHOLE edition. With
+    /// hide-read on, the visible paper is only the unread part of that, and it
+    /// shrinks with every article opened — so the front page walks steadily
+    /// into the tail that was never enriched and loses its pictures a few at a
+    /// time. Running the same budget against the unread pool makes the cutoff
+    /// follow the reader instead of the edition.
+    ///
+    /// The cap counts POSITION, exactly as the refresh does: the newest 24 of a
+    /// section are eligible, and of those only the ones still missing a picture
+    /// and not yet asked about are fetched. `enrichmentAttempted` is what stops
+    /// this looping — the recompute at the end of `applyEnrichment` finds those
+    /// items already asked about and produces no further work.
+    private func topUpEnrichment(for kept: [FeedItem]) {
+        guard !isToppingUp, !isRefreshing else { return }
+        let sectionByFeed = Dictionary(uniqueKeysWithValues: feedStore.feeds.map { ($0.id, $0.section) })
+        var takenPerSection: [String: Int] = [:]
+        var candidates: [FeedItem] = []
+        for item in kept.sorted(by: { $0.publishedAt > $1.publishedAt }) {
+            let section = resolvedSection(for: item, sectionByFeed: sectionByFeed)
+            let taken = takenPerSection[section, default: 0]
+            guard taken < Self.enrichCapPerSection else { continue }
+            takenPerSection[section] = taken + 1
+            if item.imageURL == nil, !enrichmentAttempted.contains(item.itemId) {
+                candidates.append(item)
+            }
+        }
+        guard !candidates.isEmpty else { return }
+
+        isToppingUp = true
+        enrichmentAttempted.formUnion(candidates.map(\.itemId))
+        Task { [weak self] in
+            guard let self else { return }
+            let enriched = await self.enricher.enrich(candidates)
+            self.applyEnrichment(enriched)
+        }
+    }
+
+    /// Fold newly-found pictures back into the saved edition and reflow.
+    private func applyEnrichment(_ enriched: [FeedItem]) {
+        isToppingUp = false
+        guard let base = editionStore.today else { return }
+        let found = Dictionary(uniqueKeysWithValues: enriched.map { ($0.itemId, $0) })
+
+        var all: [FeedItem] = []
+        if let lead = base.lead { all.append(lead) }
+        all.append(contentsOf: base.secondaries)
+        all.append(contentsOf: base.briefs)
+        all.append(contentsOf: base.sections.flatMap { $0.items })
+
+        var changed = false
+        let updated = all.map { item -> FeedItem in
+            guard let new = found[item.itemId],
+                  new.imageURL != item.imageURL || new.summary != item.summary else { return item }
+            changed = true
+            return new
+        }
+        // Nothing found: the pages had no picture to give. The attempt is
+        // already recorded, so this settles rather than repeating.
+        guard changed else { return }
+
+        editionStore.save(builder.build(from: updated, date: base.date))
+        recomputeVisibleEdition()
     }
 
     private func resolvedSection(for item: FeedItem, sectionByFeed: [UUID: String]) -> String {
