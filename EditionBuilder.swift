@@ -31,18 +31,32 @@ struct EditionBuilder {
         // strongest feed. If none qualify, drop the lead entirely (lead = nil)
         // and let every item flow into the 3 columns instead.
         var remaining = interleaved
-        let lead: FeedItem?
-        // Prefer an item that can carry BOTH halves of a lead. A full-width
-        // slot with a picture and a headline but no standfirst reads as
-        // something that failed to load, the same way a text-only lead does.
-        // Falling back to picture-only rather than dropping the lead outright,
-        // because an incomplete lead still beats no lead at all.
+        // Prefer an item that can carry BOTH halves of a lead, then either half,
+        // then anything at all. The front page always has a lead now.
+        //
+        // It used to fall to nil when nothing had a usable picture, on the
+        // grounds that a text-only hero looks like a mistake at full-width
+        // span. That was true when the alternative was a bare headline over
+        // white space. It is no longer: a lead with no picture is now a
+        // full-width headline over a two-column deck, which reads as a paper
+        // with no art today rather than as something that failed.
+        //
+        // Dropping the lead was also the wrong failure mode for the reason it
+        // usually fired. `hasUsableImage` consults `ImageCache`, so a moment of
+        // throttling that marks pictures unusable took the whole lead with it
+        // and left a front page that opened on a column of small headlines.
+        // Losing the picture is a fair consequence of a bad cache. Losing the
+        // lead is not.
         let candidate = remaining.first(where: { Self.canAnchorLead($0) })
             ?? remaining.first(where: { Self.hasUsableImage($0) })
+            ?? remaining.first(where: { !$0.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+            ?? remaining.first
+        let lead: FeedItem?
         if let candidate, let idx = remaining.firstIndex(of: candidate) {
             lead = candidate
             remaining.remove(at: idx)
         } else {
+            // Only when there is nothing in the paper at all.
             lead = nil
         }
 
