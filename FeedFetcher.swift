@@ -272,24 +272,29 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
         }
     }()
 
-    /// Aggregator proxies (hnrss.org) and some podcast feeds inject metadata
-    /// boilerplate like "Article URL: ... Comments URL: ... Points: 3" in
-    /// place of an actual standfirst. Suppress that entirely — it's noise.
+    /// Aggregator proxies (hnrss.org) and some podcast feeds append metadata
+    /// boilerplate — "Article URL: … Comments URL: … Points: 3 # Comments: 0" —
+    /// where a standfirst belongs. Cut it off wherever it starts.
+    ///
+    /// It used to be matched as a PREFIX and the whole summary discarded, which
+    /// only worked when the boilerplate came first. A Hacker News item whose
+    /// submitter wrote something before it kept the lot: "is it like ai first
+    /// os? Comments URL: https://news.ycombinator.com/item?id=49585527 Points: 2
+    /// # Comments: 0". Cutting rather than discarding keeps the submitter's
+    /// words and drops the machinery, and still yields "" when the boilerplate
+    /// is the entire summary.
+    ///
+    /// Only the two URL markers are matched, never `Points:` on its own. In
+    /// hnrss's template a URL marker always comes first, so cutting there takes
+    /// the whole tail — and `Points:` is a phrase that turns up in real prose,
+    /// where it would truncate a genuine standfirst mid-sentence.
     private func cleanSummary(_ s: String) -> String {
+        let markers = ["article url:", "comments url:", "submitted by", "link: ", "url: "]
         let lower = s.lowercased()
-        let boilerplatePrefixes = [
-            "article url:",
-            "comments url:",
-            "submitted by",
-            "link: ",
-            "url: "
-        ]
-        if boilerplatePrefixes.contains(where: { lower.hasPrefix($0) }) {
-            return ""
-        }
-        return s
+        let cut = markers.compactMap { lower.range(of: $0)?.lowerBound }.min()
+        guard let cut else { return s }
+        return String(s[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
-
 
     // MARK: - Aggregator target resolution
 
