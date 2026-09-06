@@ -27,8 +27,43 @@ final class ImageCache: @unchecked Sendable {
 
     private let images = NSCache<NSURL, NSImage>()
     private let lock = NSLock()
+    /// URLs that will never work: gone, undecodable, or a tracking pixel.
+    /// Remembered for the session, because asking again cannot change the
+    /// answer.
     private var failed = Set<URL>()
+    /// URLs whose last attempt failed for a reason that MIGHT change, and the
+    /// moment it becomes worth trying again.
+    private var retryAfter: [URL: Date] = [:]
     private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+
+    /// How long to leave a transient failure alone before trying again.
+    ///
+    /// Long enough that a dead host is not hammered by every view rebuild —
+    /// `OptionalImage` re-runs its load task whenever the masonry reflows —
+    /// and short enough that a paper blanked by a moment of throttling repairs
+    /// itself on the next refresh rather than needing a relaunch.
+    static let transientCooloffDefault: TimeInterval = 60
+    static let cooloffKey = "imageRetryCooloffSeconds"
+
+    static var transientCooloff: TimeInterval {
+        let stored = UserDefaults.standard.double(forKey: cooloffKey)
+        return stored > 0 ? stored : transientCooloffDefault
+    }
+
+    /// Why a download did not produce an image.
+    ///
+    /// The distinction is the whole point. Treating every failure as permanent
+    /// meant one burst of throttling — a refresh firing dozens of concurrent
+    /// requests at the same handful of CDNs — blanked every picture in the
+    /// paper until the app was quit, and took the lead with it, because
+    /// `EditionBuilder.hasUsableImage` consults the same set.
+    private enum Outcome {
+        case image(NSImage)
+        /// The URL is bad and will stay bad.
+        case permanent
+        /// The request failed; the URL may be fine.
+        case transient
+    }
 
     init() {
         images.countLimit = 500
@@ -39,9 +74,14 @@ final class ImageCache: @unchecked Sendable {
         images.object(forKey: url as NSURL)
     }
 
+    /// Whether a URL is not worth showing right now — permanently bad, or
+    /// transiently failed and still inside its cool-off. Lead selection asks
+    /// this too, so a picture in cool-off cannot anchor the front page.
     func isFailed(_ url: URL) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return failed.contains(url)
+        if failed.contains(url) { return true }
+        if let until = retryAfter[url] { return Date() < until }
+        return false
     }
 
     /// Load an image, coalescing concurrent requests for the same URL into a
@@ -60,37 +100,62 @@ final class ImageCache: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         if let existing = inFlight[url] { return existing }
         let task = Task<NSImage?, Never> { [weak self] in
-            let image = await Self.download(url, timeout: timeout)
-            self?.finish(url: url, image: image)
-            return image
+            let outcome = await Self.download(url, timeout: timeout)
+            self?.finish(url: url, outcome: outcome)
+            if case .image(let image) = outcome { return image }
+            return nil
         }
         inFlight[url] = task
         return task
     }
 
-    private func finish(url: URL, image: NSImage?) {
+    private func finish(url: URL, outcome: Outcome) {
         lock.lock(); defer { lock.unlock() }
         inFlight[url] = nil
-        if let image {
+        switch outcome {
+        case .image(let image):
             images.setObject(image, forKey: url as NSURL)
             failed.remove(url)
-        } else {
+            retryAfter[url] = nil
+        case .permanent:
             failed.insert(url)
+            retryAfter[url] = nil
+        case .transient:
+            retryAfter[url] = Date().addingTimeInterval(Self.transientCooloff)
         }
     }
 
-    private static func download(_ url: URL, timeout: TimeInterval) async -> NSImage? {
+    private static func download(_ url: URL, timeout: TimeInterval) async -> Outcome {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
             forHTTPHeaderField: "User-Agent"
         )
-        guard let (data, response) = try? await URLSession.shared.data(for: request) else { return nil }
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return nil }
-        // Reject 1×1 trackers and icon-sized placeholders.
-        guard let image = NSImage(data: data), image.size.width >= 48, image.size.height >= 48 else { return nil }
-        return image
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            // A timeout, a dropped connection, a DNS hiccup. Nothing here says
+            // the picture is bad.
+            return .transient
+        }
+
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            // 5xx is the server having a bad day, 429 is us asking too fast and
+            // 408 is a timeout by another name. All three are worth retrying.
+            // Everything else — 404, 410, 403 — is an answer, not an accident.
+            let retryable = http.statusCode >= 500 || http.statusCode == 429 || http.statusCode == 408
+            return retryable ? .transient : .permanent
+        }
+
+        // Reject 1×1 trackers and icon-sized placeholders. Undecodable bytes and
+        // a tracking pixel are both settled facts about the URL.
+        guard let image = NSImage(data: data), image.size.width >= 48, image.size.height >= 48 else {
+            return .permanent
+        }
+        return .image(image)
     }
 }
 
