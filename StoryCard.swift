@@ -9,11 +9,27 @@ import AppKit
 struct StoryCard: View {
     @Environment(AppStore.self) private var store
     let item: FeedItem
+    /// The masonry column this card landed in. Needed before the first frame,
+    /// because the standfirst is measured to fit it.
+    let columnWidth: CGFloat
 
     /// Live knob. `defaults write cc.jorviksoftware.JorvikDailyNews
     /// cardImageMaxHeight -float 300` retunes every card picture on a running
     /// build; 0 removes the cap. See `ImageCap` for where 260 comes from.
     @AppStorage(ImageCap.cardKey) private var imageMaxHeight = ImageCap.cardDefault
+
+    /// How many lines of standfirst a card gets. The text is cut to this,
+    /// not clipped to it, so a card always ends on a finished sentence.
+    static let summaryMaxLines = 5
+
+    /// A card's share of the stored standfirst, measured to its own column.
+    ///
+    /// `Standfirst.extract` sizes every item for the lead, because any item can
+    /// be promoted there when the paper reflows. A card cuts that back to what
+    /// actually fits five lines of its column, ending on a finished sentence.
+    static func plan(for item: FeedItem, columnWidth: CGFloat) -> Standfirst.Plan {
+        Standfirst.plan(item.summary, width: columnWidth, metrics: .card, maxLines: summaryMaxLines)
+    }
 
     private var isRead: Bool { store.readStore.isRead(item.itemId) }
 
@@ -36,12 +52,12 @@ struct StoryCard: View {
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 if !item.summary.isEmpty {
-                    Text(item.summary)
-                        .font(.custom("Charter", size: 12))
-                        .lineSpacing(2)
-                        .lineLimit(5)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
+                    StandfirstText(
+                        text: item.summary,
+                        width: columnWidth,
+                        metrics: .card,
+                        maxLines: Self.summaryMaxLines
+                    )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -60,9 +76,12 @@ struct StoryCard: View {
         h += 14
         h += min(CGFloat(item.title.count), 120) * 0.85
         h += 18
+        // The seed measures what the card will actually draw. It was a
+        // characters-per-line approximation before the standfirst was laid out
+        // to fit; now that the real layout is already computed and cached,
+        // guessing at it would be strictly worse and no cheaper.
         if !item.summary.isEmpty {
-            let bodyChars = min(CGFloat(item.summary.count), 5 * 60)
-            h += bodyChars / 60 * 22
+            h += Standfirst.height(of: plan(for: item, columnWidth: columnWidth), width: columnWidth, metrics: .card)
         }
         return max(80, h)
     }

@@ -32,9 +32,15 @@ struct EditionBuilder {
         // and let every item flow into the 3 columns instead.
         var remaining = interleaved
         let lead: FeedItem?
-        if let imageBearing = remaining.first(where: { Self.hasUsableImage($0) }),
-           let idx = remaining.firstIndex(of: imageBearing) {
-            lead = imageBearing
+        // Prefer an item that can carry BOTH halves of a lead. A full-width
+        // slot with a picture and a headline but no standfirst reads as
+        // something that failed to load, the same way a text-only lead does.
+        // Falling back to picture-only rather than dropping the lead outright,
+        // because an incomplete lead still beats no lead at all.
+        let candidate = remaining.first(where: { Self.canAnchorLead($0) })
+            ?? remaining.first(where: { Self.hasUsableImage($0) })
+        if let candidate, let idx = remaining.firstIndex(of: candidate) {
+            lead = candidate
             remaining.remove(at: idx)
         } else {
             lead = nil
@@ -64,6 +70,12 @@ struct EditionBuilder {
     /// haven't already seen fail to load (`ImageCache` records failures as
     /// they happen at render). A merely-slow image still qualifies — only a
     /// confirmed failure disqualifies it.
+    /// An item fit to anchor the lead: a usable picture and something to read
+    /// under the headline.
+    static func canAnchorLead(_ item: FeedItem) -> Bool {
+        hasUsableImage(item) && !item.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     static func hasUsableImage(_ item: FeedItem) -> Bool {
         guard let url = item.imageURL else { return false }
         return !ImageCache.shared.isFailed(url)

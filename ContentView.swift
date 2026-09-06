@@ -2,6 +2,24 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
+/// The page's own geometry. Named because three separate things need to agree
+/// on it: the frame that draws the page, the standfirst planner that decides
+/// how many columns the measure warrants, and the width a view assumes on its
+/// first frame before it has been measured.
+enum Paper {
+    /// The broadsheet never runs wider than this however wide the window is.
+    /// Beyond it the measure stops being readable and the page stops looking
+    /// like a page.
+    static let maxWidth: CGFloat = 1100
+
+    /// Margin either side of the printed area.
+    static let horizontalPadding: CGFloat = 48
+
+    /// What the content itself gets. The window minimum is 900 wide, so in
+    /// practice this runs 804–1004pt.
+    static let maxContentWidth: CGFloat = maxWidth - horizontalPadding * 2
+}
+
 struct ContentView: View {
     @Environment(AppStore.self) private var store
     @FocusState private var scrollFocused: Bool
@@ -157,6 +175,11 @@ struct ContentView: View {
         }
     }
 
+    /// Height of the visible page, which is the scroll view's own frame rather
+    /// than its content. The lead picture is capped as a share of it, so a tall
+    /// window shows more of a photograph instead of letterboxing it.
+    @State private var pageHeight: CGFloat = 0
+
     @ViewBuilder
     private func paper(for edition: Edition) -> some View {
         ScrollViewReader { proxy in
@@ -166,16 +189,25 @@ struct ContentView: View {
                     // page-turn transitions scrollTo these ids.
                     Color.clear.frame(height: 0.1).id("top")
                     currentPage(for: edition)
-                        .padding(.horizontal, 48)
+                        .padding(.horizontal, Paper.horizontalPadding)
                         .padding(.top, 32)
                         .padding(.bottom, store.totalPages > 1 ? 72 : 32)
-                        .frame(maxWidth: 1100)
+                        .frame(maxWidth: Paper.maxWidth)
                         .frame(maxWidth: .infinity)
                         .id(store.pageIndex)
                         .transition(.opacity)
                     Color.clear.frame(height: 0.1).id("bottom")
                 }
             }
+            // A background never affects layout, so this reads the viewport
+            // without being able to feed back into it.
+            .background(
+                GeometryReader { viewport in
+                    Color.clear.onChange(of: viewport.size.height, initial: true) { _, new in
+                        if new > 0 { pageHeight = new }
+                    }
+                }
+            )
             // Let the scroll view accept key presses. Home/End scroll to
             // anchors; PgUp/PgDn/space fall through to the underlying
             // NSScrollView which handles them natively once focused.
@@ -220,7 +252,7 @@ struct ContentView: View {
     @ViewBuilder
     private func currentPage(for edition: Edition) -> some View {
         if store.pageIndex == 0 {
-            FrontPage(edition: edition)
+            FrontPage(edition: edition, pageHeight: pageHeight)
         } else {
             let idx = store.pageIndex - 1
             if idx < edition.sections.count {
@@ -231,7 +263,7 @@ struct ContentView: View {
                     totalPages: store.totalPages
                 )
             } else {
-                FrontPage(edition: edition)
+                FrontPage(edition: edition, pageHeight: pageHeight)
             }
         }
     }

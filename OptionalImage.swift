@@ -11,15 +11,38 @@ import AppKit
 /// A value of 0 or less means "no cap" — the picture runs to its natural
 /// height, which is what the paper did before these caps existed.
 enum ImageCap {
-    /// The lead picture must not push its own headline below the fold at the
-    /// smallest window we allow. `minHeight: 700` in `JorvikDailyNewsApp.swift`
-    /// is CONTENT height — the window itself measures 752 there, title bar
-    /// included — so 700pt is what the paper actually gets. Masthead, rules
-    /// and padding take roughly 200pt of that before the picture starts; the
-    /// source strap and a two-line Didot headline take roughly 120pt after
-    /// it. That leaves about 380pt, and 320 keeps a margin for a headline
-    /// that runs to three lines. Verified by screenshot at 900x752.
-    static let leadDefault: Double = 320
+    /// The lead picture's share of the visible page.
+    ///
+    /// A fixed cap turned a 2:1 photograph into a 3.1:1 letterbox at a wide
+    /// window, discarding 36% of its height for nothing. The cap exists to keep
+    /// the headline above the fold at the SMALLEST window, and at a large one
+    /// there is no fold to protect.
+    ///
+    /// 0.46 is that same constraint written as a share. `minHeight: 700` in
+    /// `JorvikDailyNewsApp.swift` is CONTENT height, so 700pt is what the paper
+    /// gets at its smallest; masthead, rules and padding take roughly 200pt of
+    /// that before the picture starts, and the source strap plus a two-line
+    /// Didot headline take roughly 120pt after it. Of the remaining 380, a cap
+    /// of 320 left a margin for a headline running to three lines, and 320/700
+    /// is 0.46. So the smallest window behaves exactly as it did (verified by
+    /// screenshot at 900x752) and a taller one simply gets more picture.
+    ///
+    /// A share rather than "whatever is left once the furniture is subtracted",
+    /// because the furniture is a fixed number of points: subtracting it would
+    /// let the picture take nearly the whole page at a tall window and push
+    /// everything else off the bottom. Holding it under half keeps the headline
+    /// and the top of the deck in view at every size.
+    static let leadHeightFractionDefault: Double = 0.46
+
+    /// The page height to assume before the window has been measured. The
+    /// window minimum, so the first frame is the most conservative one rather
+    /// than a guess that has to shrink.
+    static let leadFallbackPageHeight: CGFloat = 700
+
+    /// Sentinel for "the absolute knob was never set". `@AppStorage` hands back
+    /// its declared default for an absent key, and that has to be
+    /// distinguishable from a deliberate 0, which still means "no cap".
+    static let leadUnset: Double = -1
 
     /// Cards sit three to a row, so a column is about 316pt wide at the
     /// widest page. Capping just under the column width keeps a portrait
@@ -27,6 +50,7 @@ enum ImageCap {
     static let cardDefault: Double = 260
 
     static let leadKey = "leadHeroMaxHeight"
+    static let leadFractionKey = "leadHeroHeightFraction"
     static let cardKey = "cardImageMaxHeight"
 
     /// Turns a stored knob value into a cap, treating 0 and negatives as off.
@@ -38,8 +62,19 @@ enum ImageCap {
     // re-renders them live. These two are for code that isn't a View — the
     // masonry's height estimator — and read the same keys.
 
-    static var lead: CGFloat? { effective(leadKey, fallback: leadDefault) }
     static var card: CGFloat? { effective(cardKey, fallback: cardDefault) }
+
+    /// The lead picture's cap on a page this tall.
+    ///
+    /// `leadHeroMaxHeight` keeps the meaning it always had: unset means work it
+    /// out, a positive value is an absolute cap in points, and 0 removes the
+    /// cap. `leadHeroHeightFraction` retunes the share.
+    static func lead(pageHeight: CGFloat, override: Double, fraction: Double) -> CGFloat? {
+        if override >= 0 { return resolve(override) }
+        let share = fraction > 0 ? fraction : leadHeightFractionDefault
+        let height = pageHeight > 0 ? pageHeight : leadFallbackPageHeight
+        return CGFloat(share) * height
+    }
 
     private static func effective(_ key: String, fallback: Double) -> CGFloat? {
         // `object(forKey:)` rather than `double(forKey:)`: an ABSENT key must
@@ -89,10 +124,10 @@ struct OptionalImage: View {
     /// depends on how wide the column is, and that changes as the window
     /// resizes.
     @State private var width: CGFloat = 0
-    /// Vertical centre of the picture's salient region, normalised, in Vision
-    /// coordinates (origin bottom-left). Nil until Vision has run, or when it
-    /// found nothing worth centring on — either way we crop from the top.
-    @State private var salientY: CGFloat?
+    /// Where the picture's subject sits vertically, as distance down from the
+    /// top. Nil until Vision has run, or when it found no subject — either way
+    /// we crop from the top.
+    @State private var subject: SaliencyCache.Span?
 
     init(url: URL, maxHeight: CGFloat? = nil, onFailure: (() -> Void)? = nil) {
         self.url = url
@@ -214,10 +249,20 @@ struct OptionalImage: View {
     /// found nothing salient.
     private func cropOffset(_ d: Draw) -> CGFloat {
         let slack = d.full - d.shown
-        guard slack > 0, let y = salientY else { return 0 }
-        // Vision's origin is bottom-left, so `1 - y` is the distance down from
-        // the top of the picture.
-        let centre = (1 - y) * d.full
+        guard slack > 0, let subject else { return 0 }
+
+        let top = subject.top * d.full
+        let bottom = subject.bottom * d.full
+
+        // Subject taller than the window: keep its top. Something has to go,
+        // and a cropped chin reads as a crop while a cropped crown reads as a
+        // mistake.
+        if bottom - top >= d.shown {
+            return min(max(top, 0), slack)
+        }
+
+        // It fits: centre the window on it.
+        let centre = (top + bottom) / 2
         return min(max(centre - d.shown / 2, 0), slack)
     }
 
@@ -250,6 +295,6 @@ struct OptionalImage: View {
     /// an uncapped picture is never cropped, so there is nothing to centre.
     private func resolveSaliency(_ img: NSImage) async {
         guard maxHeight != nil else { return }
-        salientY = await SaliencyCache.shared.centreY(for: url, image: img)
+        subject = await SaliencyCache.shared.span(for: url, image: img)
     }
 }

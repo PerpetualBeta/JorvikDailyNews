@@ -94,35 +94,66 @@ final class ImageCache: @unchecked Sendable {
     }
 }
 
-/// Where the eye goes in a picture, so an over-tall picture is cropped around
-/// its subject instead of blindly from the top.
+/// Where the subject is in a picture, so an over-tall picture is cropped around
+/// it instead of blindly from the top.
 ///
-/// Uses Vision's attention-based saliency (the technique in Apple's "Cropping
-/// Images Using Saliency"): it returns the region a person would look at
-/// first. We keep only the centre point of that region, normalised, because
-/// the crop window's size is decided by the layout, not by Vision.
+/// **Faces first.** Vision's attention-based saliency answers "what is visually
+/// loudest", which on a photograph of a person is the teeth and the collar
+/// line, not the head. Centring the crop on that answer cut the top of a
+/// subject's head off. `VNDetectFaceRectanglesRequest` answers the question we
+/// are actually asking, so it runs first; attention saliency is the fallback
+/// for pictures with nobody in them.
 ///
-/// Results are cached per URL for the session. A picture with no salient
-/// region — a flat illustration, a site icon, a solid colour — yields nil, and
-/// the caller falls back to the old top-aligned crop.
+/// Returns a vertical SPAN rather than a centre point. A centre cannot express
+/// "the subject is taller than the window you have", and that case has a right
+/// answer: keep the top. Losing a chin beats losing a crown.
+///
+/// Results are cached per URL for the session. A picture with no subject at all
+/// — a flat illustration, a site icon, a solid colour — yields nil, and the
+/// caller falls back to the top-aligned crop.
 final class SaliencyCache: @unchecked Sendable {
     static let shared = SaliencyCache()
 
-    private let lock = NSLock()
-    /// Normalised centre in VISION coordinates: origin bottom-left, so y = 1
-    /// is the top of the picture. Cached as `.some(nil)` when Vision ran and
-    /// found nothing, so we don't run it twice.
-    private var centres: [URL: CGPoint?] = [:]
+    /// The subject's vertical extent, normalised as distance DOWN from the top
+    /// of the picture, so the caller never has to flip Vision's bottom-left
+    /// coordinates itself.
+    struct Span: Sendable, Equatable {
+        let top: CGFloat
+        let bottom: CGFloat
+        var height: CGFloat { bottom - top }
+        var centre: CGFloat { (top + bottom) / 2 }
+    }
 
-    /// Vertical centre of the salient region, normalised, Vision coordinates.
-    /// Runs Vision at most once per URL; subsequent calls return the cache.
-    func centreY(for url: URL, image: NSImage) async -> CGFloat? {
-        if let hit = cached(url) { return hit?.y }
-        let centre = await Task.detached(priority: .utility) {
-            Self.salientCentre(of: image)
+    /// How much of a head sits above the box Vision draws round a face.
+    ///
+    /// `VNDetectFaceRectanglesRequest` bounds the face itself, roughly chin to
+    /// upper forehead. The crown and the hair sit above that, and they are what
+    /// got cut off. A whole head runs about a third taller than the detected
+    /// box, so the span is extended upward by that much before the crop is
+    /// placed. Live knob: `defaults write cc.jorviksoftware.JorvikDailyNews
+    /// faceCrownAllowance -float 0.5`.
+    static let crownAllowanceDefault: CGFloat = 0.35
+    static let crownAllowanceKey = "faceCrownAllowance"
+
+    static var crownAllowance: CGFloat {
+        let stored = UserDefaults.standard.double(forKey: crownAllowanceKey)
+        return stored > 0 ? CGFloat(stored) : crownAllowanceDefault
+    }
+
+    private let lock = NSLock()
+    /// Cached as `.some(nil)` when Vision ran and found nothing, so it does not
+    /// run twice on the same picture.
+    private var spans: [URL: Span?] = [:]
+
+    /// The subject's span. Runs Vision at most once per URL.
+    func span(for url: URL, image: NSImage) async -> Span? {
+        if let hit = cached(url) { return hit }
+        let allowance = Self.crownAllowance
+        let span = await Task.detached(priority: .utility) {
+            Self.subjectSpan(of: image, crownAllowance: allowance)
         }.value
-        store(centre, for: url)
-        return centre?.y
+        store(span, for: url)
+        return span
     }
 
     // The lock is taken and released inside these two, never across the `await`
@@ -130,22 +161,41 @@ final class SaliencyCache: @unchecked Sendable {
 
     /// Doubly optional on purpose: the outer layer is "have we run Vision on
     /// this URL", the inner is "did Vision find anything".
-    private func cached(_ url: URL) -> CGPoint?? {
+    private func cached(_ url: URL) -> Span?? {
         lock.lock(); defer { lock.unlock() }
-        return centres[url]
+        return spans[url]
     }
 
-    private func store(_ centre: CGPoint?, for url: URL) {
+    private func store(_ span: Span?, for url: URL) {
         lock.lock(); defer { lock.unlock() }
-        centres[url] = centre
+        spans[url] = span
     }
 
-    private static func salientCentre(of image: NSImage) -> CGPoint? {
+    private static func subjectSpan(of image: NSImage, crownAllowance: CGFloat) -> Span? {
         var rect = CGRect(origin: .zero, size: image.size)
         guard let cg = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else { return nil }
-
-        let request = VNGenerateAttentionBasedSaliencyImageRequest()
         let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+        return faceSpan(handler, crownAllowance: crownAllowance) ?? attentionSpan(handler)
+    }
+
+    /// Union of every face, extended upward to take in the crown. Nil when the
+    /// picture has nobody in it, which is the common case.
+    private static func faceSpan(_ handler: VNImageRequestHandler, crownAllowance: CGFloat) -> Span? {
+        let request = VNDetectFaceRectanglesRequest()
+        guard (try? handler.perform([request])) != nil,
+              let faces = request.results, !faces.isEmpty
+        else { return nil }
+
+        // Union rather than the first face, so a group photograph crops to
+        // include everyone rather than centring on whoever Vision listed first.
+        let union = faces.dropFirst().reduce(faces[0].boundingBox) { $0.union($1.boundingBox) }
+        // Vision's origin is bottom-left, so the crown is above the box's maxY.
+        let crowned = min(1, union.maxY + union.height * crownAllowance)
+        return Span(top: 1 - crowned, bottom: 1 - union.minY)
+    }
+
+    private static func attentionSpan(_ handler: VNImageRequestHandler) -> Span? {
+        let request = VNGenerateAttentionBasedSaliencyImageRequest()
         guard (try? handler.perform([request])) != nil,
               let observation = request.results?.first,
               let objects = observation.salientObjects,
@@ -155,6 +205,6 @@ final class SaliencyCache: @unchecked Sendable {
         // Union of every salient box, so a picture with two subjects crops to
         // include both rather than centring on whichever Vision listed first.
         let union = objects.dropFirst().reduce(objects[0].boundingBox) { $0.union($1.boundingBox) }
-        return CGPoint(x: union.midX, y: union.midY)
+        return Span(top: 1 - union.maxY, bottom: 1 - union.minY)
     }
 }

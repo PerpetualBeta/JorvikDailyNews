@@ -190,7 +190,7 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
     // MARK: - Finalisation
 
     private func finalise(_ b: ItemBuilder) -> FeedItem? {
-        let title = decodeEntities(b.title).trimmed
+        let title = Standfirst.decodeEntities(b.title).trimmed
         guard !title.isEmpty else { return nil }
         guard let originalLink = URL(string: b.link.trimmingCharacters(in: .whitespacesAndNewlines)),
               originalLink.scheme?.hasPrefix("http") == true else { return nil }
@@ -201,7 +201,7 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
         // the body HTML for the first external href and use that instead —
         // the target matters more than the meta-commentary.
         let link = resolveTargetURL(originalLink, in: bodyHTML)
-        let summary = cleanSummary(htmlToPlain(bodyHTML))
+        let summary = cleanSummary(Standfirst.extract(from: bodyHTML))
         let imageURL = pickBestImage(candidates: b.imageCandidates, bodyHTML: bodyHTML)
 
         // Undated items rank LAST on the front page rather than masquerading
@@ -290,13 +290,6 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
         return s
     }
 
-    private func htmlToPlain(_ html: String) -> String {
-        var s = html
-        s = s.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-        s = decodeEntities(s)
-        s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     // MARK: - Aggregator target resolution
 
@@ -363,18 +356,6 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
         return URL(string: String(html[r]))
     }
 
-    private func decodeEntities(_ s: String) -> String {
-        var out = s
-        let pairs: [(String, String)] = [
-            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
-            ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"),
-            ("&nbsp;", " "), ("&ndash;", "\u{2013}"), ("&mdash;", "\u{2014}"),
-            ("&hellip;", "\u{2026}"), ("&rsquo;", "\u{2019}"), ("&lsquo;", "\u{2018}"),
-            ("&ldquo;", "\u{201C}"), ("&rdquo;", "\u{201D}"), ("&#8217;", "\u{2019}")
-        ]
-        for (from, to) in pairs { out = out.replacingOccurrences(of: from, with: to) }
-        return out
-    }
 }
 
 private extension String {

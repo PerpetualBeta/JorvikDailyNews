@@ -35,7 +35,10 @@ struct MasonryColumns<Item: Identifiable, Content: View>: View {
     let spacing: CGFloat
     /// First-pass seed only, used for items not yet measured.
     let estimateHeight: (Item, CGFloat) -> CGFloat
-    @ViewBuilder let content: (Item) -> Content
+    /// Given the item and the width of the column it landed in — a card
+    /// that has to measure its own text needs to know that before its first
+    /// frame, not after.
+    @ViewBuilder let content: (Item, CGFloat) -> Content
 
     @State private var distributed: [[Item]] = []
     @State private var measured: [Item.ID: CGFloat] = [:]
@@ -121,7 +124,7 @@ struct MasonryColumns<Item: Identifiable, Content: View>: View {
                     // Horizontal rule between stacked cards, centred in the gap.
                     ruleColor.frame(height: 1)
                 }
-                content(item)
+                content(item, columnWidth(for: totalWidth))
                     .background(
                         GeometryReader { proxy in
                             Color.clear.preference(
