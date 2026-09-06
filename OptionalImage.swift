@@ -34,6 +34,32 @@ enum ImageCap {
     /// and the top of the deck in view at every size.
     static let leadHeightFractionDefault: Double = 0.46
 
+    /// The tallest a hero may be relative to its own width.
+    ///
+    /// The page share alone was the wrong single constraint. It protects the
+    /// small window, which is a real job, but it says nothing about the shape
+    /// of the picture: on a tall window 46% of the page is about 670pt, so a
+    /// 3:2 photograph ran to its full 669pt at a 1004pt column and swallowed
+    /// the page.
+    ///
+    /// 0.5 is a 2:1 band, the shape a newspaper's lead picture takes. It is
+    /// also exactly the shape that motivated dropping the fixed cap: the
+    /// measured 3504x1752 photograph is 2:1, so it still shows uncropped.
+    /// Anything taller is cropped to the band, around its subject.
+    ///
+    /// The two caps now do different jobs and the smaller wins. At a 700pt page
+    /// the share binds (322pt, exactly the old behaviour); at 1100pt and above
+    /// the aspect binds (502pt), so a taller window no longer means a taller
+    /// hero, only more room for the words beneath it.
+    static let leadMaxAspectDefault: Double = 0.5
+
+    static let leadAspectKey = "leadHeroMaxAspect"
+
+    static var leadMaxAspect: Double {
+        let stored = UserDefaults.standard.double(forKey: leadAspectKey)
+        return stored > 0 ? stored : leadMaxAspectDefault
+    }
+
     /// The page height to assume before the window has been measured. The
     /// window minimum, so the first frame is the most conservative one rather
     /// than a guess that has to shrink.
@@ -68,12 +94,15 @@ enum ImageCap {
     ///
     /// `leadHeroMaxHeight` keeps the meaning it always had: unset means work it
     /// out, a positive value is an absolute cap in points, and 0 removes the
-    /// cap. `leadHeroHeightFraction` retunes the share.
-    static func lead(pageHeight: CGFloat, override: Double, fraction: Double) -> CGFloat? {
+    /// cap. `leadHeroHeightFraction` retunes the page share and
+    /// `leadHeroMaxAspect` the shape; the smaller of the two wins.
+    static func lead(pageHeight: CGFloat, width: CGFloat, override: Double, fraction: Double) -> CGFloat? {
         if override >= 0 { return resolve(override) }
         let share = fraction > 0 ? fraction : leadHeightFractionDefault
         let height = pageHeight > 0 ? pageHeight : leadFallbackPageHeight
-        return CGFloat(share) * height
+        let byPage = CGFloat(share) * height
+        guard width > 0 else { return byPage }
+        return min(byPage, CGFloat(leadMaxAspect) * width)
     }
 
     private static func effective(_ key: String, fallback: Double) -> CGFloat? {

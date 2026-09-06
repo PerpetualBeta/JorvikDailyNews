@@ -87,7 +87,7 @@ private struct LeadStoryView: View {
     @AppStorage(ImageCap.leadFractionKey) private var heroFraction = ImageCap.leadHeightFractionDefault
 
     private var heroCap: CGFloat? {
-        ImageCap.lead(pageHeight: pageHeight, override: heroMaxHeight, fraction: heroFraction)
+        ImageCap.lead(pageHeight: pageHeight, width: width, override: heroMaxHeight, fraction: heroFraction)
     }
 
     private var isRead: Bool { store.readStore.isRead(item.itemId) }
