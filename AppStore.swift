@@ -18,10 +18,43 @@ final class AppStore {
     private var enrichmentAttempted: Set<String> = []
     private var isToppingUp = false
 
-    /// How many of the newest items in a section get an enrichment fetch.
-    /// Shared by the refresh, which measures it against the whole edition, and
-    /// the top-up, which measures it against what the reader can still see.
+    /// How many of the newest items in a section the REFRESH enriches. This is
+    /// only a primer, so the paper opens with pictures before anyone has
+    /// scrolled; the target below is what actually decides how far enrichment
+    /// goes.
     private static let enrichCapPerSection = 24
+
+    /// The share of a page's articles that should carry a picture.
+    ///
+    /// A position cap could not express this. Enriching "the newest 24" meant
+    /// the front page took the first 16 of them and the section page, which
+    /// shows everything from 17 onward, lived almost entirely outside the
+    /// window — measured at 25% coverage against 100% on the front page. The
+    /// budget is now the outcome rather than a count: keep fetching until the
+    /// page hits the target or the section runs out of pages to ask.
+    ///
+    /// It is a target, not a promise. Measured over 30 picture-less items from
+    /// this paper's tail, only 3 offered an `og:image` at all — the rest are
+    /// Show HN posts, Ask HN threads and repositories with no artwork anywhere
+    /// to find. A section of those will stop short of the target having tried
+    /// everything, which is the right place to stop.
+    static let imageCoverageTargetDefault = 0.30
+    static let imageCoverageKey = "imageCoverageTarget"
+
+    static var imageCoverageTarget: Double {
+        let stored = UserDefaults.standard.double(forKey: imageCoverageKey)
+        return stored > 0 ? stored : imageCoverageTargetDefault
+    }
+
+    /// How many pages one section may be asked about in a single round. Bounds
+    /// the burst: a whole section at once is what provokes the throttling that
+    /// blanks pictures, and rounds continue anyway until the target is met.
+    private static let topUpBatchPerSection = 12
+
+    /// Backstop on the rounds a single top-up may run. `enrichmentAttempted`
+    /// shrinks the candidate pool every round so this should never bind, but a
+    /// loop that fetches should not rely on "should".
+    private static let maxTopUpRounds = 8
 
     private var hourlyTimer: Timer?
     private var wakeObserver: NSObjectProtocol?
@@ -480,33 +513,52 @@ final class AppStore {
     /// this looping — the recompute at the end of `applyEnrichment` finds those
     /// items already asked about and produces no further work.
     private func topUpEnrichment(for kept: [FeedItem]) {
-        guard !isToppingUp, !isRefreshing else { return }
-        let sectionByFeed = Dictionary(uniqueKeysWithValues: feedStore.feeds.map { ($0.id, $0.section) })
-        var takenPerSection: [String: Int] = [:]
-        var candidates: [FeedItem] = []
-        for item in kept.sorted(by: { $0.publishedAt > $1.publishedAt }) {
-            let section = resolvedSection(for: item, sectionByFeed: sectionByFeed)
-            let taken = takenPerSection[section, default: 0]
-            guard taken < Self.enrichCapPerSection else { continue }
-            takenPerSection[section] = taken + 1
-            if item.imageURL == nil, !enrichmentAttempted.contains(item.itemId) {
-                candidates.append(item)
-            }
-        }
-        guard !candidates.isEmpty else { return }
-
+        guard !isToppingUp, !isRefreshing, !nextBatch(from: kept).isEmpty else { return }
         isToppingUp = true
-        enrichmentAttempted.formUnion(candidates.map(\.itemId))
         Task { [weak self] in
             guard let self else { return }
-            let enriched = await self.enricher.enrich(candidates)
-            self.applyEnrichment(enriched)
+            // Carry the pool through the rounds. Nothing is being read while
+            // this runs, so only the items' pictures change, not the set.
+            var pool = kept
+            var round = 0
+            while round < Self.maxTopUpRounds {
+                round += 1
+                let batch = self.nextBatch(from: pool)
+                guard !batch.isEmpty else { break }
+                self.enrichmentAttempted.formUnion(batch.map(\.itemId))
+                let enriched = await self.enricher.enrich(batch)
+                let found = Dictionary(uniqueKeysWithValues: enriched.map { ($0.itemId, $0) })
+                pool = pool.map { found[$0.itemId] ?? $0 }
+                self.applyEnrichment(enriched)
+            }
+            self.isToppingUp = false
         }
+    }
+
+    /// The next round of pages worth asking about: from each section still
+    /// under the coverage target, the newest items that have no picture and
+    /// have not been asked about, capped per section.
+    private func nextBatch(from pool: [FeedItem]) -> [FeedItem] {
+        let target = Self.imageCoverageTarget
+        let sectionByFeed = Dictionary(uniqueKeysWithValues: feedStore.feeds.map { ($0.id, $0.section) })
+        let bySection = Dictionary(grouping: pool) { resolvedSection(for: $0, sectionByFeed: sectionByFeed) }
+
+        var batch: [FeedItem] = []
+        for (_, items) in bySection {
+            guard !items.isEmpty else { continue }
+            let covered = items.filter { $0.imageURL != nil }.count
+            guard Double(covered) / Double(items.count) < target else { continue }
+            let candidates = items
+                .filter { $0.imageURL == nil && !enrichmentAttempted.contains($0.itemId) }
+                .sorted { $0.publishedAt > $1.publishedAt }
+                .prefix(Self.topUpBatchPerSection)
+            batch.append(contentsOf: candidates)
+        }
+        return batch
     }
 
     /// Fold newly-found pictures back into the saved edition and reflow.
     private func applyEnrichment(_ enriched: [FeedItem]) {
-        isToppingUp = false
         guard let base = editionStore.today else { return }
         let found = Dictionary(uniqueKeysWithValues: enriched.map { ($0.itemId, $0) })
 
