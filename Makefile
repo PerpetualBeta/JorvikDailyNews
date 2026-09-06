@@ -35,6 +35,7 @@ SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                     EditionStore.swift \
                     ReadStore.swift \
                     FeedFetcher.swift \
+                    Log.swift \
                     Standfirst.swift \
                     StandfirstLayout.swift \
                     StandfirstText.swift \

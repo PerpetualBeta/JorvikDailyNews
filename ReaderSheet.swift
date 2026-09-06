@@ -197,28 +197,67 @@ struct ReaderView: View {
         }
     }
 
+    /// How long the reader will wait before giving up and showing the real
+    /// page. Longer than `ArticleExtractor`'s own 20s so that its timeout, and
+    /// its better error message, normally win; this only catches an extraction
+    /// that never returns at all.
+    private static let readerDeadline: TimeInterval = 25
+
     private func extract() async {
         state = .loading
+        jdnLog("reader: opening \(item.link.absoluteString)")
         // Fast path: an obvious .pdf link skips the HTML extractor entirely.
         if item.link.pathExtension.lowercased() == "pdf" {
+            jdnLog("reader: .pdf extension — PDF view")
             state = .pdf(item.link)
             return
         }
         // Video links play in-app, chrome-free, rather than opening a browser.
         if let video = Self.detectVideo(item.link) {
+            jdnLog("reader: video link — player view")
             state = .video(video)
             return
         }
+        // A backstop deadline, independent of the extractor's own.
+        //
+        // `ArticleExtractor` already times out at 20s and every failure path
+        // falls through to the live page, so in principle this can never fire.
+        // A user report says otherwise: articles that sat on "Turning to the
+        // article…" indefinitely while Open in Browser worked. That symptom can
+        // only mean the extraction never returned at all, so the honest fix is
+        // not to trust that it will. Whatever the cause turns out to be, the
+        // reader now stops waiting and shows the real page instead.
+        let deadline = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(Self.readerDeadline * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            if case .loading = state {
+                jdnLog("reader: BACKSTOP deadline at \(Self.readerDeadline)s — the extractor never returned; live page fallback")
+                state = .failed("The reader took too long to open this article")
+            }
+        }
+        defer { deadline.cancel() }
+
         let extractor = ArticleExtractor()
         do {
             let article = try await extractor.extract(url: item.link)
+            // Only if the backstop has not already moved us on.
+            guard case .loading = state else {
+                jdnLog("reader: extraction returned after the backstop had given up — leaving the live page")
+                return
+            }
+            jdnLog("reader: reader view ready")
             state = .ready(article)
         } catch ArticleExtractor.ExtractionError.isPDF {
             // PDF without a .pdf extension — detected by content-type / magic.
+            guard case .loading = state else { return }
+            jdnLog("reader: detected a PDF by content — PDF view")
             state = .pdf(item.link)
         } catch {
+            guard case .loading = state else { return }
+            jdnLog("reader: extraction failed (\(error.localizedDescription)) — live page fallback")
             state = .failed(error.localizedDescription)
         }
+        jdnLog("reader: settled")
     }
 
     // MARK: - Video detection

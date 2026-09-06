@@ -71,11 +71,14 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     }
 
     func extract(url: URL, minimumLength: Int = 500, timeout: TimeInterval = 20) async throws -> Article {
+        jdnLog("extract: begin \(url.absoluteString)")
         guard let path = Bundle.main.path(forResource: "Readability", ofType: "js"),
               let js = try? String(contentsOfFile: path, encoding: .utf8) else {
+            jdnLog("extract: FAILED — Readability.js missing from the bundle")
             throw ExtractionError.scriptMissing
         }
         self.readabilityScript = js
+        jdnLog("extract: Readability.js loaded (\(js.count) chars)")
 
         let (html, finalURL) = try await fetchHTML(url: url, timeout: timeout / 2)
 
@@ -83,14 +86,22 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             self.continuation = cont
             self.timeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64((timeout / 2) * 1_000_000_000))
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    jdnLog("extract: timeout task cancelled (a navigation callback got there first)")
+                    return
+                }
                 await MainActor.run {
-                    guard let self, let cont = self.continuation else { return }
+                    guard let self, let cont = self.continuation else {
+                        jdnLog("extract: timeout fired but the continuation was already resumed")
+                        return
+                    }
+                    jdnLog("extract: TIMED OUT after \(timeout / 2)s waiting on the web view")
                     self.continuation = nil
                     self.webView.stopLoading()
                     cont.resume(throwing: ExtractionError.timedOut)
                 }
             }
+            jdnLog("extract: handing \(html.count) chars to the web view, base \(finalURL.absoluteString)")
             self.webView.loadHTMLString(html, baseURL: finalURL)
         }
     }
@@ -111,12 +122,16 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
 
         let (data, response): (Data, URLResponse)
         do {
+            jdnLog("fetch: requesting \(url.absoluteString) (timeout \(request.timeoutInterval)s)")
             (data, response) = try await URLSession.shared.data(for: request)
         } catch {
+            jdnLog("fetch: FAILED — \(error.localizedDescription)")
             throw ExtractionError.fetchFailed(error.localizedDescription)
         }
+        jdnLog("fetch: \((response as? HTTPURLResponse)?.statusCode ?? -1) — \(data.count) bytes")
 
         if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
+            jdnLog("fetch: rejected on status \(http.statusCode)")
             throw ExtractionError.fetchFailed("HTTP \(http.statusCode)")
         }
 
@@ -143,14 +158,19 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     // MARK: - WKNavigationDelegate
 
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        jdnLog("webview: didFinish")
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self else {
+                jdnLog("webview: didFinish but the extractor was already gone")
+                return
+            }
             await self.runExtraction()
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         let message = error.localizedDescription
+        jdnLog("webview: didFail — \(message)")
         Task { @MainActor [weak self] in
             guard let self, let cont = self.continuation else { return }
             self.continuation = nil
@@ -161,6 +181,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
 
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         let message = error.localizedDescription
+        jdnLog("webview: didFailProvisionalNavigation — \(message)")
         Task { @MainActor [weak self] in
             guard let self, let cont = self.continuation else { return }
             self.continuation = nil
@@ -173,24 +194,33 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     private func runExtraction() async {
         let script = readabilityScript + "\n;JSON.stringify(new Readability(document.cloneNode(true)).parse());"
         do {
+            jdnLog("readability: evaluating")
             let result = try await webView.evaluateJavaScript(script)
-            guard let cont = continuation else { return }
+            jdnLog("readability: returned \(result is String ? "a string of \((result as? String)?.count ?? 0) chars" : String(describing: type(of: result)))")
+            guard let cont = continuation else {
+                jdnLog("readability: finished but the continuation was already resumed")
+                return
+            }
             continuation = nil
             timeoutTask?.cancel()
 
             guard let jsonString = result as? String, jsonString != "null",
                   let data = jsonString.data(using: .utf8) else {
+                jdnLog("readability: no article found — falling back to the live page")
                 cont.resume(throwing: ExtractionError.noArticle)
                 return
             }
             let article = try JSONDecoder().decode(Article.self, from: data)
             let len = article.length ?? article.textContent?.count ?? 0
             if len < 500 {
+                jdnLog("readability: only \(len) chars — too short, falling back to the live page")
                 cont.resume(throwing: ExtractionError.tooShort(len))
                 return
             }
+            jdnLog("readability: article of \(len) chars — rendering reader view")
             cont.resume(returning: article)
         } catch {
+            jdnLog("readability: threw — \(error.localizedDescription)")
             guard let cont = continuation else { return }
             continuation = nil
             timeoutTask?.cancel()

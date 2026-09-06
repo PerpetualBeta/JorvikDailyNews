@@ -223,7 +223,27 @@ Either no feeds have published today yet, or every feed fetch failed (check your
 
 ### Readability fails on a site
 
-Paywalled sites, JavaScript-rendered SPAs, and some custom CMSes resist extraction. The reader pane falls back to the feed's own summary plus an **Open in Browser** button — click that to read on the original site.
+Paywalled sites, JavaScript-rendered SPAs and some custom CMSes resist extraction. The reader does not dead-end you: it renders the real page inline instead, with **Open in Browser** still in the header as the escape hatch.
+
+### An article won't open
+
+The reader waits 25 seconds at the outside and then shows the real page rather than leaving you on "Turning to the article…". If you are seeing that message persist, turn on diagnostics below and send the log — it will say which step never returned.
+
+### Diagnostics
+
+Off by default. To turn it on:
+
+```
+defaults write cc.jorviksoftware.JorvikDailyNews debugLogging -bool YES
+```
+
+Lines are appended to `~/Library/Logs/Jorvik Daily News/jorvikdailynews.log`, in a directory only you can read. Each run starts with a header recording the app and macOS versions, so the log identifies itself without anyone having to ask. To turn it off again:
+
+```
+defaults delete cc.jorviksoftware.JorvikDailyNews debugLogging
+```
+
+The reader is instrumented end to end: which branch a link took, the fetch's status and size, each web view callback, whether a timeout fired, what Readability returned, and which fallback was chosen. If you are reporting a problem with opening articles, that log is the thing worth attaching.
 
 ### Images missing from some items
 

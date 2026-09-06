@@ -21,18 +21,36 @@ struct StandfirstText: View {
 
     var body: some View {
         let plan = Standfirst.plan(text, width: width, metrics: metrics, maxLines: maxLines)
+        let filled = plan.columns.filter { !$0.isEmpty }
+        let columnWidth = (width - plan.gutter * CGFloat(plan.columns.count - 1))
+            / CGFloat(max(1, plan.columns.count))
+
         HStack(alignment: .top, spacing: plan.gutter) {
-            ForEach(Array(plan.columns.enumerated()), id: \.offset) { _, column in
+            ForEach(Array(filled.enumerated()), id: \.offset) { _, column in
                 Text(column)
                     .font(.custom(metrics.fontName, size: metrics.size))
                     .lineSpacing(metrics.lineSpacing)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
-                    // Columns take an equal share of whatever they are offered.
-                    // Never an explicit width: handing a measured width back
-                    // into a frame is what collapses an HStack.
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    // An EXPLICIT width, and the plan's own, because the text
+                    // was measured against exactly this number. Sharing the
+                    // space out instead looked equivalent and was not: a deck
+                    // short enough to fill one column of two leaves the other
+                    // empty, an empty `Text` claims nothing, and the survivor
+                    // spread across the whole measure — back to the 113
+                    // characters a line the columns exist to prevent. This is
+                    // safe where a measured width would not be: it is computed
+                    // from the width we were handed, not read back from the
+                    // layout, so there is no loop to close.
+                    .frame(width: columnWidth, alignment: .topLeading)
+            }
+            // Hold the remaining columns' worth of space open, so a short deck
+            // sits in its column with white space beside it rather than
+            // re-centring under the headline.
+            if filled.count < plan.columns.count {
+                Spacer(minLength: 0)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
