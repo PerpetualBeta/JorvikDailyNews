@@ -32,7 +32,7 @@ A newspaper is the other shape. It publishes for a specific day, it's finite, yo
 
 The paper is rebuilt from whatever your feeds have published today. While the app is open it re-fetches on each clock-hour boundary (09:00, 10:00, 11:00…) and again on wake-from-sleep, so the paper stays current without ever showing stale content. Once the clock rolls past midnight, today's paper starts fresh; the app keeps only the last few days of editions on disk and clears older ones automatically, because the whole point is today's news.
 
-The front page is a full-width lead story above a 3-column masonry of the rest of the day's news. The lead *must* carry an image that actually loads — a text-only hero looks like a mistake at full-width span — so the builder picks the newest image-bearing story for the lead, validates and warms its image before publishing, and falls back to no lead at all (just the three columns) on a quiet day when nothing qualifies. Section pages follow if you've tagged feeds by topic (News / Tech / Culture / …). Click any headline to read the article in a clean reader pane — extracted via Mozilla's Readability, rendered in serif type, no ads, no trackers.
+The front page is a full-width lead story above a 3-column masonry of the rest of the day's news. The builder prefers a lead carrying both halves — a picture that actually loads, validated and warmed before publishing, and text to read under the headline — but never leaves the page without one: failing that it takes a story with a picture, then one with text, then whatever the paper has. A lead with no picture becomes a full-width headline over a two-column deck. Section pages follow if you've tagged feeds by topic (News / Tech / Culture / …). Click any headline to read the article in a clean reader pane — extracted via Mozilla's Readability, rendered in serif type, no ads, no trackers.
 
 ## Screenshots
 
@@ -177,7 +177,7 @@ Everything under `~/Library/Application Support/JorvikDailyNews/`:
 - `editions/YYYY-MM-DD.json` — one file per published day; kept forever
 - `read.json` — opened article IDs, persistent across sessions
 
-No database. No telemetry. No cloud. No cookies — the reader pane uses ephemeral WebKit data stores that don't persist anything to disk or keychain.
+No database. No telemetry. No cloud. No cookies — the reader pane uses ephemeral WebKit data stores that don't persist anything to disk or keychain. Reading an article fetches the article and nothing else: the extractor refuses every subresource the page asks for, so its images, fonts, analytics beacons and tracking pixels are never requested.
 
 ## Updates
 
@@ -188,6 +188,7 @@ Updates are handled by [Sparkle](https://sparkle-project.org). The app checks fo
 - Pure Swift + SwiftUI. `swiftc -O` single-binary build — no Xcode project required.
 - Feed parsing via Foundation's `XMLParser`. RSS 2.0 and Atom 1.0. No third-party feed library.
 - Reader pane is `WKWebView` + Mozilla [Readability.js](https://github.com/mozilla/readability) (Apache-2.0, bundled as a resource). Networking goes through `URLSession` with a desktop-Safari user agent; WebKit only handles DOM + JavaScript for Readability.
+- The extractor's web view **refuses every subresource load** via a content rule list. Handing WebKit a base URL makes it resolve and fetch each image, stylesheet, font, script and beacon the HTML references, and `didFinish` — which extraction waits on — does not fire until all of them settle. One beacon that never answers and it never fires at all. Readability parses structure and needs none of it: measured on three articles, blocking took them to 0.11s, 0.11s and 0.15s from two indefinite stalls and 13.06s, and the DOM came out identical (38,179 characters of body text against 38,178). The base URL still goes in, so relative links in the extracted article resolve; only the fetching is refused.
 - Both WebKit views use `WKWebsiteDataStore.nonPersistent()` — no cookies, no local storage, no keychain prompts.
 - The Readability reader pane has content JavaScript disabled (`allowsContentJavaScript = false`); it renders static extracted HTML only. The video-embed and live-page web views run JavaScript (a player needs it), still on a non-persistent data store.
 - Video plays in-app: YouTube/Vimeo via a chrome-free `<iframe>` host page in `WKWebView`; direct media via `AVKit`'s `AVPlayer`. PDFs render in `PDFKit`. No video or PDF ever bounces you out to a browser.

@@ -42,12 +42,56 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         }
     }
 
-    private let webView: WKWebView
+    private var webView: WKWebView!
     private var continuation: CheckedContinuation<Article, Error>?
     private var readabilityScript: String = ""
     private var timeoutTask: Task<Void, Never>?
 
-    override init() {
+    /// A rule list that blocks every load the page asks for.
+    ///
+    /// This is the difference between the reader working and hanging. Handing
+    /// WebKit a base URL makes it resolve and fetch every subresource the HTML
+    /// references — images, stylesheets, fonts, scripts, tracking beacons —
+    /// from the live site, and `didFinish` does not fire until all of them
+    /// settle. One beacon that never answers and it never fires at all, so the
+    /// extractor waits for ever on downloads it is going to throw away.
+    ///
+    /// Readability parses structure. Measured on three articles that hung or
+    /// crawled: blocking subresources took them to 0.11s, 0.11s and 0.15s from
+    /// two stalls and 13.06s — and the DOM came out the same, 38,179 characters
+    /// of body text against 38,178. Nothing Readability reads is fetched over
+    /// the network.
+    ///
+    /// The base URL still goes in, so relative links in the extracted article
+    /// resolve correctly. Only the *loading* is refused.
+    ///
+    /// A side effect worth having: opening an article no longer downloads that
+    /// page's trackers and beacons into a hidden web view.
+    private static let blockAllLoads = #"[{"trigger":{"url-filter":".*"},"action":{"type":"block"}}]"#
+    private static let ruleListID = "cc.jorviksoftware.JorvikDailyNews.extractor.blockSubresources"
+
+    /// Compiled once per machine and then found on disk, so this costs nothing
+    /// after the first article. Returns nil if compilation fails, in which case
+    /// extraction proceeds as before rather than not at all.
+    private static func subresourceBlocker() async -> WKContentRuleList? {
+        guard let store = WKContentRuleListStore.default() else {
+            jdnLog("extractor: no content rule store — subresources will be fetched")
+            return nil
+        }
+        if let found = await withCheckedContinuation({ (c: CheckedContinuation<WKContentRuleList?, Never>) in
+            store.lookUpContentRuleList(forIdentifier: ruleListID) { list, _ in c.resume(returning: list) }
+        }) {
+            return found
+        }
+        return await withCheckedContinuation { (c: CheckedContinuation<WKContentRuleList?, Never>) in
+            store.compileContentRuleList(forIdentifier: ruleListID, encodedContentRuleList: blockAllLoads) { list, error in
+                if let error { jdnLog("extractor: subresource blocklist failed to compile — \(error.localizedDescription)") }
+                c.resume(returning: list)
+            }
+        }
+    }
+
+    private func makeWebView(blocker: WKContentRuleList?) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.suppressesIncrementalRendering = true
         // Ephemeral data store — don't persist cookies across launches.
@@ -55,7 +99,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         // Disable page-script execution entirely. Readability runs on the
         // static DOM that came down in the HTML, not on anything a page
         // script would render later; for SPAs that needed JS to render
-        // their article body, we already fall back to the feed summary.
+        // their article body, we already fall back to the live page.
         // Turning page scripts off stops them ever calling `crypto.subtle`,
         // which is what reaches the system keychain and triggers the
         // "WebCrypto Master Key" prompt — no amount of JS-level stubbing
@@ -65,9 +109,10 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         let pagePrefs = WKWebpagePreferences()
         pagePrefs.allowsContentJavaScript = false
         config.defaultWebpagePreferences = pagePrefs
-        self.webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
-        super.init()
-        self.webView.navigationDelegate = self
+        if let blocker { config.userContentController.add(blocker) }
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
+        view.navigationDelegate = self
+        return view
     }
 
     func extract(url: URL, minimumLength: Int = 500, timeout: TimeInterval = 20) async throws -> Article {
@@ -79,6 +124,10 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         }
         self.readabilityScript = js
         jdnLog("extract: Readability.js loaded (\(js.count) chars)")
+
+        let blocker = await Self.subresourceBlocker()
+        jdnLog("extract: subresource blocking \(blocker == nil ? "UNAVAILABLE — falling back to fetching them" : "on")")
+        self.webView = makeWebView(blocker: blocker)
 
         let (html, finalURL) = try await fetchHTML(url: url, timeout: timeout / 2)
 
