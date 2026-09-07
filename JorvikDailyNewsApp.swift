@@ -15,6 +15,7 @@ struct JorvikDailyNewsApp: App {
         // Which mode produced this log. Without it a pictures-off run reads
         // identically to a run where no picture happened to load.
         jdnLog(ImageCache.configSummary)
+        jdnLog(ArticleExtractor.configSummary)
 
         // Tugboat-cooperative dock visibility. Listens for hide/show
         // toggles broadcast by Tugboat and self-applies via setActivationPolicy.

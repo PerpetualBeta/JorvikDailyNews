@@ -28,6 +28,9 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         case tooShort(Int)
         case timedOut
         case isPDF
+        /// WebKit's own content process died, so no navigation callback will
+        /// ever arrive. Distinct from `timedOut` because the cause is not slowness.
+        case contentProcessTerminated
 
         var errorDescription: String? {
             switch self {
@@ -38,6 +41,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             case .tooShort(let n): "Article content too thin (\(n) characters)"
             case .timedOut: "The page took too long to load"
             case .isPDF: "This link is a PDF document"
+            case .contentProcessTerminated: "The page renderer stopped unexpectedly"
             }
         }
     }
@@ -69,6 +73,34 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// page's trackers and beacons into a hidden web view.
     private static let blockAllLoads = #"[{"trigger":{"url-filter":".*"},"action":{"type":"block"}}]"#
     private static let ruleListID = "cc.jorviksoftware.JorvikDailyNews.extractor.blockSubresources"
+
+    /// Whether the extractor refuses subresource loads.
+    ///
+    ///     defaults write cc.jorviksoftware.JorvikDailyNews blockSubresources -bool NO
+    ///     defaults delete cc.jorviksoftware.JorvikDailyNews blockSubresources
+    ///
+    /// On by default, and it should stay on: it is what stopped articles hanging
+    /// on beacons that never answer. The switch exists because a
+    /// block-everything rule list is a blunt instrument. If a WebKit version
+    /// ever applied it to the main document of a `loadHTMLString` rather than
+    /// only to that document's subresources, the navigation would never
+    /// complete, and the symptom would be indistinguishable from the fault the
+    /// blocker cures. One command then tells the two apart.
+    ///
+    /// Read through `object(forKey:)` rather than `bool(forKey:)`, which answers
+    /// false for a key that was never set and would ship the blocker off for
+    /// everyone.
+    static let blockSubresourcesKey = "blockSubresources"
+
+    static var blocksSubresources: Bool {
+        UserDefaults.standard.object(forKey: blockSubresourcesKey) as? Bool ?? true
+    }
+
+    /// One line for the launch header, so a log says which mode produced it.
+    static var configSummary: String {
+        "config: subresource blocking "
+            + (blocksSubresources ? "ON" : "OFF (blockSubresources=NO) — subresources will be fetched")
+    }
 
     /// Compiled once per machine and then found on disk, so this costs nothing
     /// after the first article. Returns nil if compilation fails, in which case
@@ -125,8 +157,12 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         self.readabilityScript = js
         jdnLog("extract: Readability.js loaded (\(js.count) chars)")
 
-        let blocker = await Self.subresourceBlocker()
-        jdnLog("extract: subresource blocking \(blocker == nil ? "UNAVAILABLE — falling back to fetching them" : "on")")
+        let blocker = Self.blocksSubresources ? await Self.subresourceBlocker() : nil
+        if Self.blocksSubresources {
+            jdnLog("extract: subresource blocking \(blocker == nil ? "UNAVAILABLE — falling back to fetching them" : "on")")
+        } else {
+            jdnLog("extract: subresource blocking OFF by preference — subresources will be fetched")
+        }
         self.webView = makeWebView(blocker: blocker)
 
         let (html, finalURL) = try await fetchHTML(url: url, timeout: timeout / 2)
@@ -144,9 +180,35 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                         jdnLog("extract: timeout fired but the continuation was already resumed")
                         return
                     }
-                    jdnLog("extract: TIMED OUT after \(timeout / 2)s waiting on the web view")
+                    // What the web view was doing when it ran out of time.
+                    // These separate three states that look identical from
+                    // outside: a load that never began (progress 0, not
+                    // loading), one stuck partway (progress parks around
+                    // 0.6), and a DOM that is ready while `didFinish` is
+                    // withheld. Read synchronously, because a wedged web view
+                    // may never answer an asynchronous probe.
+                    let view = self.webView
+                    let progress = view?.estimatedProgress ?? -1
+                    let loading = view?.isLoading ?? false
+                    let currentURL = view?.url?.absoluteString ?? "nil"
+                    jdnLog("extract: TIMED OUT after \(timeout / 2)s waiting on the web view"
+                           + " (estimatedProgress \(String(format: "%.2f", progress)),"
+                           + " isLoading \(loading), url \(currentURL))")
+                    // `document.readyState`, for the log alone. Nothing waits
+                    // on it. The web view is captured strongly so it outlives
+                    // this extractor long enough to answer; if the content
+                    // process is gone it never answers, and the absence of the
+                    // line is itself the finding.
+                    view?.evaluateJavaScript("document.readyState") { value, error in
+                        if let state = value as? String {
+                            jdnLog("extract: post-timeout document.readyState = \(state)")
+                        } else {
+                            jdnLog("extract: post-timeout readyState probe returned nothing"
+                                   + " — \(error?.localizedDescription ?? "no value, no error")")
+                        }
+                    }
                     self.continuation = nil
-                    self.webView.stopLoading()
+                    view?.stopLoading()
                     cont.resume(throwing: ExtractionError.timedOut)
                 }
             }
@@ -225,6 +287,22 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             self.continuation = nil
             self.timeoutTask?.cancel()
             cont.resume(throwing: ExtractionError.fetchFailed(message))
+        }
+    }
+
+    /// WebKit's content process died. Without this the app sees nothing at
+    /// all: no `didFinish`, no `didFail`, no `didFailProvisionalNavigation`,
+    /// just silence until the extractor's own timeout. That is exactly the
+    /// signature in the issue #1 reporter's log, and it was unreadable because
+    /// this callback was not implemented.
+    nonisolated func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        jdnLog("webview: WEB CONTENT PROCESS TERMINATED — WebKit's renderer died,"
+               + " so no navigation callback can arrive. Usually memory pressure.")
+        Task { @MainActor [weak self] in
+            guard let self, let cont = self.continuation else { return }
+            self.continuation = nil
+            self.timeoutTask?.cancel()
+            cont.resume(throwing: ExtractionError.contentProcessTerminated)
         }
     }
 

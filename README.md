@@ -196,7 +196,7 @@ Updates are handled by [Sparkle](https://sparkle-project.org). The app checks fo
 - Pure Swift + SwiftUI. `swiftc -O` single-binary build — no Xcode project required.
 - Feed parsing via Foundation's `XMLParser`. RSS 2.0 and Atom 1.0. No third-party feed library.
 - Reader pane is `WKWebView` + Mozilla [Readability.js](https://github.com/mozilla/readability) (Apache-2.0, bundled as a resource). Networking goes through `URLSession` with a desktop-Safari user agent; WebKit only handles DOM + JavaScript for Readability.
-- The extractor's web view **refuses every subresource load** via a content rule list. Handing WebKit a base URL makes it resolve and fetch each image, stylesheet, font, script and beacon the HTML references, and `didFinish` — which extraction waits on — does not fire until all of them settle. One beacon that never answers and it never fires at all. Readability parses structure and needs none of it: measured on three articles, blocking took them to 0.11s, 0.11s and 0.15s from two indefinite stalls and 13.06s, and the DOM came out identical (38,179 characters of body text against 38,178). The base URL still goes in, so relative links in the extracted article resolve; only the fetching is refused.
+- The extractor's web view **refuses every subresource load** via a content rule list. Handing WebKit a base URL makes it resolve and fetch each image, stylesheet, font, script and beacon the HTML references, and `didFinish` — which extraction waits on — does not fire until all of them settle. One beacon that never answers and it never fires at all. Readability parses structure and needs none of it: measured on three articles, blocking took them to 0.11s, 0.11s and 0.15s from two indefinite stalls and 13.06s, and the DOM came out identical (38,179 characters of body text against 38,178). The base URL still goes in, so relative links in the extracted article resolve; only the fetching is refused. Switchable with `blockSubresources`, which is on by default and should stay on: it exists because a block-everything rule is a blunt instrument, and if a version of macOS ever applied it to the article's own HTML rather than only to the things that HTML references, the page would never finish loading and the symptom would look exactly like the fault the rule cures. One command then tells the two apart.
 - Both WebKit views use `WKWebsiteDataStore.nonPersistent()` — no cookies, no local storage, no keychain prompts.
 - The Readability reader pane has content JavaScript disabled (`allowsContentJavaScript = false`); it renders static extracted HTML only. The video-embed and live-page web views run JavaScript (a player needs it), still on a non-persistent data store.
 - Video plays in-app: YouTube/Vimeo via a chrome-free `<iframe>` host page in `WKWebView`; direct media via `AVKit`'s `AVPlayer`. PDFs render in `PDFKit`. No video or PDF ever bounces you out to a browser.
@@ -236,7 +236,7 @@ Paywalled sites, JavaScript-rendered SPAs and some custom CMSes resist extractio
 
 ### An article won't open
 
-The reader waits 25 seconds at the outside and then shows the real page rather than leaving you on "Turning to the article…". If you are seeing that message persist, turn on diagnostics below and send the log — it will say which step never returned. Worth trying alongside it: `defaults write cc.jorviksoftware.JorvikDailyNews showPictures -bool NO`, then relaunch. If articles open with pictures off, the reader is being starved by the picture work rather than failing on its own.
+The reader waits 25 seconds at the outside and then shows the real page rather than leaving you on "Turning to the article…". If you are seeing that message persist, turn on diagnostics below and send the log — it will say which step never returned. Two things are worth trying alongside it, each a single command and a relaunch. `defaults write cc.jorviksoftware.JorvikDailyNews showPictures -bool NO` — if articles open with pictures off, the reader is being starved by the picture work rather than failing on its own. And `defaults write cc.jorviksoftware.JorvikDailyNews blockSubresources -bool NO` — if articles open with that off, the content rule list described below is being applied more widely than intended on your version of macOS. `defaults delete` either key to put it back.
 
 ### Diagnostics
 
@@ -256,6 +256,7 @@ Every run's second line records the settings actually in force, so a log says wh
 
 ```
 config: pictures ON, maxPixelSize 2048px, cache cap 1152.0 MB on a 36 GB machine, hideReadItems=true
+config: subresource blocking ON
 ```
 
 The reader is instrumented end to end: which branch a link took, the fetch's status and size, each web view callback, whether a timeout fired, what Readability returned, and which fallback was chosen. If you are reporting a problem with opening articles, that log is the thing worth attaching.
@@ -268,6 +269,23 @@ image: EVICTED 9.0 MB — holding 34.6 MB of 1152.0 MB across 12
 ```
 
 The source dimensions come from the file's metadata, so reading them costs no decode. `EVICTED` lines are the ones worth counting: a machine that evicts steadily is running against its cap, and a machine that never evicts is not, which is the difference between a memory problem and something else entirely.
+
+When the reader gives up, the log says what the web view was doing rather than only that it stopped:
+
+```
+extract: TIMED OUT after 10.0s waiting on the web view (estimatedProgress 0.00, isLoading false, url ...)
+extract: post-timeout document.readyState = interactive
+```
+
+Those separate three states that look identical from outside. A progress of 0 with `isLoading false` means the load never began. A progress parked near 0.6 means it stuck partway. A `readyState` of `interactive` or `complete` means the page is ready and the finished signal is being withheld. If the second line never appears at all, the web view stopped answering entirely, which is itself the answer.
+
+One line matters more than any of them:
+
+```
+webview: WEB CONTENT PROCESS TERMINATED — WebKit's renderer died, so no navigation callback can arrive.
+```
+
+WebKit renders pages in a separate process. If that process is killed, usually for memory, no success or failure callback is ever sent. Without this line the app can only report that it waited and gave up, which describes the symptom and hides the cause.
 
 ### Images missing from some items
 
