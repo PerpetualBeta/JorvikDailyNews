@@ -51,6 +51,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     private var readabilityScript: String = ""
     private var timeoutTask: Task<Void, Never>?
     private var domReadyPollTask: Task<Void, Never>?
+
     /// Extraction runs once. `didFinish` and the DOM poll below are two routes
     /// to the same place, and on a machine where both work they race.
     private var extractionStarted = false
@@ -211,7 +212,53 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         if let blocker { config.userContentController.add(blocker) }
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
         view.navigationDelegate = self
+        host(view)
         return view
+    }
+
+    /// Put the web view in a real window, because WebKit will not load into one
+    /// that is not.
+    ///
+    /// This is documented Apple behaviour rather than a quirk of any one
+    /// release. Apple tightened it in iOS 16 — the forum thread is titled "iOS
+    /// 16 kills WKWebView instances unattached to a ViewController" and the
+    /// reporter's case is ours exactly, a headless web view used only to scrape
+    /// — and the same policy has since arrived on macOS. WebKit says so
+    /// plainly in its own log: "Not eagerly reloading the view because it is
+    /// not currently visible."
+    ///
+    /// On macOS 26 an unattached view still loads. On macOS 27 it does not, and
+    /// it fails **silently**: `estimatedProgress` parks at 0.10, `isLoading`
+    /// stays true, no navigation callback ever arrives, and the DOM stays at
+    /// the 39-character empty skeleton a web view starts with. Measured across
+    /// four logs from the issue #1 reporter: **zero reader views, ever**, in
+    /// every version, with and without the content rule list. Four releases
+    /// were spent on other explanations before anyone thought to search for
+    /// this one.
+    ///
+    /// `alphaValue` is 0.01 and not 0, following `WKZombie`, whose author hit
+    /// the same wall: at zero WebKit may count the view as invisible, and 1% is
+    /// imperceptible. It goes in **below** every existing subview, which
+    /// `WKZombie` does not have to care about and we do: their host window has
+    /// no interface, ours is the newspaper, and a full-size view at 1% alpha
+    /// sitting on top would swallow every click.
+    private func host(_ view: WKWebView) {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first,
+              let contentView = window.contentView else {
+            jdnLog("extract: no window to host the web view — WebKit may refuse to load")
+            return
+        }
+        view.frame = contentView.bounds
+        view.alphaValue = 0.01
+        contentView.addSubview(view, positioned: .below, relativeTo: nil)
+        jdnLog("extract: web view hosted in \(window.className) (\(Int(contentView.bounds.width))x\(Int(contentView.bounds.height)))")
+    }
+
+    /// Take the web view back out again. Left in place it would sit under the
+    /// interface for the life of the app, one per article opened.
+    private func unhost() {
+        guard let view = webView, view.superview != nil else { return }
+        view.removeFromSuperview()
     }
 
     func extract(url: URL, minimumLength: Int = 500, timeout: TimeInterval = 20) async throws -> Article {
@@ -280,6 +327,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                     self.continuation = nil
                     self.domReadyPollTask?.cancel()
                     view?.stopLoading()
+                    self.unhost()
                     cont.resume(throwing: ExtractionError.timedOut)
                 }
             }
@@ -354,6 +402,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                     jdnLog("extract: DOM holds only \(domChars) chars of \(self.handedOverChars)"
                            + " after \(Self.emptyDOMTicksBeforeRetry) ticks — retrying with"
                            + " subresource blocking OFF")
+                    self.unhost()
                     self.webView = self.makeWebView(blocker: nil)
                     self.webView.loadHTMLString(self.loadedHTML, baseURL: baseURL)
                     continue
@@ -416,6 +465,17 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         throw ExtractionError.badEncoding
     }
 
+    deinit {
+        // Not via `unhost()`, which is main-actor isolated. A view left behind
+        // would sit under the interface for the life of the app, one per
+        // article opened. `superview` is main-actor isolated too, so the whole
+        // check goes inside the assumption rather than only the removal.
+        guard let view = webView else { return }
+        MainActor.assumeIsolated {
+            if view.superview != nil { view.removeFromSuperview() }
+        }
+    }
+
     // MARK: - WKNavigationDelegate
 
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -437,6 +497,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             self.continuation = nil
             self.timeoutTask?.cancel()
             self.domReadyPollTask?.cancel()
+            self.unhost()
             cont.resume(throwing: ExtractionError.fetchFailed(message))
         }
     }
@@ -454,6 +515,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             self.continuation = nil
             self.timeoutTask?.cancel()
             self.domReadyPollTask?.cancel()
+            self.unhost()
             cont.resume(throwing: ExtractionError.contentProcessTerminated)
         }
     }
@@ -466,6 +528,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             self.continuation = nil
             self.timeoutTask?.cancel()
             self.domReadyPollTask?.cancel()
+            self.unhost()
             cont.resume(throwing: ExtractionError.fetchFailed(message))
         }
     }
@@ -475,6 +538,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         guard !extractionStarted else { return }
         extractionStarted = true
         domReadyPollTask?.cancel()
+        defer { unhost() }
         let script = readabilityScript + "\n;JSON.stringify(new Readability(document.cloneNode(true)).parse());"
         do {
             jdnLog("readability: evaluating")
