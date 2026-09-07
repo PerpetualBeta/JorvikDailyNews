@@ -63,6 +63,32 @@ enum Standfirst {
     /// they are tuned against a real paper rather than guessed at. 0 or absent
     /// means the default.
     static var minParagraphWords: Int { knob(minWordsKey, minParagraphWordsDefault) }
+
+    /// Fewest words a page's own `description` may have and still be used as a
+    /// standfirst.
+    ///
+    /// Separate from `minParagraphWords`, and lower, because it answers a
+    /// different question about a different population. That threshold was
+    /// measured on body paragraphs, where real prose runs 20 words and up and
+    /// the leading noise is 14 or fewer. A meta description is written to be
+    /// short, so the same number throws away good ones.
+    ///
+    /// Measured across 1,002 stored summaries from seven editions: five words
+    /// rejects 15 of them, 1.5%, and every one is a fragment — "William",
+    /// "sda", "All 128", "Sunday session", "Discover the world", "computers i
+    /// guess", and the case that prompted this, Global Times declaring its own
+    /// description as "The flames of a". Raising it to eight would reject 39
+    /// and start taking readable ones with it: "A research-backed AI scenario
+    /// forecast.", "Every old criticism is new again."
+    ///
+    /// Word count cannot do all of this. In the 10-to-14 band, "Contribute to
+    /// X development by creating an account on GitHub" is boilerplate and
+    /// "Governors crack down on licence-plate-reading start-up bankrolled by
+    /// Trump donors" is a good standfirst, both at ten words. So this only
+    /// removes what is too short to be a sentence at all.
+    static let minDescriptionWordsDefault = 5
+    static let minDescriptionWordsKey = "summaryMinDescriptionWords"
+    static var minDescriptionWords: Int { knob(minDescriptionWordsKey, minDescriptionWordsDefault) }
     static var leadTargetWords: Int { knob(leadTargetKey, leadTargetWordsDefault) }
 
     private static func knob(_ key: String, _ fallback: Int) -> Int {

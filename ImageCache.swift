@@ -328,39 +328,87 @@ final class ImageCache: @unchecked Sendable {
     /// `kCGImageSourceCreateThumbnailFromImageAlways` ignores any thumbnail
     /// already embedded in the file, which is typically 160 px and would look
     /// like a badly blurred hero.
-    private static func decode(_ data: Data) -> Decoded? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        // Source dimensions come from the metadata, so reading them costs no
-        // decode. They are what makes the log able to say whether scaling did
-        // anything for this picture rather than just what it ended up as.
-        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
-        let srcW = props?[kCGImagePropertyPixelWidth] as? Int ?? 0
-        let srcH = props?[kCGImagePropertyPixelHeight] as? Int ?? 0
+    /// How many times to ask the decoder before accepting what it gives.
+    ///
+    /// Two is enough for a decoder that scales the request by a constant, which
+    /// is what macOS 27 does. Three leaves one spare.
+    private static let maxDecodeAttempts = 3
+
+    private static func thumbnail(from source: CGImageSource, longEdge: Int) -> CGImage? {
+        // `kCGImageSourceCreateThumbnailWithTransform` applies the EXIF
+        // orientation. Without it a photograph taken in portrait comes back on
+        // its side, because the flag that says so is in metadata this path
+        // discards. `CreateThumbnailFromImageAlways` ignores any thumbnail
+        // already in the file, which is typically 160 px and renders as a badly
+        // blurred hero.
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceThumbnailMaxPixelSize: longEdge,
         ]
-        guard let decoded = CGImageSourceCreateThumbnailAtIndex(
-            source, 0, options as CFDictionary
-        ) else { return nil }
-        // Enforce the cap here rather than trusting ImageIO to have honoured it.
-        //
-        // macOS 27 treats `kCGImageSourceThumbnailMaxPixelSize` as a POINT value
-        // and multiplies by the display scale, so a request for 2048 comes back
-        // at 4096. Measured from a reporter's log against this same binary:
-        // 1200x675 -> 2400x1350, 1800x1800 -> 3600x3600, and 3000x2000 ->
-        // 4096x2730 where the cap itself had doubled. Nineteen pictures in one
-        // session, every one of them LARGER after decoding than the file it came
-        // from, on an 8 GB machine: 285 MB held against a 256 MB limit and ten
-        // evictions. This function exists to reduce picture memory and on that
-        // machine it quadrupled it.
-        //
-        // Checking the result costs one comparison and does not care which
-        // version of ImageIO is underneath, which is the point. Compensating for
-        // a particular OS's scale factor would need this code to know something
-        // it cannot reliably know from a background thread, and would rot.
-        let cg = cap(decoded, to: maxPixelSize)
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    /// Decode a picture no larger than the cap, and no larger than the file.
+    ///
+    /// `NSImage(data:)` decodes at whatever resolution the source publishes and
+    /// holds it, so a 6000-pixel CDN original cost 77.2 MB as a bitmap against
+    /// 9.0 MB scaled. ImageIO scales during decode, so the full-size bitmap is
+    /// never allocated.
+    ///
+    /// Two things are then needed, and the first attempt at this shipped
+    /// without either.
+    ///
+    /// **Never ask for more than the file has.** The cap is a ceiling, not a
+    /// size. Asking for 2048 from a 1200-pixel image invites a decoder to
+    /// answer with something larger than the file, which is not a saving in
+    /// any direction.
+    ///
+    /// **Verify the answer and correct by what was measured.** macOS 27 scales
+    /// the request by the display scale, so 2048 comes back as 4096. Measured
+    /// on a reporter's 8 GB machine: 38 pictures in one session, every one
+    /// decoded larger than its own file, 301.5 MB held against a 256 MB limit
+    /// and 21 evictions. The previous attempt tried to fix that with a
+    /// `CGContext` redraw and it silently did nothing, because both of its
+    /// failure paths returned the original image with no log line.
+    ///
+    /// So this asks again instead, scaled by the ratio it just observed. That
+    /// needs no knowledge of the display scale, which a background thread
+    /// cannot reliably obtain, and it self-corrects on whatever a future
+    /// decoder does. It costs one extra decode only where the first answer was
+    /// wrong, and it says so in the log either way. There is no silent path.
+    private static func decode(_ data: Data) -> Decoded? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        // Source dimensions come from the metadata, so reading them costs no
+        // decode.
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let srcW = props?[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let srcH = props?[kCGImagePropertyPixelHeight] as? Int ?? 0
+
+        let sourceLongEdge = max(srcW, srcH)
+        let target = sourceLongEdge > 0 ? min(maxPixelSize, sourceLongEdge) : maxPixelSize
+
+        var request = target
+        var best: CGImage?
+        for attempt in 1...maxDecodeAttempts {
+            guard let cg = thumbnail(from: source, longEdge: request) else { break }
+            best = cg
+            let got = max(cg.width, cg.height)
+            if got <= target {
+                if attempt > 1 {
+                    jdnLog("image: decode corrected at attempt \(attempt) — asked \(request)px, got \(got)px")
+                }
+                break
+            }
+            let corrected = max(1, Int((Double(request) * Double(target) / Double(got)).rounded(.down)))
+            if corrected == request || attempt == maxDecodeAttempts {
+                jdnLog("image: decoder will not honour \(target)px — asked \(request)px, got"
+                       + " \(cg.width)x\(cg.height) after \(attempt) attempt(s); keeping it")
+                break
+            }
+            request = corrected
+        }
+        guard let cg = best else { return nil }
         // Size in pixels, so `NSImage.size` and the bitmap agree. The 48pt
         // tracker threshold above is a pixel test in intent, and this is what
         // makes it one.
@@ -368,29 +416,6 @@ final class ImageCache: @unchecked Sendable {
                        sourceWidth: srcW, sourceHeight: srcH)
     }
 
-    /// Scale an image down so its long edge is at most `maxPixelSize`.
-    ///
-    /// Returns the original untouched when it already fits, which is the usual
-    /// case, so this adds one comparison to a normal decode. Device RGB rather
-    /// than the source's own colour space, because an indexed or CMYK space is
-    /// not a valid bitmap context and would fail the whole decode; a hero image
-    /// drawn in sRGB is the correct outcome anyway.
-    private static func cap(_ image: CGImage, to maxPixelSize: Int) -> CGImage {
-        let longest = max(image.width, image.height)
-        guard longest > maxPixelSize, maxPixelSize > 0 else { return image }
-        let factor = CGFloat(maxPixelSize) / CGFloat(longest)
-        let width = max(1, Int((CGFloat(image.width) * factor).rounded()))
-        let height = max(1, Int((CGFloat(image.height) * factor).rounded()))
-        guard let context = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return image }
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage() ?? image
-    }
 
     /// What a decoded picture costs the cache, in bytes: four per pixel.
     ///

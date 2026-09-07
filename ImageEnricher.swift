@@ -130,7 +130,20 @@ struct ImageEnricher: Sendable {
             guard let match = regex.firstMatch(in: head, range: range), match.numberOfRanges > 1,
                   let r = Range(match.range(at: 1), in: head) else { continue }
             let text = Standfirst.extract(from: String(head[r]))
-            if !text.isEmpty { return text }
+            // Non-empty is not enough. A page can declare a description that
+            // its own CMS has cut off mid-phrase, and rendering that under a
+            // headline looks like our fault rather than theirs: Global Times
+            // served `description` as exactly "The flames of a", which JDN
+            // then printed as the lead's whole standfirst. Too short to be a
+            // sentence means no standfirst, and lead selection prefers an item
+            // that has one.
+            guard !text.isEmpty else { continue }
+            let words = text.split(whereSeparator: \.isWhitespace).count
+            guard words >= Standfirst.minDescriptionWords else {
+                jdnLog("enrich: description of \(words) word(s) is too short to be a standfirst — \(text.prefix(60))")
+                continue
+            }
+            return text
         }
         return nil
     }

@@ -54,6 +54,39 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// Extraction runs once. `didFinish` and the DOM poll below are two routes
     /// to the same place, and on a machine where both work they race.
     private var extractionStarted = false
+    /// Set once the load has been retried with the blocker off, so a document
+    /// that is empty for its own reasons cannot loop.
+    private var retriedWithoutBlocker = false
+    private var emptyDOMTicks = 0
+    /// What was handed to the web view, to compare the DOM against.
+    private var handedOverChars = 0
+    private var loadedHTML = ""
+    private var loadedBaseURL: URL?
+
+    /// Below this share of the HTML we handed over, the DOM is not the document
+    /// we loaded.
+    ///
+    /// A `WKWebView` starts out holding an empty document, about 39 characters
+    /// of `<html><head></head><body></body></html>`, and **that empty document
+    /// already reports `readyState` as `complete`**. So `readyState` alone
+    /// cannot tell "the article is parsed" from "the article has not arrived
+    /// and may never". Measured on this machine, a real article's DOM comes
+    /// back at 62% to 68% of the HTML handed over, because `outerHTML`
+    /// normalises as it serialises. Ten per cent sits well clear of both.
+    ///
+    /// A single-page app with scripts disabled still holds every character it
+    /// was served, so this does not mistake "no article in the document" for
+    /// "no document".
+    private static let minimumDOMShare = 0.10
+
+    /// How many consecutive ticks of `complete` with an empty DOM before the
+    /// document is called lost rather than late.
+    ///
+    /// Five ticks is half a second. Below that the load may simply be slower
+    /// than the first tick, which is the ordinary case on a large page or a
+    /// busy machine, and waiting is right. Above it the document is not
+    /// coming.
+    private static let emptyDOMTicksBeforeRetry = 5
 
     /// How often to ask the DOM whether it is ready.
     ///
@@ -82,8 +115,31 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     ///
     /// A side effect worth having: opening an article no longer downloads that
     /// page's trackers and beacons into a hidden web view.
-    private static let blockAllLoads = #"[{"trigger":{"url-filter":".*"},"action":{"type":"block"}}]"#
-    private static let ruleListID = "cc.jorviksoftware.JorvikDailyNews.extractor.blockSubresources"
+    /// Blocks the things an article references. It does NOT list `document`,
+    /// and that omission is the whole point.
+    ///
+    /// This was `{"url-filter":".*"}` with no resource types, which reads as
+    /// "block every load". On macOS 26 that left the `loadHTMLString` document
+    /// alone. On macOS 27 it does not: the document arrived empty, so
+    /// `document.readyState` reported `complete` for an empty document and
+    /// Readability correctly found no article in it. The tell was in the
+    /// timings — 1.6 MB of HTML and 164 KB both reached `complete` in about
+    /// 140 ms, because nothing was being parsed either time.
+    ///
+    /// Naming the resource types means a document load cannot be caught by the
+    /// rule whatever a future WebKit decides to classify it as. Measured on a
+    /// 1 MB BBC page with 125 images, 71 scripts and 23 stylesheets, one
+    /// condition per process: 106 ms with this rule against 122 ms with the
+    /// blanket one and 855 ms with no rule at all, and the same 8,161
+    /// characters of body text in all three. It blocks as well and cannot
+    /// block the article.
+    private static let blockAllLoads = #"""
+    [{"trigger":{"url-filter":".*","resource-type":["image","style-sheet","script","font","media","raw","svg-document","popup"]},"action":{"type":"block"}}]
+    """#
+    /// Changed with the rule. A stored list compiled from the old JSON would
+    /// otherwise be found on disk and reused for ever, so the identifier
+    /// carries the rule's version.
+    private static let ruleListID = "cc.jorviksoftware.JorvikDailyNews.extractor.blockSubresources.v2"
 
     /// Whether the extractor refuses subresource loads.
     ///
@@ -179,6 +235,8 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         let (html, finalURL) = try await fetchHTML(url: url, timeout: timeout / 2)
 
         self.extractionStarted = false
+        self.retriedWithoutBlocker = false
+        self.emptyDOMTicks = 0
         return try await withCheckedThrowingContinuation { cont in
             self.continuation = cont
             self.timeoutTask = Task { [weak self] in
@@ -226,6 +284,9 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                 }
             }
             jdnLog("extract: handing \(html.count) chars to the web view, base \(finalURL.absoluteString)")
+            self.handedOverChars = html.count
+            self.loadedHTML = html
+            self.loadedBaseURL = finalURL
             self.webView.loadHTMLString(html, baseURL: finalURL)
             self.startDOMReadyPoll()
         }
@@ -256,11 +317,50 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                 guard !Task.isCancelled, let self,
                       !self.extractionStarted, self.continuation != nil,
                       let view = self.webView else { return }
-                let raw = try? await view.evaluateJavaScript("document.readyState")
-                guard let state = raw as? String,
+                // Both facts in one round trip. `readyState` alone is not
+                // enough: the empty document a web view starts with already
+                // reports `complete`, so the DOM's own size is what separates
+                // "the article is parsed" from "the article has not arrived".
+                let probe = "document.readyState + '|' + document.documentElement.outerHTML.length"
+                let raw = try? await view.evaluateJavaScript(probe)
+                guard let answer = raw as? String else { continue }
+                let parts = answer.split(separator: "|", maxSplits: 1)
+                guard let state = parts.first.map(String.init),
                       state == "complete" || state == "interactive" else { continue }
+                let domChars = parts.count > 1 ? Int(parts[1]) ?? 0 : 0
                 guard !self.extractionStarted, self.continuation != nil else { return }
-                jdnLog("extract: DOM ready (readyState=\(state)) — extracting without waiting for didFinish")
+
+                let plausible = self.handedOverChars == 0
+                    || Double(domChars) >= Double(self.handedOverChars) * Self.minimumDOMShare
+                if !plausible {
+                    // Late, or lost. Keep waiting for half a second before
+                    // deciding, because the first tick can easily land before a
+                    // large document has parsed.
+                    self.emptyDOMTicks += 1
+                    guard self.emptyDOMTicks >= Self.emptyDOMTicksBeforeRetry else { continue }
+                    guard !self.retriedWithoutBlocker, !self.loadedHTML.isEmpty,
+                          let baseURL = self.loadedBaseURL else {
+                        // Nothing left to try. Let the timeout take it to the
+                        // live page, and say why rather than reporting "no
+                        // article found", which is true of this DOM and false
+                        // of the article.
+                        jdnLog("extract: DOM still holds only \(domChars) chars of"
+                               + " \(self.handedOverChars) after \(self.emptyDOMTicks) ticks"
+                               + " — the document did not arrive")
+                        return
+                    }
+                    self.retriedWithoutBlocker = true
+                    self.emptyDOMTicks = 0
+                    jdnLog("extract: DOM holds only \(domChars) chars of \(self.handedOverChars)"
+                           + " after \(Self.emptyDOMTicksBeforeRetry) ticks — retrying with"
+                           + " subresource blocking OFF")
+                    self.webView = self.makeWebView(blocker: nil)
+                    self.webView.loadHTMLString(self.loadedHTML, baseURL: baseURL)
+                    continue
+                }
+
+                jdnLog("extract: DOM ready (readyState=\(state), \(domChars) chars of"
+                       + " \(self.handedOverChars))\(self.retriedWithoutBlocker ? " after retry without the blocker" : "")")
                 await self.runExtraction()
                 return
             }
