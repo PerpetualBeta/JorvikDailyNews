@@ -341,14 +341,55 @@ final class ImageCache: @unchecked Sendable {
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
-        guard let cg = CGImageSourceCreateThumbnailAtIndex(
+        guard let decoded = CGImageSourceCreateThumbnailAtIndex(
             source, 0, options as CFDictionary
         ) else { return nil }
+        // Enforce the cap here rather than trusting ImageIO to have honoured it.
+        //
+        // macOS 27 treats `kCGImageSourceThumbnailMaxPixelSize` as a POINT value
+        // and multiplies by the display scale, so a request for 2048 comes back
+        // at 4096. Measured from a reporter's log against this same binary:
+        // 1200x675 -> 2400x1350, 1800x1800 -> 3600x3600, and 3000x2000 ->
+        // 4096x2730 where the cap itself had doubled. Nineteen pictures in one
+        // session, every one of them LARGER after decoding than the file it came
+        // from, on an 8 GB machine: 285 MB held against a 256 MB limit and ten
+        // evictions. This function exists to reduce picture memory and on that
+        // machine it quadrupled it.
+        //
+        // Checking the result costs one comparison and does not care which
+        // version of ImageIO is underneath, which is the point. Compensating for
+        // a particular OS's scale factor would need this code to know something
+        // it cannot reliably know from a background thread, and would rot.
+        let cg = cap(decoded, to: maxPixelSize)
         // Size in pixels, so `NSImage.size` and the bitmap agree. The 48pt
         // tracker threshold above is a pixel test in intent, and this is what
         // makes it one.
         return Decoded(image: NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)),
                        sourceWidth: srcW, sourceHeight: srcH)
+    }
+
+    /// Scale an image down so its long edge is at most `maxPixelSize`.
+    ///
+    /// Returns the original untouched when it already fits, which is the usual
+    /// case, so this adds one comparison to a normal decode. Device RGB rather
+    /// than the source's own colour space, because an indexed or CMYK space is
+    /// not a valid bitmap context and would fail the whole decode; a hero image
+    /// drawn in sRGB is the correct outcome anyway.
+    private static func cap(_ image: CGImage, to maxPixelSize: Int) -> CGImage {
+        let longest = max(image.width, image.height)
+        guard longest > maxPixelSize, maxPixelSize > 0 else { return image }
+        let factor = CGFloat(maxPixelSize) / CGFloat(longest)
+        let width = max(1, Int((CGFloat(image.width) * factor).rounded()))
+        let height = max(1, Int((CGFloat(image.height) * factor).rounded()))
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return image }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage() ?? image
     }
 
     /// What a decoded picture costs the cache, in bytes: four per pixel.

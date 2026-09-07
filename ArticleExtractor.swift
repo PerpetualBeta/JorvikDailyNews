@@ -50,6 +50,17 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     private var continuation: CheckedContinuation<Article, Error>?
     private var readabilityScript: String = ""
     private var timeoutTask: Task<Void, Never>?
+    private var domReadyPollTask: Task<Void, Never>?
+    /// Extraction runs once. `didFinish` and the DOM poll below are two routes
+    /// to the same place, and on a machine where both work they race.
+    private var extractionStarted = false
+
+    /// How often to ask the DOM whether it is ready.
+    ///
+    /// 100ms is well under the cost of being wrong: a page that is ready in
+    /// 200ms used to wait out the whole 10s timeout, so the poll pays for
+    /// itself many times over on the first article.
+    private static let domPollInterval: UInt64 = 100_000_000
 
     /// A rule list that blocks every load the page asks for.
     ///
@@ -167,6 +178,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
 
         let (html, finalURL) = try await fetchHTML(url: url, timeout: timeout / 2)
 
+        self.extractionStarted = false
         return try await withCheckedThrowingContinuation { cont in
             self.continuation = cont
             self.timeoutTask = Task { [weak self] in
@@ -208,12 +220,50 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                         }
                     }
                     self.continuation = nil
+                    self.domReadyPollTask?.cancel()
                     view?.stopLoading()
                     cont.resume(throwing: ExtractionError.timedOut)
                 }
             }
             jdnLog("extract: handing \(html.count) chars to the web view, base \(finalURL.absoluteString)")
             self.webView.loadHTMLString(html, baseURL: finalURL)
+            self.startDOMReadyPoll()
+        }
+    }
+
+    /// Ask the DOM directly whether it is ready, instead of waiting to be told.
+    ///
+    /// `didFinish` was only ever a proxy for "the DOM is ready", and on macOS 27
+    /// the proxy stopped tracking the thing it stands for. Measured from a
+    /// reporter's log: `document.readyState` was **complete** while
+    /// `estimatedProgress` sat at 0.10 and `isLoading` stayed true, so
+    /// `didFinish` never arrived and extraction waited out its entire 10s
+    /// timeout on a page that had been ready almost immediately. Four articles,
+    /// four fallbacks, no reader views, on pages that had fully parsed.
+    ///
+    /// Readability reads the DOM and nothing else, so the DOM is the right thing
+    /// to ask. `didFinish` stays as the fast path where it works, and
+    /// `extractionStarted` keeps the two from racing.
+    ///
+    /// `interactive` is accepted as well as `complete`, and that is safe here
+    /// rather than merely convenient: page scripts are disabled and every
+    /// subresource is refused, so nothing can add to the document after parsing
+    /// finishes. The DOM at `interactive` is the final DOM.
+    private func startDOMReadyPoll() {
+        domReadyPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.domPollInterval)
+                guard !Task.isCancelled, let self,
+                      !self.extractionStarted, self.continuation != nil,
+                      let view = self.webView else { return }
+                let raw = try? await view.evaluateJavaScript("document.readyState")
+                guard let state = raw as? String,
+                      state == "complete" || state == "interactive" else { continue }
+                guard !self.extractionStarted, self.continuation != nil else { return }
+                jdnLog("extract: DOM ready (readyState=\(state)) — extracting without waiting for didFinish")
+                await self.runExtraction()
+                return
+            }
         }
     }
 
@@ -286,6 +336,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             guard let self, let cont = self.continuation else { return }
             self.continuation = nil
             self.timeoutTask?.cancel()
+            self.domReadyPollTask?.cancel()
             cont.resume(throwing: ExtractionError.fetchFailed(message))
         }
     }
@@ -302,6 +353,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             guard let self, let cont = self.continuation else { return }
             self.continuation = nil
             self.timeoutTask?.cancel()
+            self.domReadyPollTask?.cancel()
             cont.resume(throwing: ExtractionError.contentProcessTerminated)
         }
     }
@@ -313,12 +365,16 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             guard let self, let cont = self.continuation else { return }
             self.continuation = nil
             self.timeoutTask?.cancel()
+            self.domReadyPollTask?.cancel()
             cont.resume(throwing: ExtractionError.fetchFailed(message))
         }
     }
 
     @MainActor
     private func runExtraction() async {
+        guard !extractionStarted else { return }
+        extractionStarted = true
+        domReadyPollTask?.cancel()
         let script = readabilityScript + "\n;JSON.stringify(new Readability(document.cloneNode(true)).parse());"
         do {
             jdnLog("readability: evaluating")
