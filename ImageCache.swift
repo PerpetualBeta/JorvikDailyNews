@@ -275,24 +275,14 @@ final class ImageCache: @unchecked Sendable {
             let held = heldBytes, count = heldCount
             bytesLock.unlock()
             images.setObject(decoded.image, forKey: url as NSURL, cost: cost)
-            let rep = decoded.image.representations.first
-            let w = rep?.pixelsWide ?? 0, h = rep?.pixelsHigh ?? 0
             let scaled = (decoded.cgWidth != decoded.sourceWidth || decoded.cgHeight != decoded.sourceHeight)
             jdnLog("image: \(decoded.sourceWidth)x\(decoded.sourceHeight) -> \(decoded.cgWidth)x\(decoded.cgHeight)"
                    + "\(scaled ? " SCALED" : "") \(Self.mb(cost)) — holding \(Self.mb(held))"
                    + " of \(Self.mb(Self.cacheByteLimit)) across \(count) — \(url.host ?? "?")")
-            // Where the bitmap and the NSImage rep disagree, say so and give
-            // every number, because the two fixes that failed both rested on
-            // reading only one of them. `byteCost` uses the rep, so a rep that
-            // reports scaled pixels inflates the cost and makes the cache evict
-            // for a size it is not really holding.
-            if w != decoded.cgWidth || h != decoded.cgHeight {
-                jdnLog("image: DIMENSIONS DISAGREE — CGImage \(decoded.cgWidth)x\(decoded.cgHeight),"
-                       + " NSImage rep \(w)x\(h), NSImage.size"
-                       + " \(Int(decoded.image.size.width))x\(Int(decoded.image.size.height));"
-                       + " asked \(decoded.requested)px for a target of \(decoded.target)px"
-                       + " in \(decoded.attempts) attempt(s). Cost is computed from the REP.")
-            } else if decoded.attempts > 1 || decoded.requested != decoded.target {
+            // The rep's dimensions are deliberately not used or reported. They
+            // are scaled by the backing store and disagree with the bitmap on
+            // every picture, which is expected; see `byteCost`.
+            if decoded.attempts > 1 || decoded.requested != decoded.target {
                 jdnLog("image: decode asked \(decoded.requested)px for a target of"
                        + " \(decoded.target)px in \(decoded.attempts) attempt(s)")
             }
@@ -454,8 +444,30 @@ final class ImageCache: @unchecked Sendable {
     /// `NSCache` cost is in whatever unit you supply, so supplying bytes is
     /// what makes `totalCostLimit` a memory limit rather than a number.
     private static func byteCost(of image: NSImage) -> Int {
-        guard let rep = image.representations.first else { return 1 }
-        return max(1, rep.pixelsWide * rep.pixelsHigh * 4)
+        // From `size`, NOT from `representations.first.pixelsWide`.
+        //
+        // A representation reports pixels scaled by the backing store. Measured
+        // on this machine with the diagnostics added in 1.4.2: a **1200x675**
+        // `CGImage` yields a rep of **2400x1350** while `NSImage.size` stays
+        // 1200x675. Costing from the rep therefore charged **four times** the
+        // real memory, two for width and two again for height.
+        //
+        // That single mistake is the whole of this saga. It made every picture
+        // look larger than its own file, which is what 1.3.3 and 1.4.0 both
+        // tried to fix, in the decoder, where nothing was wrong. On the
+        // reporter's 8 GB machine it read 301.5 MB against a 256 MB limit and
+        // forced 21 evictions; the true figure was near 75 MB and not one of
+        // those evictions was needed.
+        //
+        // `size` is right here rather than by luck: `decode` constructs the
+        // `NSImage` with `size` set from the `CGImage`'s own pixel dimensions,
+        // so for every picture in this cache one point is one pixel. It is also
+        // the only number available in the eviction callback, which receives an
+        // `NSImage` and nothing else, so insert and evict now agree by
+        // construction.
+        let width = Int(image.size.width.rounded())
+        let height = Int(image.size.height.rounded())
+        return max(1, width * height * 4)
     }
 }
 
