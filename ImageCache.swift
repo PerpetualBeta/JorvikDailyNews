@@ -151,6 +151,19 @@ final class ImageCache: @unchecked Sendable {
         let image: NSImage
         let sourceWidth: Int
         let sourceHeight: Int
+        /// The decoded bitmap's own dimensions, straight from the `CGImage`.
+        ///
+        /// Carried separately because nothing else here knows them. The log and
+        /// `byteCost` both read `NSImage.representations.first`, and until now
+        /// no line compared that against the bitmap it came from. Two fixes for
+        /// oversized pictures were shipped on the assumption they agreed, and
+        /// the evidence for both was a log line derived from the rep alone.
+        let cgWidth: Int
+        let cgHeight: Int
+        /// What the decoder was asked for, and how many times.
+        let target: Int
+        let requested: Int
+        let attempts: Int
     }
 
     private enum Outcome {
@@ -264,10 +277,25 @@ final class ImageCache: @unchecked Sendable {
             images.setObject(decoded.image, forKey: url as NSURL, cost: cost)
             let rep = decoded.image.representations.first
             let w = rep?.pixelsWide ?? 0, h = rep?.pixelsHigh ?? 0
-            let scaled = (w != decoded.sourceWidth || h != decoded.sourceHeight)
-            jdnLog("image: \(decoded.sourceWidth)x\(decoded.sourceHeight) -> \(w)x\(h)"
+            let scaled = (decoded.cgWidth != decoded.sourceWidth || decoded.cgHeight != decoded.sourceHeight)
+            jdnLog("image: \(decoded.sourceWidth)x\(decoded.sourceHeight) -> \(decoded.cgWidth)x\(decoded.cgHeight)"
                    + "\(scaled ? " SCALED" : "") \(Self.mb(cost)) — holding \(Self.mb(held))"
                    + " of \(Self.mb(Self.cacheByteLimit)) across \(count) — \(url.host ?? "?")")
+            // Where the bitmap and the NSImage rep disagree, say so and give
+            // every number, because the two fixes that failed both rested on
+            // reading only one of them. `byteCost` uses the rep, so a rep that
+            // reports scaled pixels inflates the cost and makes the cache evict
+            // for a size it is not really holding.
+            if w != decoded.cgWidth || h != decoded.cgHeight {
+                jdnLog("image: DIMENSIONS DISAGREE — CGImage \(decoded.cgWidth)x\(decoded.cgHeight),"
+                       + " NSImage rep \(w)x\(h), NSImage.size"
+                       + " \(Int(decoded.image.size.width))x\(Int(decoded.image.size.height));"
+                       + " asked \(decoded.requested)px for a target of \(decoded.target)px"
+                       + " in \(decoded.attempts) attempt(s). Cost is computed from the REP.")
+            } else if decoded.attempts > 1 || decoded.requested != decoded.target {
+                jdnLog("image: decode asked \(decoded.requested)px for a target of"
+                       + " \(decoded.target)px in \(decoded.attempts) attempt(s)")
+            }
             failed.remove(url)
             retryAfter[url] = nil
         case .permanent:
@@ -390,7 +418,9 @@ final class ImageCache: @unchecked Sendable {
 
         var request = target
         var best: CGImage?
+        var usedAttempts = 0
         for attempt in 1...maxDecodeAttempts {
+            usedAttempts = attempt
             guard let cg = thumbnail(from: source, longEdge: request) else { break }
             best = cg
             let got = max(cg.width, cg.height)
@@ -413,7 +443,9 @@ final class ImageCache: @unchecked Sendable {
         // tracker threshold above is a pixel test in intent, and this is what
         // makes it one.
         return Decoded(image: NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)),
-                       sourceWidth: srcW, sourceHeight: srcH)
+                       sourceWidth: srcW, sourceHeight: srcH,
+                       cgWidth: cg.width, cgHeight: cg.height,
+                       target: target, requested: request, attempts: usedAttempts)
     }
 
 
