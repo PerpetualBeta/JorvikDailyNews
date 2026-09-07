@@ -29,6 +29,21 @@ import Vision
 /// scaled down (`decode`), so a 6000 px CDN original never becomes a 144 MB
 /// bitmap; and the cache is capped in BYTES as well as in count, because
 /// `countLimit` alone says nothing about size.
+/// Receives `NSCache`'s eviction callbacks on the cache's behalf.
+///
+/// A separate object because `NSCacheDelegate` requires `NSObjectProtocol` and
+/// `ImageCache` is a plain Swift class. It carries a closure rather than a back
+/// reference so there is no ownership cycle to reason about.
+private final class EvictionWatcher: NSObject, NSCacheDelegate {
+    let onEvict: (NSImage) -> Void
+    init(onEvict: @escaping (NSImage) -> Void) { self.onEvict = onEvict }
+
+    func cache(_ cache: NSCache<AnyObject, AnyObject>, willEvictObject obj: Any) {
+        guard let image = obj as? NSImage else { return }
+        onEvict(image)
+    }
+}
+
 final class ImageCache: @unchecked Sendable {
     static let shared = ImageCache()
 
@@ -42,6 +57,24 @@ final class ImageCache: @unchecked Sendable {
     /// moment it becomes worth trying again.
     private var retryAfter: [URL: Date] = [:]
     private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+
+    /// Running total of decoded bytes the cache is holding, for diagnostics.
+    ///
+    /// `NSCache` does not report its own current cost, so a tally is the only
+    /// way to see how close a machine runs to `totalCostLimit` — which is the
+    /// measurement that decides whether the picture work is what starves a
+    /// small machine.
+    ///
+    /// **Its own lock, deliberately.** `NSCache` can evict synchronously from
+    /// inside `setObject`, on the calling thread, so the delegate callback can
+    /// land while `finish` is still running. Guarding this with the main `lock`
+    /// would then take a non-recursive `NSLock` twice on one thread and
+    /// deadlock the app. `NSCache` is itself thread-safe and never needed the
+    /// main lock; only `failed`, `retryAfter` and `inFlight` do.
+    private let bytesLock = NSLock()
+    private var heldBytes = 0
+    private var heldCount = 0
+    private var evictionWatcher: EvictionWatcher?
 
     /// Whether pictures are loaded at all.
     ///
@@ -112,8 +145,16 @@ final class ImageCache: @unchecked Sendable {
     /// requests at the same handful of CDNs — blanked every picture in the
     /// paper until the app was quit, and took the lead with it, because
     /// `EditionBuilder.hasUsableImage` consults the same set.
+    /// A decoded picture, plus the size it arrived at, so the log can show
+    /// whether the scaling actually did anything for this one.
+    private struct Decoded {
+        let image: NSImage
+        let sourceWidth: Int
+        let sourceHeight: Int
+    }
+
     private enum Outcome {
-        case image(NSImage)
+        case image(Decoded)
         /// The URL is bad and will stay bad.
         case permanent
         /// The request failed; the URL may be fine.
@@ -127,6 +168,41 @@ final class ImageCache: @unchecked Sendable {
         // small machine. 500 full-resolution heroes could be several GB.
         images.countLimit = 500
         images.totalCostLimit = Self.cacheByteLimit
+
+        let watcher = EvictionWatcher { [weak self] image in
+            guard let self else { return }
+            let cost = Self.byteCost(of: image)
+            self.bytesLock.lock()
+            self.heldBytes = max(0, self.heldBytes - cost)
+            self.heldCount = max(0, self.heldCount - 1)
+            let held = self.heldBytes, count = self.heldCount
+            self.bytesLock.unlock()
+            jdnLog("image: EVICTED \(Self.mb(cost)) — holding \(Self.mb(held)) of "
+                   + "\(Self.mb(Self.cacheByteLimit)) across \(count)")
+        }
+        evictionWatcher = watcher
+        images.delegate = watcher
+    }
+
+    /// One line describing every picture-related setting in force, written at
+    /// launch so a log identifies which mode produced it.
+    ///
+    /// Without this a log from a pictures-off run is indistinguishable from a
+    /// run where no picture ever loaded, which is exactly the ambiguity that
+    /// makes a reporter's log unusable.
+    static var configSummary: String {
+        let ram = ProcessInfo.processInfo.physicalMemory
+        guard picturesEnabled else {
+            return "config: pictures OFF (showPictures=NO) — no downloads, no Vision; "
+                 + "\(ram / 1_073_741_824) GB machine"
+        }
+        return "config: pictures ON, maxPixelSize \(maxPixelSize)px, "
+             + "cache cap \(mb(cacheByteLimit)) on a \(ram / 1_073_741_824) GB machine, "
+             + "hideReadItems=\(UserDefaults.standard.bool(forKey: "hideReadItems"))"
+    }
+
+    private static func mb(_ bytes: Int) -> String {
+        String(format: "%.1f MB", Double(bytes) / 1_048_576)
     }
 
     /// Synchronous cache peek — for instant `@State` seeding in `OptionalImage.init`.
@@ -167,7 +243,7 @@ final class ImageCache: @unchecked Sendable {
         let task = Task<NSImage?, Never> { [weak self] in
             let outcome = await Self.download(url, timeout: timeout)
             self?.finish(url: url, outcome: outcome)
-            if case .image(let image) = outcome { return image }
+            if case .image(let decoded) = outcome { return decoded.image }
             return nil
         }
         inFlight[url] = task
@@ -178,8 +254,20 @@ final class ImageCache: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         inFlight[url] = nil
         switch outcome {
-        case .image(let image):
-            images.setObject(image, forKey: url as NSURL, cost: Self.byteCost(of: image))
+        case .image(let decoded):
+            let cost = Self.byteCost(of: decoded.image)
+            bytesLock.lock()
+            heldBytes += cost
+            heldCount += 1
+            let held = heldBytes, count = heldCount
+            bytesLock.unlock()
+            images.setObject(decoded.image, forKey: url as NSURL, cost: cost)
+            let rep = decoded.image.representations.first
+            let w = rep?.pixelsWide ?? 0, h = rep?.pixelsHigh ?? 0
+            let scaled = (w != decoded.sourceWidth || h != decoded.sourceHeight)
+            jdnLog("image: \(decoded.sourceWidth)x\(decoded.sourceHeight) -> \(w)x\(h)"
+                   + "\(scaled ? " SCALED" : "") \(Self.mb(cost)) — holding \(Self.mb(held))"
+                   + " of \(Self.mb(Self.cacheByteLimit)) across \(count) — \(url.host ?? "?")")
             failed.remove(url)
             retryAfter[url] = nil
         case .permanent:
@@ -217,10 +305,11 @@ final class ImageCache: @unchecked Sendable {
 
         // Reject 1×1 trackers and icon-sized placeholders. Undecodable bytes and
         // a tracking pixel are both settled facts about the URL.
-        guard let image = decode(data), image.size.width >= 48, image.size.height >= 48 else {
+        guard let decoded = decode(data),
+              decoded.image.size.width >= 48, decoded.image.size.height >= 48 else {
             return .permanent
         }
-        return .image(image)
+        return .image(decoded)
     }
 
     /// Decode a picture at no more than `maxPixelSize` on its long edge.
@@ -239,8 +328,14 @@ final class ImageCache: @unchecked Sendable {
     /// `kCGImageSourceCreateThumbnailFromImageAlways` ignores any thumbnail
     /// already embedded in the file, which is typically 160 px and would look
     /// like a badly blurred hero.
-    private static func decode(_ data: Data) -> NSImage? {
+    private static func decode(_ data: Data) -> Decoded? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        // Source dimensions come from the metadata, so reading them costs no
+        // decode. They are what makes the log able to say whether scaling did
+        // anything for this picture rather than just what it ended up as.
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let srcW = props?[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let srcH = props?[kCGImagePropertyPixelHeight] as? Int ?? 0
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -252,7 +347,8 @@ final class ImageCache: @unchecked Sendable {
         // Size in pixels, so `NSImage.size` and the bitmap agree. The 48pt
         // tracker threshold above is a pixel test in intent, and this is what
         // makes it one.
-        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        return Decoded(image: NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)),
+                       sourceWidth: srcW, sourceHeight: srcH)
     }
 
     /// What a decoded picture costs the cache, in bytes: four per pixel.

@@ -252,7 +252,22 @@ Lines are appended to `~/Library/Logs/Jorvik Daily News/jorvikdailynews.log`, in
 defaults delete cc.jorviksoftware.JorvikDailyNews debugLogging
 ```
 
+Every run's second line records the settings actually in force, so a log says which mode produced it rather than leaving that to be guessed:
+
+```
+config: pictures ON, maxPixelSize 2048px, cache cap 1152.0 MB on a 36 GB machine, hideReadItems=true
+```
+
 The reader is instrumented end to end: which branch a link took, the fetch's status and size, each web view callback, whether a timeout fired, what Readability returned, and which fallback was chosen. If you are reporting a problem with opening articles, that log is the thing worth attaching.
+
+Pictures are instrumented too. Each one reports the size it arrived at, the size it was kept at, and the cache's running total against its cap; `SCALED` appears only when the two sizes differ, so a glance says whether the pixel cap is doing anything on your feeds:
+
+```
+image: 6000x3375 -> 2048x1152 SCALED 9.0 MB — holding 43.6 MB of 1152.0 MB across 13 — cdn.example.com
+image: EVICTED 9.0 MB — holding 34.6 MB of 1152.0 MB across 12
+```
+
+The source dimensions come from the file's metadata, so reading them costs no decode. `EVICTED` lines are the ones worth counting: a machine that evicts steadily is running against its cap, and a machine that never evicts is not, which is the difference between a memory problem and something else entirely.
 
 ### Images missing from some items
 

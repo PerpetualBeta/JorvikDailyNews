@@ -12,6 +12,9 @@ struct JorvikDailyNewsApp: App {
         // can see that it took effect — and so a log pasted into an issue
         // carries the app and OS versions even if the reader is never opened.
         jdnLog("launch")
+        // Which mode produced this log. Without it a pictures-off run reads
+        // identically to a run where no picture happened to load.
+        jdnLog(ImageCache.configSummary)
 
         // Tugboat-cooperative dock visibility. Listens for hide/show
         // toggles broadcast by Tugboat and self-applies via setActivationPolicy.
