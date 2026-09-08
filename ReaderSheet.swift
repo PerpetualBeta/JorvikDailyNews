@@ -169,7 +169,15 @@ struct ReaderView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .ready(let article):
-            ReaderWebView(html: renderHTML(article), baseURL: item.link)
+            ReaderWebView(html: renderHTML(article), baseURL: item.link) {
+                // Neither route rendered the extracted article. Rather than
+                // leave a blank sheet, fall through to the same live page every
+                // other failure falls through to, so this release cannot be
+                // worse than the one before it.
+                guard case .ready = state else { return }
+                jdnLog("reader: nothing rendered the article — live page fallback")
+                state = .failed("The reader could not display this article")
+            }
 
         case .pdf(let url):
             PDFReader(url: url)
@@ -385,6 +393,11 @@ struct ReaderView: View {
 struct ReaderWebView: NSViewRepresentable {
     let html: String
     let baseURL: URL?
+    /// Called when neither route produced a document, so the sheet can show the
+    /// live page instead of nothing.
+    let onBlank: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -397,13 +410,130 @@ struct ReaderWebView: NSViewRepresentable {
         let pagePrefs = WKWebpagePreferences()
         pagePrefs.allowsContentJavaScript = false
         config.defaultWebpagePreferences = pagePrefs
+        // Registered up front because a scheme handler can only be attached to
+        // a configuration before its web view exists. It serves nothing unless
+        // the check below asks it to.
+        config.setURLSchemeHandler(context.coordinator.handler,
+                                   forURLScheme: ReaderBytesHandler.scheme)
         let web = WKWebView(frame: .zero, configuration: config)
         web.setValue(false, forKey: "drawsBackground")
         return web
     }
 
     func updateNSView(_ web: WKWebView, context: Context) {
-        web.loadHTMLString(html, baseURL: baseURL)
+        // SwiftUI calls this on any state change in the sheet, and reloading
+        // the same document throws away the reader's scroll position — and,
+        // worse, would restart the check below against a page that had already
+        // passed it.
+        guard context.coordinator.shown != html else { return }
+        context.coordinator.shown = html
+        context.coordinator.show(html, baseURL: baseURL, in: web, onBlank: onBlank)
+    }
+
+    /// Renders the reader document, and notices if WebKit quietly declines to.
+    ///
+    /// `loadHTMLString` is the same API the extractor uses, and on the
+    /// reporter's macOS 27.0 beta it has never once produced a document: five
+    /// logs, eleven articles, four sizes, blocking on and off, and the DOM is
+    /// the 39-character empty skeleton every time with no delegate callback of
+    /// any kind. Fixing extraction without fixing this would have handed him a
+    /// blank white sheet in place of today's live-page fallback, which is worse
+    /// than the bug he reported.
+    ///
+    /// So the reader stops assuming the render worked and checks. If the
+    /// document never arrives it re-serves the identical bytes over a private
+    /// scheme, which is a *real* resource load and does not go near the
+    /// substitute-data path that is failing. On a healthy Mac the check passes
+    /// on the first poll and nothing else happens.
+    ///
+    /// This is a guard against a failure nobody has observed yet — the
+    /// reporter has never reached a reader view to find out. It is here because
+    /// the cost is one timer and the cost of being wrong is release ten.
+    @MainActor
+    final class Coordinator {
+        let handler = ReaderBytesHandler()
+        var shown: String?
+        private var check: Task<Void, Never>?
+
+        /// How long to let `loadHTMLString` render before checking on it.
+        /// Measured on macOS 26, a reader document commits and parses in about
+        /// 150 ms, so this is eight times the observed cost.
+        private static let grace: TimeInterval = 1.2
+
+        func show(_ html: String, baseURL: URL?, in web: WKWebView,
+                  onBlank: @escaping () -> Void) {
+            check?.cancel()
+            // The same bytes either way, so the two routes cannot render
+            // differently. The `<base href>` matters only to the fallback,
+            // whose document is served from the private scheme and would
+            // otherwise resolve relative links against that.
+            let document = baseURL.map { ArticleExtractor.withBaseHref(html, $0) } ?? html
+            handler.document = document
+            web.loadHTMLString(html, baseURL: baseURL)
+            check = Task { @MainActor [weak web] in
+                try? await Task.sleep(nanoseconds: UInt64(Self.grace * 1_000_000_000))
+                guard !Task.isCancelled, let web else { return }
+                let probe = "document.documentElement.outerHTML.length"
+                let chars = (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
+                // A `WKWebView` starts out holding about 39 characters of empty
+                // skeleton, and that skeleton reports `readyState` as
+                // `complete`, so length is the only honest test.
+                let floor = max(200, html.count / 10)
+                guard chars < floor else { return }
+                jdnLog("reader: loadHTMLString produced only \(chars) chars of"
+                       + " \(html.count) after \(Self.grace)s — re-serving over"
+                       + " \(ReaderBytesHandler.scheme):")
+                web.load(URLRequest(url: ReaderBytesHandler.documentURL))
+                // And check that too, because a fallback nobody can verify is
+                // only a second way to show a blank sheet.
+                try? await Task.sleep(nanoseconds: UInt64(Self.grace * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                let after = (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
+                guard after < floor else {
+                    jdnLog("reader: \(ReaderBytesHandler.scheme): rendered it — \(after) chars")
+                    return
+                }
+                jdnLog("reader: \(ReaderBytesHandler.scheme): produced only \(after) chars too")
+                onBlank()
+            }
+        }
+    }
+}
+
+/// Serves the reader's own document, from memory, over a private scheme.
+///
+/// Separate from `ArticleExtractor`'s `BytesSchemeHandler` because that one is
+/// built per extraction around fixed bytes; this one outlives a sheet and its
+/// document is replaced whenever the reader renders a new article.
+@MainActor
+final class ReaderBytesHandler: NSObject, WKURLSchemeHandler {
+    static let scheme = "jdn-reader"
+    static let documentURL = URL(string: "\(scheme)://read/article")!
+
+    var document: String = ""
+    /// A task WebKit has stopped must never be told anything again, or the
+    /// process traps.
+    private var stopped = Set<ObjectIdentifier>()
+
+    nonisolated func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
+        MainActor.assumeIsolated { serve(urlSchemeTask) }
+    }
+
+    nonisolated func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
+        MainActor.assumeIsolated { _ = stopped.insert(ObjectIdentifier(urlSchemeTask)) }
+    }
+
+    private func serve(_ task: any WKURLSchemeTask) {
+        guard !stopped.contains(ObjectIdentifier(task)) else { return }
+        guard task.request.url == Self.documentURL, let data = document.data(using: .utf8) else {
+            task.didFailWithError(URLError(.unsupportedURL))
+            return
+        }
+        let response = URLResponse(url: Self.documentURL, mimeType: "text/html",
+                                   expectedContentLength: data.count, textEncodingName: "utf-8")
+        task.didReceive(response)
+        task.didReceive(data)
+        task.didFinish()
     }
 }
 

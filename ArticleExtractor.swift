@@ -1,12 +1,32 @@
 import Foundation
+import JavaScriptCore
 import WebKit
 
-/// Fetches an article URL via URLSession, then loads the HTML into a
-/// WKWebView and runs Mozilla Readability.js against it. URLSession handles
-/// the networking (so we can set headers, follow redirects, and — critically
-/// — avoid the NSURLErrorCancelled that a hidden WKWebView hits when it has
-/// no host window on macOS). WKWebView is only responsible for DOM + JS
-/// execution for Readability.
+/// Fetches an article URL via URLSession, then gets that HTML into something
+/// Mozilla Readability can read.
+///
+/// URLSession handles the networking (so we can set headers, follow redirects,
+/// and — critically — avoid the NSURLErrorCancelled that a hidden WKWebView
+/// hits when it has no host window on macOS). Getting the fetched bytes into a
+/// DOM is the part that has proved fragile, so it is no longer one call. It is
+/// a ladder of five strategies, tried in order inside a single extraction, and
+/// the log names the one that produced a document.
+///
+/// ## Why a ladder
+///
+/// On macOS 27.0 beta (26A5425a) `loadHTMLString` never produces a document.
+/// The fetch is a clean 200, the HTML is handed over in full, and then the DOM
+/// stays at the 39-character empty skeleton a web view starts with, for ever:
+/// `estimatedProgress` parks at 0.10, `isLoading` stays true, no navigation
+/// callback of any kind arrives, and `evaluateJavaScript` keeps answering, so
+/// the renderer is alive and idle. Identical for 157 KB and 1.6 MB, identical
+/// with the content rule list attached and detached, and identical across nine
+/// releases. The same signed binary works perfectly on macOS 26.6.2.
+///
+/// Nine releases each shipped one theory and learned one bit, because a theory
+/// that fails and a theory that was never reached look the same in the log.
+/// A ladder cannot be uninformative: whichever rung produces the document, the
+/// log says so, and the rungs that did not are named with the reason.
 @MainActor
 final class ArticleExtractor: NSObject, WKNavigationDelegate {
     struct Article: Codable, Sendable {
@@ -31,6 +51,8 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         /// WebKit's own content process died, so no navigation callback will
         /// ever arrive. Distinct from `timedOut` because the cause is not slowness.
         case contentProcessTerminated
+        /// Every rung of the ladder was tried and none produced a document.
+        case noStrategyWorked
 
         var errorDescription: String? {
             switch self {
@@ -42,27 +64,115 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             case .timedOut: "The page took too long to load"
             case .isPDF: "This link is a PDF document"
             case .contentProcessTerminated: "The page renderer stopped unexpectedly"
+            case .noStrategyWorked: "The page wouldn\u{2019}t load by any route"
             }
         }
     }
 
-    private var webView: WKWebView!
-    private var continuation: CheckedContinuation<Article, Error>?
-    private var readabilityScript: String = ""
-    private var timeoutTask: Task<Void, Never>?
-    private var domReadyPollTask: Task<Void, Never>?
+    // MARK: - The ladder
 
-    /// Extraction runs once. `didFinish` and the DOM poll below are two routes
-    /// to the same place, and on a machine where both work they race.
-    private var extractionStarted = false
-    /// Set once the load has been retried with the blocker off, so a document
-    /// that is empty for its own reasons cannot loop.
-    private var retriedWithoutBlocker = false
-    private var emptyDOMTicks = 0
-    /// What was handed to the web view, to compare the DOM against.
-    private var handedOverChars = 0
-    private var loadedHTML = ""
-    private var loadedBaseURL: URL?
+    /// One way of getting fetched HTML into something Readability can read.
+    ///
+    /// The order is deliberate. The first rung is exactly what the extractor
+    /// has always done, so a machine where that works — every macOS 26 machine
+    /// — takes it, succeeds, and never sees the rest. The ladder is dead code
+    /// on a healthy Mac and a diagnosis on a broken one.
+    ///
+    /// The rungs also separate the field of causes rather than merely offering
+    /// more chances. Rungs 1 and 2 are both *substitute-data* loads: WebKit
+    /// takes bytes we hand it and pretends they arrived from the network.
+    /// Rungs 3 and 4 are *real resource loads*, which enter WebKit's loader by
+    /// a different door entirely. Rung 5 does not involve WebKit at all. So a
+    /// log that says "1 and 2 failed, 3 worked" means something quite precise,
+    /// and so does one that says "1, 2, 3 and 4 all failed".
+    enum Strategy: CaseIterable {
+        /// No WebKit at all. Mozilla's Readability, the same bundled file the
+        /// other rungs evaluate, run over a LinkeDOM document inside
+        /// JavaScriptCore.
+        ///
+        /// First, and that is the fix rather than the diagnosis. It is the one
+        /// rung with no content process, no XPC, no navigation and no window,
+        /// so it cannot fail the way the others do; it is the only rung whose
+        /// output could be checked against the WebKit path on the developer's
+        /// own machine before shipping; and on the five pages checked it is at
+        /// parity or better on every axis and two to five times faster.
+        case javaScriptCore
+        /// What the extractor has always done, unchanged, including the
+        /// content rule list.
+        case htmlString
+        /// The same substitute-data machinery, entered through the API Apple
+        /// added in macOS 12 to carry a real request and a real response.
+        /// WebKit's own source routes this into the same `loadDataImpl` as
+        /// rung 1, so agreement between the two is expected and is itself a
+        /// finding: it puts the fault below the API surface. Disagreement
+        /// would put it above.
+        case simulatedRequest
+        /// A real resource load, over a private URL scheme, answered from the
+        /// bytes URLSession already fetched. No substitute data anywhere in
+        /// the path, and no second trip to the network.
+        case schemeHandler
+        /// A real resource load from a temporary file. Different again from
+        /// the scheme handler: `file:` goes through a sandbox-extension
+        /// handshake that a private scheme does not.
+        case fileURL
+
+        /// Short enough to read in a log, specific enough to act on.
+        var name: String {
+            switch self {
+            case .javaScriptCore: "JavaScriptCore"
+            case .htmlString: "loadHTMLString"
+            case .simulatedRequest: "loadSimulatedRequest"
+            case .schemeHandler: "schemeHandler"
+            case .fileURL: "fileURL"
+            }
+        }
+
+        /// Position in the log line, so "rung 3 of 5" reads without counting.
+        var position: Int { (Strategy.allCases.firstIndex(of: self) ?? 0) + 1 }
+    }
+
+    /// The rung that has been winning, and how many articles in a row.
+    ///
+    /// Static, so it survives between articles and is reset by relaunching.
+    /// Deliberately **not** persisted to `UserDefaults`: a remembered winner
+    /// would make every later log say only "the winner won", and the walk down
+    /// the ladder is the diagnosis.
+    private static var winner: Strategy?
+    private static var winStreak = 0
+    private static var lockedStrategy: Strategy?
+
+    /// How many articles a rung must win in a row before the ladder stops
+    /// being walked. One win could be luck on a page that happened to be easy;
+    /// two is a pattern, and walking the ladder twice doubles what a single
+    /// pasted log is worth.
+    private static let winsBeforeLocking = 2
+
+    /// How long a rung is given **after** its navigation commits.
+    ///
+    /// Commit proves the machinery works, so from that point patience is the
+    /// right instinct: a 1.6 MB page on an 8 GB laptop is entitled to take its
+    /// time parsing. Measured here, a 1.6 MB page parses in 0.14s, so three
+    /// seconds is twenty times the observed cost and still keeps four failed
+    /// WebKit rungs inside the reader's own 25s backstop.
+    private static let committedBudget: TimeInterval = 3.0
+
+    /// How long a rung is given **before** its navigation commits.
+    ///
+    /// A rung that has not committed has produced nothing, and on the machine
+    /// this ladder was built for it never will: the DOM sits at exactly 39
+    /// characters from the first tick to the last, unchanged across five app
+    /// versions, four document sizes and two blocker settings. Measured here,
+    /// a real article commits in about 150 ms. Nine hundred milliseconds is
+    /// six times that, and it keeps the whole five-rung walk shorter than the
+    /// single ten-second timeout it replaces.
+    private static let uncommittedBudget: TimeInterval = 0.9
+
+    /// How often to ask the DOM whether it is ready.
+    ///
+    /// 100ms is well under the cost of being wrong: a page that is ready in
+    /// 200ms used to wait out the whole 10s timeout, so the poll pays for
+    /// itself many times over on the first article.
+    private static let domPollInterval: UInt64 = 100_000_000
 
     /// Below this share of the HTML we handed over, the DOM is not the document
     /// we loaded.
@@ -80,60 +190,53 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// "no document".
     private static let minimumDOMShare = 0.10
 
-    /// How many consecutive ticks of `complete` with an empty DOM before the
-    /// document is called lost rather than late.
-    ///
-    /// Five ticks is half a second. Below that the load may simply be slower
-    /// than the first tick, which is the ordinary case on a large page or a
-    /// busy machine, and waiting is right. Above it the document is not
-    /// coming.
-    private static let emptyDOMTicksBeforeRetry = 5
+    // MARK: - Per-extraction state
 
-    /// How often to ask the DOM whether it is ready.
-    ///
-    /// 100ms is well under the cost of being wrong: a page that is ready in
-    /// 200ms used to wait out the whole 10s timeout, so the poll pays for
-    /// itself many times over on the first article.
-    private static let domPollInterval: UInt64 = 100_000_000
+    private var webView: WKWebView!
+    private var readabilityScript: String = ""
 
-    /// A rule list that blocks every load the page asks for.
+    /// What the current rung's navigation delegate has seen. Reset per rung.
     ///
-    /// This is the difference between the reader working and hanging. Handing
-    /// WebKit a base URL makes it resolve and fetch every subresource the HTML
-    /// references — images, stylesheets, fonts, scripts, tracking beacons —
-    /// from the live site, and `didFinish` does not fire until all of them
-    /// settle. One beacon that never answers and it never fires at all, so the
-    /// extractor waits for ever on downloads it is going to throw away.
-    ///
-    /// Readability parses structure. Measured on three articles that hung or
-    /// crawled: blocking subresources took them to 0.11s, 0.11s and 0.15s from
-    /// two stalls and 13.06s — and the DOM came out the same, 38,179 characters
-    /// of body text against 38,178. Nothing Readability reads is fetched over
-    /// the network.
-    ///
-    /// The base URL still goes in, so relative links in the extracted article
-    /// resolve correctly. Only the *loading* is refused.
-    ///
-    /// A side effect worth having: opening an article no longer downloads that
-    /// page's trackers and beacons into a hidden web view.
+    /// These four flags are the point of this release. Until now the extractor
+    /// implemented only `didFinish`, `didFail`, `didFailProvisionalNavigation`
+    /// and `webViewWebContentProcessDidTerminate`, none of which ever fired, so
+    /// nobody could tell a load that stalled inside WebKit's document loader
+    /// from one the content process never began. `policyAsked`, `provisional`
+    /// and `committed` are the three places a navigation can die, in order.
+    private var policyAsked = false
+    private var provisional = false
+    private var committed = false
+    private var rendererDied = false
+    private var navigationFailure: String?
+    /// The largest DOM the current rung ever reported. On the failing machine
+    /// this is 39 — the empty skeleton — and that number is the single most
+    /// useful thing in the reporter's log, so the failure line carries it.
+    private var largestDOM = 0
+    /// How many navigations the current rung has been asked to allow.
+    private var navigationsAllowed = 0
+    /// Set once this rung refused a navigation. WebKit reports a refusal as a
+    /// cancelled provisional navigation, which is indistinguishable from a real
+    /// failure at the delegate; without this the rung would abandon the very
+    /// document it just protected.
+    private var refusedNavigation = false
+
+    // MARK: - Subresource blocking
+
     /// Blocks the things an article references. It does NOT list `document`,
     /// and that omission is the whole point.
     ///
-    /// This was `{"url-filter":".*"}` with no resource types, which reads as
-    /// "block every load". On macOS 26 that left the `loadHTMLString` document
-    /// alone. On macOS 27 it does not: the document arrived empty, so
-    /// `document.readyState` reported `complete` for an empty document and
-    /// Readability correctly found no article in it. The tell was in the
-    /// timings — 1.6 MB of HTML and 164 KB both reached `complete` in about
-    /// 140 ms, because nothing was being parsed either time.
+    /// Handing WebKit a base URL makes it resolve and fetch every subresource
+    /// the HTML references — images, stylesheets, fonts, scripts, tracking
+    /// beacons — from the live site, and `didFinish` does not fire until all of
+    /// them settle. One beacon that never answers and it never fires at all.
     ///
-    /// Naming the resource types means a document load cannot be caught by the
-    /// rule whatever a future WebKit decides to classify it as. Measured on a
-    /// 1 MB BBC page with 125 images, 71 scripts and 23 stylesheets, one
-    /// condition per process: 106 ms with this rule against 122 ms with the
-    /// blanket one and 855 ms with no rule at all, and the same 8,161
-    /// characters of body text in all three. It blocks as well and cannot
-    /// block the article.
+    /// Readability parses structure. Measured on a 1 MB BBC page with 125
+    /// images, 71 scripts and 23 stylesheets, one condition per process: 106 ms
+    /// with this rule against 855 ms with no rule at all, and the same 8,161
+    /// characters of body text either way.
+    ///
+    /// A side effect worth having: opening an article no longer downloads that
+    /// page's trackers and beacons into a hidden web view.
     private static let blockAllLoads = #"""
     [{"trigger":{"url-filter":".*","resource-type":["image","style-sheet","script","font","media","raw","svg-document","popup"]},"action":{"type":"block"}}]
     """#
@@ -147,13 +250,8 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     ///     defaults write cc.jorviksoftware.JorvikDailyNews blockSubresources -bool NO
     ///     defaults delete cc.jorviksoftware.JorvikDailyNews blockSubresources
     ///
-    /// On by default, and it should stay on: it is what stopped articles hanging
-    /// on beacons that never answer. The switch exists because a
-    /// block-everything rule list is a blunt instrument. If a WebKit version
-    /// ever applied it to the main document of a `loadHTMLString` rather than
-    /// only to that document's subresources, the navigation would never
-    /// complete, and the symptom would be indistinguishable from the fault the
-    /// blocker cures. One command then tells the two apart.
+    /// On by default. Applied identically to every WebKit rung, so it is one
+    /// variable across the ladder rather than five.
     ///
     /// Read through `object(forKey:)` rather than `bool(forKey:)`, which answers
     /// false for a key that was never set and would ship the blocker off for
@@ -168,6 +266,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     static var configSummary: String {
         "config: subresource blocking "
             + (blocksSubresources ? "ON" : "OFF (blockSubresources=NO) — subresources will be fetched")
+            + (pinnedStrategy.map { ", reader pinned to \($0.name)" } ?? ", reader ladder ON")
     }
 
     /// Compiled once per machine and then found on disk, so this costs nothing
@@ -191,7 +290,9 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         }
     }
 
-    private func makeWebView(blocker: WKContentRuleList?) -> WKWebView {
+    // MARK: - Web view construction
+
+    private func makeWebView(blocker: WKContentRuleList?, schemeHandler: BytesSchemeHandler? = nil) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.suppressesIncrementalRendering = true
         // Ephemeral data store — don't persist cookies across launches.
@@ -210,31 +311,29 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         pagePrefs.allowsContentJavaScript = false
         config.defaultWebpagePreferences = pagePrefs
         if let blocker { config.userContentController.add(blocker) }
+        if let schemeHandler {
+            config.setURLSchemeHandler(schemeHandler, forURLScheme: BytesSchemeHandler.scheme)
+        }
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
         view.navigationDelegate = self
         host(view)
         return view
     }
 
-    /// Put the web view in a real window, because WebKit will not load into one
-    /// that is not.
+    /// Put the web view in a real window, because WebKit may refuse to load
+    /// into one that is not.
     ///
-    /// This is documented Apple behaviour rather than a quirk of any one
-    /// release. Apple tightened it in iOS 16 — the forum thread is titled "iOS
-    /// 16 kills WKWebView instances unattached to a ViewController" and the
+    /// Apple tightened this in iOS 16 — the forum thread is titled "iOS 16
+    /// kills WKWebView instances unattached to a ViewController" and the
     /// reporter's case is ours exactly, a headless web view used only to scrape
-    /// — and the same policy has since arrived on macOS. WebKit says so
-    /// plainly in its own log: "Not eagerly reloading the view because it is
-    /// not currently visible."
+    /// — and WebKit says so plainly in its own log: "Not eagerly reloading the
+    /// view because it is not currently visible."
     ///
-    /// On macOS 26 an unattached view still loads. On macOS 27 it does not, and
-    /// it fails **silently**: `estimatedProgress` parks at 0.10, `isLoading`
-    /// stays true, no navigation callback ever arrives, and the DOM stays at
-    /// the 39-character empty skeleton a web view starts with. Measured across
-    /// four logs from the issue #1 reporter: **zero reader views, ever**, in
-    /// every version, with and without the content rule list. Four releases
-    /// were spent on other explanations before anyone thought to search for
-    /// this one.
+    /// Hosting is **not** established as the cure. JDN 1.4.4 shipped it, the
+    /// log confirms it happened, and the DOM was still 39 characters. It stays
+    /// because it costs nothing and removes a variable; the self-test below
+    /// measures whether it makes any difference at all on the failing machine,
+    /// which is a thing nobody has yet measured.
     ///
     /// `alphaValue` is 0.01 and not 0, following `WKZombie`, whose author hit
     /// the same wall: at zero WebKit may count the view as invisible, and 1% is
@@ -242,24 +341,53 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// `WKZombie` does not have to care about and we do: their host window has
     /// no interface, ours is the newspaper, and a full-size view at 1% alpha
     /// sitting on top would swallow every click.
-    private func host(_ view: WKWebView) {
+    @discardableResult
+    private func host(_ view: WKWebView) -> Bool {
         guard let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first,
               let contentView = window.contentView else {
             jdnLog("extract: no window to host the web view — WebKit may refuse to load")
-            return
+            return false
         }
-        view.frame = contentView.bounds
+        // Its own modest frame, not the window's. WebKit's test is whether the
+        // view is in a window and not hidden, not how large it is, and nothing
+        // here is ever drawn: Readability reads the DOM, and page scripts and
+        // subresources are both off, so no media query or layout pass can
+        // change what it sees.
+        //
+        // Sizing it to the window put a 1280x1440 layer behind the newspaper
+        // for the length of every extraction, which the compositor blends on
+        // every frame. 1024x768 is 43% of the pixels and is the viewport this
+        // extractor used before it was hosted at all, so the DOM sees exactly
+        // what it always did.
+        view.frame = NSRect(x: 0, y: 0, width: 1024, height: 768)
         view.alphaValue = 0.01
         contentView.addSubview(view, positioned: .below, relativeTo: nil)
-        jdnLog("extract: web view hosted in \(window.className) (\(Int(contentView.bounds.width))x\(Int(contentView.bounds.height)))")
+        if !Self.hostingLogged {
+            Self.hostingLogged = true
+            jdnLog("extract: hosting web views in \(window.className)")
+        }
+        return true
     }
 
-    /// Take the web view back out again. Left in place it would sit under the
-    /// interface for the life of the app, one per article opened.
-    private func unhost() {
-        guard let view = webView, view.superview != nil else { return }
-        view.removeFromSuperview()
+    /// Hosting is logged once a run, not once a web view. The ladder builds up
+    /// to four of them per article and the line says the same thing every time.
+    private static var hostingLogged = false
+
+    /// Take a web view out of service for good.
+    ///
+    /// The ladder builds up to four of them per article, so this matters more
+    /// than it did. Clearing the delegate first is not tidiness: a retired view
+    /// is still `isLoading`, and a late `didFail` arriving from rung 1 while
+    /// rung 3 is in flight would report rung 1's failure against rung 3's
+    /// state.
+    private func retire(_ view: WKWebView?) {
+        guard let view else { return }
+        view.navigationDelegate = nil
+        view.stopLoading()
+        if view.superview != nil { view.removeFromSuperview() }
     }
+
+    // MARK: - Entry point
 
     func extract(url: URL, minimumLength: Int = 500, timeout: TimeInterval = 20) async throws -> Article {
         jdnLog("extract: begin \(url.absoluteString)")
@@ -269,163 +397,400 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             throw ExtractionError.scriptMissing
         }
         self.readabilityScript = js
-        jdnLog("extract: Readability.js loaded (\(js.count) chars)")
+
+        // Not awaited. The self-test is the diagnosis and rung 1 is the fix,
+        // and the reader should never wait on the diagnosis: the probes touch
+        // WebKit and rung 1 does not, so they cannot interfere.
+        Task { @MainActor [weak self] in await self?.runSelfTestOnce() }
 
         let blocker = Self.blocksSubresources ? await Self.subresourceBlocker() : nil
-        if Self.blocksSubresources {
-            jdnLog("extract: subresource blocking \(blocker == nil ? "UNAVAILABLE — falling back to fetching them" : "on")")
-        } else {
-            jdnLog("extract: subresource blocking OFF by preference — subresources will be fetched")
+        if Self.blocksSubresources && blocker == nil {
+            jdnLog("extract: subresource blocking UNAVAILABLE — falling back to fetching them")
         }
-        self.webView = makeWebView(blocker: blocker)
 
-        let (html, finalURL) = try await fetchHTML(url: url, timeout: timeout / 2)
+        let page = try await fetchHTML(url: url, timeout: timeout / 2)
 
-        self.extractionStarted = false
-        self.retriedWithoutBlocker = false
-        self.emptyDOMTicks = 0
-        return try await withCheckedThrowingContinuation { cont in
-            self.continuation = cont
-            self.timeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64((timeout / 2) * 1_000_000_000))
-                guard !Task.isCancelled else {
-                    jdnLog("extract: timeout task cancelled (a navigation callback got there first)")
-                    return
+        var lastError: Error = ExtractionError.noStrategyWorked
+        for strategy in Self.ladder() {
+            switch await attempt(strategy, page: page, blocker: blocker, minimumLength: minimumLength) {
+            case .article(let article):
+                Self.recordWin(strategy)
+                return article
+            case .documentButNoArticle(let error):
+                // A real document arrived and Readability read it. Its verdict
+                // is about the page, not about the loader, so the WebKit rungs
+                // would only reach the same conclusion more slowly.
+                //
+                // Rung 1 is the exception, and deliberately so. LinkeDOM parses
+                // with htmlparser2 rather than a spec tree builder: it does not
+                // synthesise an implicit `<tbody>` and it does not run the
+                // adoption-agency algorithm on misnested inline tags. On every
+                // page measured that changed nothing, but "every page measured"
+                // is five, so a page where LinkeDOM alone finds no article gets
+                // a second opinion from WebKit before the reader gives up.
+                guard strategy == .javaScriptCore, Self.lockedStrategy == nil,
+                      Self.pinnedStrategy == nil else {
+                    Self.recordWin(strategy)
+                    throw error
                 }
-                await MainActor.run {
-                    guard let self, let cont = self.continuation else {
-                        jdnLog("extract: timeout fired but the continuation was already resumed")
-                        return
-                    }
-                    // What the web view was doing when it ran out of time.
-                    // These separate three states that look identical from
-                    // outside: a load that never began (progress 0, not
-                    // loading), one stuck partway (progress parks around
-                    // 0.6), and a DOM that is ready while `didFinish` is
-                    // withheld. Read synchronously, because a wedged web view
-                    // may never answer an asynchronous probe.
-                    let view = self.webView
-                    let progress = view?.estimatedProgress ?? -1
-                    let loading = view?.isLoading ?? false
-                    let currentURL = view?.url?.absoluteString ?? "nil"
-                    jdnLog("extract: TIMED OUT after \(timeout / 2)s waiting on the web view"
-                           + " (estimatedProgress \(String(format: "%.2f", progress)),"
-                           + " isLoading \(loading), url \(currentURL))")
-                    // `document.readyState`, for the log alone. Nothing waits
-                    // on it. The web view is captured strongly so it outlives
-                    // this extractor long enough to answer; if the content
-                    // process is gone it never answers, and the absence of the
-                    // line is itself the finding.
-                    view?.evaluateJavaScript("document.readyState") { value, error in
-                        if let state = value as? String {
-                            jdnLog("extract: post-timeout document.readyState = \(state)")
-                        } else {
-                            jdnLog("extract: post-timeout readyState probe returned nothing"
-                                   + " — \(error?.localizedDescription ?? "no value, no error")")
-                        }
-                    }
-                    self.continuation = nil
-                    self.domReadyPollTask?.cancel()
-                    view?.stopLoading()
-                    self.unhost()
-                    cont.resume(throwing: ExtractionError.timedOut)
-                }
+                jdnLog("extract: \(strategy.name) found no article — asking WebKit for a second opinion")
+                lastError = error
+                continue
+            case .noDocument(let why):
+                lastError = why
+                continue
             }
-            jdnLog("extract: handing \(html.count) chars to the web view, base \(finalURL.absoluteString)")
-            self.handedOverChars = html.count
-            self.loadedHTML = html
-            self.loadedBaseURL = finalURL
-            self.webView.loadHTMLString(html, baseURL: finalURL)
-            self.startDOMReadyPoll()
+        }
+        jdnLog("extract: every rung failed — no document by any route")
+        throw lastError
+    }
+
+    /// Pin the extractor to one rung and disable the ladder.
+    ///
+    ///     defaults write cc.jorviksoftware.JorvikDailyNews readerStrategy schemeHandler
+    ///     defaults delete cc.jorviksoftware.JorvikDailyNews readerStrategy
+    ///
+    /// The value is a `Strategy.name`. This is how a rung gets A/B tested on a
+    /// machine three thousand miles away without another release: one command,
+    /// one relaunch, one line in the log. Nine releases went by without one of
+    /// these, and each of them cost a day.
+    static let strategyKey = "readerStrategy"
+
+    static var pinnedStrategy: Strategy? {
+        guard let name = UserDefaults.standard.string(forKey: strategyKey), !name.isEmpty else { return nil }
+        return Strategy.allCases.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    /// The order to try rungs in: a pinned rung alone, else the locked winner
+    /// first and everything else in declaration order.
+    private static func ladder() -> [Strategy] {
+        if let pinned = pinnedStrategy { return [pinned] }
+        guard let locked = lockedStrategy else { return Strategy.allCases }
+        return [locked] + Strategy.allCases.filter { $0 != locked }
+    }
+
+    private static func recordWin(_ strategy: Strategy) {
+        guard lockedStrategy == nil else { return }
+        if winner == strategy {
+            winStreak += 1
+        } else {
+            winner = strategy
+            winStreak = 1
+        }
+        guard winStreak >= winsBeforeLocking else { return }
+        lockedStrategy = strategy
+        jdnLog("extract: locking on to \(strategy.name) for the rest of this run")
+    }
+
+    private enum RungOutcome {
+        /// A document arrived and Readability found an article in it.
+        case article(Article)
+        /// A document arrived; Readability found nothing usable in it. Stop the
+        /// ladder — that is a verdict about the page, not about the loader.
+        case documentButNoArticle(Error)
+        /// No document arrived. Try the next rung.
+        case noDocument(Error)
+    }
+
+    // MARK: - One rung
+
+    private func attempt(_ strategy: Strategy, page: FetchedPage,
+                         blocker: WKContentRuleList?, minimumLength: Int) async -> RungOutcome {
+        let label = "rung \(strategy.position)/\(Strategy.allCases.count) \(strategy.name)"
+        let started = Date()
+
+        if strategy == .javaScriptCore {
+            return await attemptNative(page: page, label: label, started: started, minimumLength: minimumLength)
+        }
+
+        policyAsked = false
+        provisional = false
+        committed = false
+        rendererDied = false
+        navigationFailure = nil
+        largestDOM = 0
+        navigationsAllowed = 0
+        refusedNavigation = false
+
+        var scratchDir: URL?
+        defer {
+            if let scratchDir { try? FileManager.default.removeItem(at: scratchDir) }
+        }
+
+        let handler = strategy == .schemeHandler
+            ? BytesSchemeHandler(data: page.data, mimeType: page.mimeType, encoding: page.textEncodingName)
+            : nil
+        let view = makeWebView(blocker: blocker, schemeHandler: handler)
+        retire(webView)
+        webView = view
+
+        switch strategy {
+        case .htmlString:
+            // Byte for byte what every previous release did.
+            view.loadHTMLString(page.html, baseURL: page.url)
+        case .simulatedRequest:
+            var request = URLRequest(url: page.url)
+            request.setValue(Self.desktopUserAgent, forHTTPHeaderField: "User-Agent")
+            _ = view.loadSimulatedRequest(request, response: page.response, responseData: page.data)
+        case .schemeHandler:
+            _ = view.load(URLRequest(url: BytesSchemeHandler.documentURL))
+        case .fileURL:
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("jdn-reader-\(UUID().uuidString)", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                let file = dir.appendingPathComponent("article.html")
+                try Self.withBaseHref(page.html, page.url).write(to: file, atomically: true, encoding: .utf8)
+                scratchDir = dir
+                view.loadFileURL(file, allowingReadAccessTo: dir)
+            } catch {
+                jdnLog("extract: \(label) — could not stage a temp file (\(error.localizedDescription))")
+                retire(view)
+                return .noDocument(ExtractionError.fetchFailed(error.localizedDescription))
+            }
+        case .javaScriptCore:
+            break   // handled above
+        }
+
+        guard let domChars = await awaitDocument(view, expecting: page.html.count) else {
+            let elapsed = String(format: "%.1f", Date().timeIntervalSince(started))
+            jdnLog("extract: \(label) — NO DOCUMENT after \(elapsed)s"
+                   + " [dom \(largestDOM) of \(page.html.count)"
+                   + " policy=\(policyAsked ? "yes" : "no")"
+                   + " provisional=\(provisional ? "yes" : "no")"
+                   + " commit=\(committed ? "yes" : "no")"
+                   + (rendererDied ? " renderer=DIED" : "")
+                   + (navigationFailure.map { " error=\($0)" } ?? "")
+                   + "]")
+            retire(view)
+            return .noDocument(rendererDied ? ExtractionError.contentProcessTerminated : ExtractionError.timedOut)
+        }
+
+        let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+        jdnLog("extract: \(label) — DOCUMENT OK, \(domChars) chars in \(elapsed)s")
+
+        // The scheme-handler and file rungs changed `document.baseURI`, so the
+        // `<base href>` injected above is what puts relative links back on the
+        // real site. Readability reads `baseURI` and nothing else.
+        let script = readabilityScript
+            + "\n;JSON.stringify(new Readability(document.cloneNode(true)).parse());"
+        let result = try? await view.evaluateJavaScript(script)
+        retire(view)
+        return interpret(result as? String, label: label, minimumLength: minimumLength)
+    }
+
+    /// Rung 5. No web view, no navigation, no content process.
+    private func attemptNative(page: FetchedPage, label: String,
+                               started: Date, minimumLength: Int) async -> RungOutcome {
+        let outcome = await NativeReader.shared.extract(html: page.html, url: page.url,
+                                                        readability: readabilityScript)
+        let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+        switch outcome {
+        case .failure(let why):
+            jdnLog("extract: \(label) — UNAVAILABLE after \(elapsed)s: \(why)")
+            return .noDocument(ExtractionError.fetchFailed(why))
+        case .success(let json):
+            jdnLog("extract: \(label) — DOCUMENT OK, parsed in \(elapsed)s")
+            return interpret(json, label: label, minimumLength: minimumLength)
         }
     }
+
+    /// Turn Readability's JSON into an outcome. Shared by every rung so the
+    /// WebKit path and the JavaScriptCore path cannot judge an article
+    /// differently.
+    private func interpret(_ json: String?, label: String, minimumLength: Int) -> RungOutcome {
+        guard let json, json != "null", json != "undefined",
+              let data = json.data(using: .utf8),
+              let article = try? JSONDecoder().decode(Article.self, from: data) else {
+            jdnLog("readability: no article in this page — live page fallback")
+            return .documentButNoArticle(ExtractionError.noArticle)
+        }
+        let len = article.length ?? article.textContent?.count ?? 0
+        guard len >= minimumLength else {
+            jdnLog("readability: only \(len) chars — too thin, live page fallback")
+            return .documentButNoArticle(ExtractionError.tooShort(len))
+        }
+        jdnLog("readability: article of \(len) chars — rendering reader view")
+        return .article(article)
+    }
+
+    // MARK: - Waiting for a document
 
     /// Ask the DOM directly whether it is ready, instead of waiting to be told.
     ///
     /// `didFinish` was only ever a proxy for "the DOM is ready", and on macOS 27
-    /// the proxy stopped tracking the thing it stands for. Measured from a
-    /// reporter's log: `document.readyState` was **complete** while
-    /// `estimatedProgress` sat at 0.10 and `isLoading` stayed true, so
-    /// `didFinish` never arrived and extraction waited out its entire 10s
-    /// timeout on a page that had been ready almost immediately. Four articles,
-    /// four fallbacks, no reader views, on pages that had fully parsed.
+    /// the proxy stopped tracking the thing it stands for. So the DOM itself is
+    /// the thing to ask, and the navigation delegate is demoted to a witness:
+    /// it records where the load got to and logs it, and decides nothing.
     ///
-    /// Readability reads the DOM and nothing else, so the DOM is the right thing
-    /// to ask. `didFinish` stays as the fast path where it works, and
-    /// `extractionStarted` keeps the two from racing.
+    /// Returns the DOM's character count, or nil if no document arrived.
     ///
-    /// `interactive` is accepted as well as `complete`, and that is safe here
-    /// rather than merely convenient: page scripts are disabled and every
-    /// subresource is refused, so nothing can add to the document after parsing
-    /// finishes. The DOM at `interactive` is the final DOM.
-    private func startDOMReadyPoll() {
-        domReadyPollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: Self.domPollInterval)
-                guard !Task.isCancelled, let self,
-                      !self.extractionStarted, self.continuation != nil,
-                      let view = self.webView else { return }
-                // Both facts in one round trip. `readyState` alone is not
-                // enough: the empty document a web view starts with already
-                // reports `complete`, so the DOM's own size is what separates
-                // "the article is parsed" from "the article has not arrived".
-                let probe = "document.readyState + '|' + document.documentElement.outerHTML.length"
-                let raw = try? await view.evaluateJavaScript(probe)
-                guard let answer = raw as? String else { continue }
+    /// The two budgets are the whole trick. Before commit the loop is
+    /// impatient, because a load that has not committed on the failing machine
+    /// never does; after commit it is patient, because commit proves the
+    /// machinery works and the page is merely large. That asymmetry is what
+    /// lets five rungs fit inside less time than one rung used to take.
+    private func awaitDocument(_ view: WKWebView, expecting handedOver: Int) async -> Int? {
+        let started = Date()
+        while true {
+            try? await Task.sleep(nanoseconds: Self.domPollInterval)
+            if Task.isCancelled { return nil }
+            if rendererDied || navigationFailure != nil { return nil }
+
+            let probe = "document.readyState + '|' + document.documentElement.outerHTML.length"
+            if let answer = (try? await view.evaluateJavaScript(probe)) as? String {
                 let parts = answer.split(separator: "|", maxSplits: 1)
-                guard let state = parts.first.map(String.init),
-                      state == "complete" || state == "interactive" else { continue }
+                let state = parts.first.map(String.init) ?? ""
                 let domChars = parts.count > 1 ? Int(parts[1]) ?? 0 : 0
-                guard !self.extractionStarted, self.continuation != nil else { return }
-
-                let plausible = self.handedOverChars == 0
-                    || Double(domChars) >= Double(self.handedOverChars) * Self.minimumDOMShare
-                if !plausible {
-                    // Late, or lost. Keep waiting for half a second before
-                    // deciding, because the first tick can easily land before a
-                    // large document has parsed.
-                    self.emptyDOMTicks += 1
-                    guard self.emptyDOMTicks >= Self.emptyDOMTicksBeforeRetry else { continue }
-                    guard !self.retriedWithoutBlocker, !self.loadedHTML.isEmpty,
-                          let baseURL = self.loadedBaseURL else {
-                        // Nothing left to try. Let the timeout take it to the
-                        // live page, and say why rather than reporting "no
-                        // article found", which is true of this DOM and false
-                        // of the article.
-                        jdnLog("extract: DOM still holds only \(domChars) chars of"
-                               + " \(self.handedOverChars) after \(self.emptyDOMTicks) ticks"
-                               + " — the document did not arrive")
-                        return
-                    }
-                    self.retriedWithoutBlocker = true
-                    self.emptyDOMTicks = 0
-                    jdnLog("extract: DOM holds only \(domChars) chars of \(self.handedOverChars)"
-                           + " after \(Self.emptyDOMTicksBeforeRetry) ticks — retrying with"
-                           + " subresource blocking OFF")
-                    self.unhost()
-                    self.webView = self.makeWebView(blocker: nil)
-                    self.webView.loadHTMLString(self.loadedHTML, baseURL: baseURL)
-                    continue
+                largestDOM = max(largestDOM, domChars)
+                // `interactive` is accepted as well as `complete`, and that is
+                // safe here rather than merely convenient: page scripts are
+                // disabled and subresources are refused, so nothing can add to
+                // the document after parsing finishes. The DOM at `interactive`
+                // is the final DOM.
+                if state == "complete" || state == "interactive" {
+                    let plausible = handedOver == 0
+                        || Double(domChars) >= Double(handedOver) * Self.minimumDOMShare
+                    if plausible { return domChars }
                 }
+            }
 
-                jdnLog("extract: DOM ready (readyState=\(state), \(domChars) chars of"
-                       + " \(self.handedOverChars))\(self.retriedWithoutBlocker ? " after retry without the blocker" : "")")
-                await self.runExtraction()
-                return
+            let elapsed = Date().timeIntervalSince(started)
+            if committed {
+                if elapsed >= Self.committedBudget { return nil }
+            } else if elapsed >= Self.uncommittedBudget {
+                return nil
             }
         }
     }
 
+    // MARK: - Self-test
+
+    /// Three trivial loads, once per run, before the first article.
+    ///
+    /// This is the cheapest measurement in the build and the one nobody has
+    /// taken. It loads sixty characters of HTML — no site, no subresources, no
+    /// size, no encoding — and reports whether WebKit will produce a document
+    /// from it at all. If `loadHTMLString` cannot manage sixty characters, then
+    /// every theory about rule lists, document size, service workers and
+    /// picture memory is finished in one line, and the answer was always one
+    /// second away.
+    ///
+    /// The three probes vary one thing each: hosting (JDN 1.4.4's fix, never
+    /// actually tested against its opposite on the failing machine) and
+    /// `suppressesIncrementalRendering`, which withholds the first paint until
+    /// a load completes and is therefore the one configuration flag whose whole
+    /// job is to make a web view wait.
+    private static var selfTestDone = false
+
+    private func runSelfTestOnce() async {
+        guard !Self.selfTestDone else { return }
+        Self.selfTestDone = true
+        await selfTest(name: "hosted, suppressed", hosted: true, suppressed: true)
+        await selfTest(name: "hosted, not suppressed", hosted: true, suppressed: false)
+        await selfTest(name: "not hosted", hosted: false, suppressed: true)
+        await schemeSelfTest()
+    }
+
+    /// The fourth probe, and the one the reader now depends on.
+    ///
+    /// The three above all use `loadHTMLString`, which is a *substitute-data*
+    /// load: WebKit takes bytes it is handed and pretends they came from the
+    /// network. This one asks for the same sixty characters over a private URL
+    /// scheme, which is a *real resource load* and enters WebKit's loader by a
+    /// different door.
+    ///
+    /// That distinction is the whole question. If `loadHTMLString` is dead and
+    /// this is alive, the fault is in the substitute-data path, the reader's
+    /// fallback in `ReaderSheet` will save the reporter, and the answer is to
+    /// stop using substitute data anywhere. If both are dead the fault is
+    /// something app-wide and every theory about the loader is finished.
+    private func schemeSelfTest() async {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let pagePrefs = WKWebpagePreferences()
+        pagePrefs.allowsContentJavaScript = false
+        config.defaultWebpagePreferences = pagePrefs
+        let handler = BytesSchemeHandler(data: Data(Self.selfTestHTML.utf8),
+                                         mimeType: "text/html", encoding: "utf-8")
+        config.setURLSchemeHandler(handler, forURLScheme: BytesSchemeHandler.scheme)
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
+        host(view)
+        let started = Date()
+        view.load(URLRequest(url: BytesSchemeHandler.documentURL))
+        var chars = 0
+        while Date().timeIntervalSince(started) < 1.0 {
+            try? await Task.sleep(nanoseconds: Self.domPollInterval)
+            if let answer = (try? await view.evaluateJavaScript("document.documentElement.outerHTML.length")) as? Int,
+               answer > 60 {
+                chars = answer
+                break
+            }
+        }
+        let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+        if chars > 0 {
+            jdnLog("selftest: \(BytesSchemeHandler.scheme): real resource load — OK (\(chars) chars in \(elapsed)s)")
+        } else {
+            jdnLog("selftest: \(BytesSchemeHandler.scheme): real resource load — DEAD (60 chars never arrived in \(elapsed)s)")
+        }
+        retire(view)
+    }
+
+    private static let selfTestHTML = "<html><head><title>t</title></head><body><p>jdn self test</p></body></html>"
+
+    private func selfTest(name: String, hosted: Bool, suppressed: Bool) async {
+        let config = WKWebViewConfiguration()
+        config.suppressesIncrementalRendering = suppressed
+        config.websiteDataStore = .nonPersistent()
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
+        if hosted { host(view) }
+        let started = Date()
+        view.loadHTMLString(Self.selfTestHTML, baseURL: nil)
+        var chars = 0
+        while Date().timeIntervalSince(started) < 1.0 {
+            try? await Task.sleep(nanoseconds: Self.domPollInterval)
+            if let answer = (try? await view.evaluateJavaScript("document.documentElement.outerHTML.length")) as? Int,
+               answer > 60 {
+                chars = answer
+                break
+            }
+        }
+        let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+        if chars > 0 {
+            jdnLog("selftest: loadHTMLString \(name) — OK (\(chars) chars in \(elapsed)s)")
+        } else {
+            jdnLog("selftest: loadHTMLString \(name) — DEAD (60 chars never arrived in \(elapsed)s)")
+        }
+        retire(view)
+    }
+
     // MARK: - Networking
 
-    private func fetchHTML(url: URL, timeout: TimeInterval) async throws -> (html: String, finalURL: URL) {
+    private static let desktopUserAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15"
+
+    /// Everything a rung might need from one fetch: the raw bytes for the
+    /// strategies that want to be handed a response, and the decoded string for
+    /// the strategies that want text.
+    private struct FetchedPage {
+        let data: Data
+        let html: String
+        let response: URLResponse
+        let url: URL
+
+        var mimeType: String {
+            let declared = response.mimeType ?? ""
+            return declared.isEmpty ? "text/html" : declared
+        }
+        var textEncodingName: String? { response.textEncodingName }
+    }
+
+    private func fetchHTML(url: URL, timeout: TimeInterval) async throws -> FetchedPage {
         var request = URLRequest(url: url)
         // Many sites gate content or layout on a desktop-browser UA; the raw
         // URLSession default UA gets redirected to mobile or refused outright.
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
-            forHTTPHeaderField: "User-Agent"
-        )
+        request.setValue(Self.desktopUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         request.setValue("en-GB,en;q=0.9", forHTTPHeaderField: "Accept-Language")
         request.timeoutInterval = max(5, timeout)
@@ -456,17 +821,50 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         }
 
         let finalURL = response.url ?? url
-        if let html = String(data: data, encoding: .utf8) {
-            return (html, finalURL)
+        let html: String
+        if let utf8 = String(data: data, encoding: .utf8) {
+            html = utf8
+        } else if let latin1 = String(data: data, encoding: .isoLatin1) {
+            html = latin1
+        } else {
+            throw ExtractionError.badEncoding
         }
-        if let html = String(data: data, encoding: .isoLatin1) {
-            return (html, finalURL)
+        jdnLog("extract: \(html.count) chars fetched, base \(finalURL.absoluteString)")
+        return FetchedPage(data: data, html: html, response: response, url: finalURL)
+    }
+
+    // MARK: - Base URL rewriting
+
+    /// Put a `<base href>` at the top of the document's head.
+    ///
+    /// Rungs 3 and 4 load the article from a private scheme or from a temporary
+    /// file, so `document.baseURI` is no longer the article's own URL, and
+    /// Readability's `_fixRelativeUris` reads exactly that property when it
+    /// makes links and images absolute. The injected tag puts it back.
+    ///
+    /// It goes *first* in the head because the first `<base href>` in document
+    /// order is the one the parser honours, so a page that ships its own base
+    /// tag cannot override ours.
+    static func withBaseHref(_ html: String, _ url: URL) -> String {
+        let escaped = url.absoluteString
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+        let tag = "<base href=\"\(escaped)\">"
+        // After `<head>` if there is one, otherwise after `<html>`, otherwise
+        // at the very front. Never before the doctype, which would drop the
+        // parser into quirks mode and change the DOM we are trying to read.
+        for opener in ["<head", "<html"] {
+            guard let start = html.range(of: opener, options: .caseInsensitive) else { continue }
+            guard let close = html.range(of: ">", range: start.upperBound..<html.endIndex) else { continue }
+            var out = html
+            out.insert(contentsOf: tag, at: close.upperBound)
+            return out
         }
-        throw ExtractionError.badEncoding
+        return tag + html
     }
 
     deinit {
-        // Not via `unhost()`, which is main-actor isolated. A view left behind
+        // Not via `retire()`, which is main-actor isolated. A view left behind
         // would sit under the interface for the life of the app, one per
         // article opened. `superview` is main-actor isolated too, so the whole
         // check goes inside the assumption rather than only the removal.
@@ -478,100 +876,417 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
 
     // MARK: - WKNavigationDelegate
 
-    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        jdnLog("webview: didFinish")
+    // These four record where a navigation got to and log it. They resume
+    // nothing and decide nothing: `awaitDocument` reads the DOM, and the DOM is
+    // the only thing Readability cares about. The value here is diagnostic —
+    // `policy`, `provisional`, `commit` are the three gates a load passes
+    // through, in order, and the first one that never reports is where the
+    // fault lives.
+
+    /// Allow the rung's own document and refuse everything after it.
+    ///
+    /// A page can move itself with `<meta http-equiv="refresh">` even with
+    /// scripts disabled, and a 1.6 MB Wired article does exactly that: it
+    /// commits our document and then navigates away to a `text/plain`
+    /// response, throwing away the DOM Readability was about to read. Whether
+    /// that mattered used to depend on which of the two won a race with the
+    /// DOM poll. Refusing it makes every rung read the document it was given,
+    /// and only that document, which is the whole point of handing WebKit
+    /// bytes we have already fetched.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        guard isCurrent(webView) else {
+            decisionHandler(.allow)
+            return
+        }
+        policyAsked = true
+        navigationsAllowed += 1
+        guard navigationsAllowed == 1 else {
+            refusedNavigation = true
+            jdnLog("webview: refused a second navigation to \(navigationAction.request.url?.host ?? "?")")
+            decisionHandler(.cancel)
+            return
+        }
+        jdnLog("webview: policy asked — \(navigationAction.request.url?.scheme ?? "?")")
+        decisionHandler(.allow)
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
+        if isCurrent(webView) {
+            jdnLog("webview: response \(navigationResponse.response.mimeType ?? "?")")
+        }
+        decisionHandler(.allow)
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         Task { @MainActor [weak self] in
-            guard let self else {
-                jdnLog("webview: didFinish but the extractor was already gone")
-                return
-            }
-            await self.runExtraction()
+            guard let self, self.isCurrent(webView) else { return }
+            self.provisional = true
+            jdnLog("webview: provisional started")
+        }
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        Task { @MainActor [weak self] in
+            guard let self, self.isCurrent(webView) else { return }
+            self.committed = true
+            jdnLog("webview: committed")
+        }
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        Task { @MainActor [weak self] in
+            guard let self, self.isCurrent(webView) else { return }
+            jdnLog("webview: didFinish")
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         let message = error.localizedDescription
-        jdnLog("webview: didFail — \(message)")
+        let cancelled = (error as NSError).code == NSURLErrorCancelled
         Task { @MainActor [weak self] in
-            guard let self, let cont = self.continuation else { return }
-            self.continuation = nil
-            self.timeoutTask?.cancel()
-            self.domReadyPollTask?.cancel()
-            self.unhost()
-            cont.resume(throwing: ExtractionError.fetchFailed(message))
-        }
-    }
-
-    /// WebKit's content process died. Without this the app sees nothing at
-    /// all: no `didFinish`, no `didFail`, no `didFailProvisionalNavigation`,
-    /// just silence until the extractor's own timeout. That is exactly the
-    /// signature in the issue #1 reporter's log, and it was unreadable because
-    /// this callback was not implemented.
-    nonisolated func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        jdnLog("webview: WEB CONTENT PROCESS TERMINATED — WebKit's renderer died,"
-               + " so no navigation callback can arrive. Usually memory pressure.")
-        Task { @MainActor [weak self] in
-            guard let self, let cont = self.continuation else { return }
-            self.continuation = nil
-            self.timeoutTask?.cancel()
-            self.domReadyPollTask?.cancel()
-            self.unhost()
-            cont.resume(throwing: ExtractionError.contentProcessTerminated)
+            guard let self, self.isCurrent(webView) else { return }
+            guard !(cancelled && self.refusedNavigation) else { return }
+            self.navigationFailure = message
+            jdnLog("webview: didFail — \(message)")
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         let message = error.localizedDescription
-        jdnLog("webview: didFailProvisionalNavigation — \(message)")
+        let cancelled = (error as NSError).code == NSURLErrorCancelled
         Task { @MainActor [weak self] in
-            guard let self, let cont = self.continuation else { return }
-            self.continuation = nil
-            self.timeoutTask?.cancel()
-            self.domReadyPollTask?.cancel()
-            self.unhost()
-            cont.resume(throwing: ExtractionError.fetchFailed(message))
+            guard let self, self.isCurrent(webView) else { return }
+            guard !(cancelled && self.refusedNavigation) else { return }
+            self.navigationFailure = message
+            jdnLog("webview: provisional FAILED — \(message)")
         }
     }
 
-    @MainActor
-    private func runExtraction() async {
-        guard !extractionStarted else { return }
-        extractionStarted = true
-        domReadyPollTask?.cancel()
-        defer { unhost() }
-        let script = readabilityScript + "\n;JSON.stringify(new Readability(document.cloneNode(true)).parse());"
-        do {
-            jdnLog("readability: evaluating")
-            let result = try await webView.evaluateJavaScript(script)
-            jdnLog("readability: returned \(result is String ? "a string of \((result as? String)?.count ?? 0) chars" : String(describing: type(of: result)))")
-            guard let cont = continuation else {
-                jdnLog("readability: finished but the continuation was already resumed")
-                return
-            }
-            continuation = nil
-            timeoutTask?.cancel()
-
-            guard let jsonString = result as? String, jsonString != "null",
-                  let data = jsonString.data(using: .utf8) else {
-                jdnLog("readability: no article found — falling back to the live page")
-                cont.resume(throwing: ExtractionError.noArticle)
-                return
-            }
-            let article = try JSONDecoder().decode(Article.self, from: data)
-            let len = article.length ?? article.textContent?.count ?? 0
-            if len < 500 {
-                jdnLog("readability: only \(len) chars — too short, falling back to the live page")
-                cont.resume(throwing: ExtractionError.tooShort(len))
-                return
-            }
-            jdnLog("readability: article of \(len) chars — rendering reader view")
-            cont.resume(returning: article)
-        } catch {
-            jdnLog("readability: threw — \(error.localizedDescription)")
-            guard let cont = continuation else { return }
-            continuation = nil
-            timeoutTask?.cancel()
-            cont.resume(throwing: error)
+    /// WebKit's content process died. Without this the app sees nothing at
+    /// all: no `didFinish`, no `didFail`, no `didFailProvisionalNavigation`,
+    /// just silence until the rung's own budget runs out.
+    nonisolated func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        Task { @MainActor [weak self] in
+            guard let self, self.isCurrent(webView) else { return }
+            self.rendererDied = true
+            jdnLog("webview: RENDERER DIED — usually memory pressure")
         }
     }
+
+    /// Whether a callback belongs to the rung that is running now.
+    ///
+    /// `retire` clears the delegate, but a callback already in flight when a
+    /// rung is abandoned still arrives, and a stale `didFail` from rung 1
+    /// landing during rung 3 would abandon a healthy load on the strength of a
+    /// dead one's error. Identity is the exact test.
+    private func isCurrent(_ view: WKWebView) -> Bool { webView === view }
+}
+
+// MARK: - Rung 3's scheme handler
+
+/// Serves one document, from bytes already in memory, over a private scheme.
+///
+/// This is rung 3's whole reason for existing. `loadHTMLString`,
+/// `loadData`, `loadSimulatedRequest` and `loadAlternateHTML` all become a
+/// WebKit `SubstituteData` main load, which is delivered to the parser by a
+/// route of its own that has no error path at all: if the hand-off is lost, no
+/// delegate fires, `estimatedProgress` stays at its initial 0.1, and the web
+/// view waits for ever. That is precisely the signature in five logs. A custom
+/// scheme is a *real* resource load, so it does not go near that route.
+///
+/// Everything except the one document is refused, which also gives rung 3 the
+/// subresource blocking for free.
+@MainActor
+final class BytesSchemeHandler: NSObject, WKURLSchemeHandler {
+    static let scheme = "jdn-article"
+    static let documentURL = URL(string: "\(scheme)://read/article")!
+
+    private let data: Data
+    private let mimeType: String
+    private let encoding: String?
+    /// A task that WebKit has stopped must never be told anything again, or the
+    /// process traps. Cheaper to remember them than to guess.
+    private var stopped = Set<ObjectIdentifier>()
+
+    init(data: Data, mimeType: String, encoding: String?) {
+        self.data = data
+        self.mimeType = mimeType
+        self.encoding = encoding
+    }
+
+    nonisolated func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
+        MainActor.assumeIsolated { serve(urlSchemeTask) }
+    }
+
+    nonisolated func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
+        MainActor.assumeIsolated { _ = stopped.insert(ObjectIdentifier(urlSchemeTask)) }
+    }
+
+    private func serve(_ task: any WKURLSchemeTask) {
+        let id = ObjectIdentifier(task)
+        guard !stopped.contains(id) else { return }
+        guard task.request.url == Self.documentURL else {
+            // A subresource the article referenced. Refuse it and say nothing
+            // to the log: a busy page has hundreds and they are all irrelevant.
+            task.didFailWithError(URLError(.unsupportedURL))
+            return
+        }
+        let response = URLResponse(url: Self.documentURL, mimeType: mimeType,
+                                   expectedContentLength: data.count, textEncodingName: encoding)
+        task.didReceive(response)
+        task.didReceive(data)
+        task.didFinish()
+    }
+}
+
+// MARK: - Rung 5: Readability without WebKit
+
+/// Mozilla's Readability, run over a LinkeDOM document inside JavaScriptCore.
+///
+/// This is the rung that cannot fail the way the others can. There is no
+/// content process, no XPC, no navigation, no run loop to lose a timer on and
+/// no window to be absent from: HTML goes into a `JSContext` on a private
+/// serial queue and JSON comes back. Every WebKit rung above ships blind,
+/// because the fault is only reproducible on one machine three thousand miles
+/// away. This one is testable here, on every article, before it is released —
+/// which is the only property that actually breaks the loop of one release per
+/// theory.
+///
+/// `Readability.js` is the same bundled file the WebKit rungs evaluate, byte for
+/// byte, and it is passed in rather than re-read, so extraction quality cannot
+/// diverge between the two paths. `LinkeDOM.js` supplies the `document` that
+/// WebKit would otherwise have supplied. It is linkedom 0.18.13, bundled
+/// unminified so that it can be read and diffed rather than trusted:
+///
+///     esbuild entry-linkedom.mjs --bundle --format=iife \
+///         --global-name=linkedom --platform=browser --target=es2020 \
+///         --outfile=Resources/LinkeDOM.js
+///
+/// where `entry-linkedom.mjs` is one line:
+///
+///     export { parseHTML } from 'linkedom';
+///
+/// ## Measured against the WebKit rung, five live pages, this machine
+///
+/// phys.org, BBC Sport and WIRED — the reporter's own three articles from the
+/// newest log — plus a 1.2 MB Wikipedia page and an Ars Technica index, release
+/// build. Body text **character for character identical** on the four article
+/// pages, and `article.length` identical too: 5177, 5249, 5212, 94270. The Ars
+/// index, which is a link list rather than an article, differs by 24 characters
+/// of whitespace in its navigation.
+///
+/// Bylines come out *better*, for a reason worth writing down. Every WebKit rung
+/// sets `allowsContentJavaScript = false`, and with scripting off WebKit
+/// discards the contents of `<script>` elements — including
+/// `application/ld+json`, which is where news sites put the headline, the byline
+/// and the date. So the WebKit path has never been able to read a page's
+/// JSON-LD. Measured: BBC "Phil Cartwright" and Wikipedia "Contributors to
+/// Wikimedia projects" are found here and are `null` through WebKit, and
+/// Wikipedia's title comes back as "Isle of Man" rather than
+/// "Isle of Man - Wikipedia".
+///
+/// A fresh context costs 15 ms to build, and the slowest of the five pages took
+/// 0.98 s end to end against 1.76 s through `loadHTMLString`.
+final class NativeReader: @unchecked Sendable {
+    static let shared = NativeReader()
+
+    enum Outcome {
+        case success(String)
+        case failure(String)
+    }
+
+    /// Its own queue, because a `JSContext` belongs to the thread that made it
+    /// and because parsing a megabyte of HTML has no business on the main one.
+    ///
+    /// A plain `DispatchQueue` and not a `Thread` with a raised stack: the
+    /// worry was that a dispatch worker's 512 KB stack would turn a deeply
+    /// nested document into "Maximum call stack size exceeded". Measured, it
+    /// does not — `<div>` nested 5,000 deep parses and serialises identically
+    /// on a dispatch queue and on an 8 MB thread. Real articles are two orders
+    /// of magnitude shallower, so the extra machinery bought nothing.
+    private let queue = DispatchQueue(label: "cc.jorviksoftware.JorvikDailyNews.nativereader")
+
+    /// How long the reader waits for JavaScriptCore before moving on.
+    ///
+    /// Not a cancellation: nothing in the public JavaScriptCore API can stop a
+    /// running script, so an abandoned run keeps going until it finishes. It
+    /// exists so a pathological page cannot hold the ladder open — the next
+    /// rung starts, and the reader's own 25s backstop is no longer the only
+    /// thing standing between a bad page and a spinner that never stops.
+    /// Measured here, the slowest of five real pages was 0.98s.
+    private static let budget: TimeInterval = 8.0
+
+    func extract(html: String, url: URL, readability: String) async -> Outcome {
+        let absolute = url.absoluteString
+        return await withCheckedContinuation { continuation in
+            let slot = Slot(continuation)
+            queue.async { [self] in
+                slot.finish(run(html: html, url: absolute, readability: readability))
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + Self.budget) {
+                slot.finish(.failure("JavaScriptCore did not answer within \(Int(Self.budget))s"))
+            }
+        }
+    }
+
+    /// Holds the continuation and the one flag that says it has been used.
+    ///
+    /// Two things race for it, the worker and the watchdog, and resuming a
+    /// `CheckedContinuation` twice is a crash rather than a warning.
+    private final class Slot: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Outcome, Never>?
+
+        init(_ continuation: CheckedContinuation<Outcome, Never>) {
+            self.continuation = continuation
+        }
+
+        func finish(_ outcome: Outcome) {
+            lock.lock()
+            let waiting = continuation
+            continuation = nil
+            lock.unlock()
+            waiting?.resume(returning: outcome)
+        }
+    }
+
+    /// Everything below runs on `queue` and nowhere else.
+    ///
+    /// A fresh context per article, not a cached one. The cache saved 15 ms and
+    /// cost two things worth more than that: the previous article's document
+    /// stayed reachable until the collector got round to it, and a setup
+    /// failure was remembered for the life of the run, so one bad launch
+    /// disabled the rung for ever.
+    private func run(html: String, url: String, readability: String) -> Outcome {
+        guard let dom = Self.linkeDOM else {
+            return .failure("LinkeDOM.js missing from the bundle")
+        }
+        guard let context = JSContext() else {
+            return .failure("no JavaScript context")
+        }
+        var thrown: [String] = []
+        context.exceptionHandler = { _, exception in
+            thrown.append(exception?.toString() ?? "unknown JavaScript error")
+        }
+        Self.installGlobals(context)
+
+        let started = Date()
+        context.evaluateScript(dom, withSourceURL: URL(string: "jdn:LinkeDOM.js"))
+        context.evaluateScript(readability, withSourceURL: URL(string: "jdn:Readability.js"))
+        context.evaluateScript(Self.glue, withSourceURL: URL(string: "jdn:glue.js"))
+        if let first = thrown.first {
+            jdnLog("nativereader: setup failed — \(first)")
+            return .failure(first)
+        }
+
+        guard let function = context.objectForKeyedSubscript("__jdnExtract"), !function.isUndefined else {
+            return .failure("the reader function was not defined")
+        }
+        let value = function.call(withArguments: [html, url])
+        if let first = thrown.first { return .failure(first) }
+        guard let json = value?.toString(), json != "undefined" else {
+            return .failure("the reader returned nothing")
+        }
+        jdnLog("nativereader: \(html.count) chars of HTML read in"
+               + " \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
+        return .success(json)
+    }
+
+    /// The DOM shim, read once per launch. 491 KB, and it does not change under
+    /// a running app.
+    private static let linkeDOM: String? = {
+        guard let path = Bundle.main.path(forResource: "LinkeDOM", ofType: "js"),
+              let js = try? String(contentsOfFile: path, encoding: .utf8) else {
+            jdnLog("nativereader: LinkeDOM.js missing from the bundle")
+            return nil
+        }
+        return js
+    }()
+
+    /// The three globals a bare `JSContext` does not have and this rung needs.
+    ///
+    /// A `JSContext` is ECMAScript and nothing else. It has no `atob`, no
+    /// `Buffer` and no `URL`, and the first two of those are not cosmetic:
+    ///
+    /// **`atob`.** LinkeDOM ships its HTML entity table as base64 and decodes
+    /// it with `atob`, falling back to `Buffer` when there isn't one. With
+    /// neither, LinkeDOM throws `ReferenceError: Can't find variable: Buffer`
+    /// and the rung is dead. With a `Buffer` stub that returns its input —
+    /// which is what shipped — it does not throw, and instead decodes named
+    /// entities against a garbage table, silently. Measured against the WebKit
+    /// path on the reporter's own articles: 17 corrupted entities in one BBC
+    /// article and 13 in a Wikipedia page, `&quot;` reaching the reader as
+    /// `&amp;quot;` and `&nbsp;` as `Ĵbsp;`. Nothing thrown, nothing logged.
+    ///
+    /// **`URL`.** Readability calls `new URL(uri, baseURI).href` in
+    /// `_fixRelativeUris` and `new URL(str)` in `_isUrl`, both inside a
+    /// `try`/`catch`. Without the global, every catch fires: measured, 31
+    /// links left relative in a Wikipedia article, 8 on an Ars page, 3 on the
+    /// BBC. They resolve against the reader sheet's own base URL, which is not
+    /// the article's, so they lead nowhere.
+    ///
+    /// With both in place the body text is character-for-character identical to
+    /// what `loadHTMLString` + Readability produces on this machine, on all
+    /// five pages tested including the reporter's own three.
+    ///
+    /// `console` is not stubbed: `JSContext` already provides one.
+    private static func installGlobals(_ context: JSContext) {
+        let decodeBase64: @convention(block) (String) -> String? = { input in
+            var padded = input.trimmingCharacters(in: .whitespacesAndNewlines)
+            while padded.count % 4 != 0 { padded += "=" }
+            guard let data = Data(base64Encoded: padded, options: [.ignoreUnknownCharacters]) else {
+                return nil
+            }
+            // A binary string: one UTF-16 code unit per byte, which is what
+            // `atob` returns and what LinkeDOM's decoder then indexes.
+            return String(decoding: data.map { UInt16($0) }, as: UTF16.self)
+        }
+        context.setObject(decodeBase64, forKeyedSubscript: "atob" as NSString)
+
+        // Foundation resolves the URL; the JavaScript side is only a shape.
+        // Readability reads `.href` and nothing else, but the other components
+        // are cheap and stop a future Readability update from silently
+        // catching again.
+        let resolve: @convention(block) (String, String?) -> [String: Any]? = { relative, base in
+            let baseURL = base.flatMap { URL(string: $0) }
+            guard let resolved = URL(string: relative, relativeTo: baseURL)?.absoluteURL else {
+                return nil
+            }
+            return [
+                "href": resolved.absoluteString,
+                "protocol": resolved.scheme.map { $0 + ":" } ?? "",
+                "hostname": resolved.host ?? "",
+                "host": (resolved.host ?? "") + (resolved.port.map { ":\($0)" } ?? ""),
+                "pathname": resolved.path,
+                "search": resolved.query.map { "?" + $0 } ?? "",
+                "hash": resolved.fragment.map { "#" + $0 } ?? "",
+            ]
+        }
+        context.setObject(resolve, forKeyedSubscript: "__jdnResolveURL" as NSString)
+        context.evaluateScript("""
+        globalThis.URL = function (input, base) {
+          var parts = __jdnResolveURL(String(input),
+                                      base === undefined || base === null ? null : String(base));
+          if (!parts) { throw new TypeError('Invalid URL: ' + input); }
+          for (var key in parts) { this[key] = parts[key]; }
+        };
+        globalThis.URL.prototype.toString = function () { return this.href; };
+        """)
+    }
+
+    /// `documentURI` as well as `baseURI`, because Readability compares the
+    /// two: when they match it treats `#fragment` links as same-page and leaves
+    /// them alone, which is what a real browser does and what the WebKit rungs
+    /// produce.
+    private static let glue = """
+    globalThis.__jdnExtract = function (html, url) {
+      var doc = linkedom.parseHTML(html).document;
+      try { Object.defineProperty(doc, 'baseURI', { value: url, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(doc, 'documentURI', { value: url, configurable: true }); } catch (e) {}
+      var article = new Readability(doc).parse();
+      return article ? JSON.stringify(article) : null;
+    };
+    """
 }
