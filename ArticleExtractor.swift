@@ -691,7 +691,97 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         await selfTest(name: "hosted, not suppressed", hosted: true, suppressed: false)
         await selfTest(name: "not hosted", hosted: false, suppressed: true)
         await schemeSelfTest()
+        await sizeBisect()
     }
+
+    /// Finds the size at which a substitute-data load stops working.
+    ///
+    /// The reporter's 1.4.5 log established that `loadHTMLString` is not
+    /// broken on macOS 27, only broken *above a size*: sixty characters loaded
+    /// twelve times out of twelve, and thirteen real reader documents of 8,449
+    /// to 17,065 characters all came back as the 39-character empty skeleton.
+    /// The same bytes over a real resource load rendered every time. That looks
+    /// like an IPC boundary, where WebKit hands a large payload to the renderer
+    /// by shared memory rather than inline.
+    ///
+    /// Between 75 and 8,449 is not a number anyone can act on. This narrows it
+    /// to a bracket by bisection, which is five or six loads rather than a
+    /// ladder of fixed sizes, and states the answer in one line. The point is a
+    /// bug report Apple can reproduce, and one local question: the video embed
+    /// host page is 511 characters, so whether video works on an affected Mac
+    /// depends entirely on which side of the limit that falls.
+    private func sizeBisect() async {
+        var low = Self.selfTestHTML.count      // known good, just measured above
+        var high = Self.bisectCeiling
+
+        guard await !substituteDataLoads(chars: high) else {
+            jdnLog("selftest: bisect — \(high) chars loaded, so there is no limit below that here")
+            return
+        }
+        for _ in 0..<Self.bisectSteps where high - low > Self.bisectPrecision {
+            let mid = low + (high - low) / 2
+            if await substituteDataLoads(chars: mid) { low = mid } else { high = mid }
+        }
+        jdnLog("selftest: bisect — substitute data works to \(low) chars and fails by \(high)")
+        let embed = Self.videoEmbedChars
+        let verdict = embed <= low ? "below the limit, so video should play"
+                    : embed >= high ? "ABOVE the limit, so video will not play"
+                    : "inside the bracket, so video is uncertain"
+        jdnLog("selftest: bisect — the video embed host page is \(embed) chars, \(verdict)")
+    }
+
+    /// One probe: build a document of about `chars` characters and report
+    /// whether `loadHTMLString` produced it.
+    ///
+    /// The padding is a run of ordinary text inside a `<p>`, not a comment,
+    /// because a comment invites a parser to discard it and would make a
+    /// success indistinguishable from the empty document.
+    private func substituteDataLoads(chars: Int) async -> Bool {
+        let shell = "<html><head><title>t</title></head><body><p></p></body></html>"
+        let padding = String(repeating: "jdn ", count: max(1, (chars - shell.count) / 4))
+        let html = shell.replacingOccurrences(of: "<p></p>", with: "<p>\(padding)</p>")
+
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
+        host(view)
+        let started = Date()
+        view.loadHTMLString(html, baseURL: nil)
+        var arrived = 0
+        while Date().timeIntervalSince(started) < Self.bisectProbeTimeout {
+            try? await Task.sleep(nanoseconds: Self.domPollInterval)
+            if let answer = (try? await view.evaluateJavaScript("document.documentElement.outerHTML.length")) as? Int,
+               answer > Self.emptyDocumentChars, answer >= html.count / 2 {
+                arrived = answer
+                break
+            }
+        }
+        retire(view)
+        let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+        jdnLog("selftest: bisect \(html.count) chars — \(arrived > 0 ? "OK (\(arrived) chars)" : "DEAD") in \(elapsed)s")
+        return arrived > 0
+    }
+
+    /// Where the bisect starts looking. Above every reader document seen in the
+    /// reporter's logs, so a pass here means the fault is not size at all.
+    private static let bisectCeiling = 32_768
+    /// Enough halvings to take 75...32,768 down to the precision below.
+    private static let bisectSteps = 10
+    /// Stop when the bracket is this narrow. Finer than this tells a bug report
+    /// nothing more and costs another second on an affected machine.
+    private static let bisectPrecision = 256
+    /// A failing probe waits this long before it is called dead. The successful
+    /// probes in the reporter's log all answered inside 0.41s.
+    private static let bisectProbeTimeout: TimeInterval = 1.0
+    /// A web view that has loaded nothing still answers this length, so a probe
+    /// must clear it before a proportion of the payload means anything. Half of
+    /// a small payload is *below* it — at 74 characters the empty skeleton is
+    /// 39, which passes "at least half" and reports a load that never happened.
+    /// Measured on macOS 26.6.2, where the probe wrongly said OK.
+    private static let emptyDocumentChars = "<html><head></head><body></body></html>".count
+    /// `ReaderSheet.youTubeEmbedHTML` rendered with an 11-character video id.
+    /// Vimeo's is 442, so YouTube is the one that decides it.
+    private static let videoEmbedChars = 511
 
     /// The fourth probe, and the one the reader now depends on.
     ///
