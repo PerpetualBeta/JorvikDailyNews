@@ -16,6 +16,25 @@
   var ITALIC = { I: 1, EM: 1, CITE: 1 };
   var CODE = { CODE: 1, KBD: 1, SAMP: 1, TT: 1 };
 
+  // Elements that flow inside a line of prose. Everything NOT here is treated
+  // as a container to walk into.
+  //
+  // This used to be the other way round — an allow-list of block tags — and
+  // that fails on the first container nobody thought of. cultofmac.com nests a
+  // whole <html><body> INSIDE the article content, so the structure reads
+  // SECTION > HTML > BODY > 63 paragraphs. `HTML` and `BODY` were not on the
+  // block list, the section therefore looked as though it had no block
+  // children, and all 9,893 characters came out as a single paragraph.
+  //
+  // An allow-list of containers has to be complete to be correct, and it never
+  // will be. The inline set is small, closed and defined by HTML itself.
+  var INLINE = {
+    A: 1, ABBR: 1, B: 1, BDI: 1, BDO: 1, BR: 1, CITE: 1, CODE: 1, DATA: 1,
+    DFN: 1, EM: 1, FONT: 1, I: 1, INS: 1, DEL: 1, KBD: 1, LABEL: 1, MARK: 1,
+    Q: 1, RUBY: 1, S: 1, SAMP: 1, SMALL: 1, SPAN: 1, STRONG: 1, SUB: 1,
+    SUP: 1, TIME: 1, TT: 1, U: 1, VAR: 1, WBR: 1, BIG: 1, STRIKE: 1
+  };
+
   // Never prose, whatever they contain.
   var DROP = {
     SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, FORM: 1, INPUT: 1,
@@ -289,12 +308,14 @@
           case 'TABLE': emitTable(n); break;
           case 'TIME': drop('time'); break;
           default:
-            // A container: look inside. Anything that is only inline content
+            // A container: look inside. Anything holding only inline content
             // becomes a paragraph, so a <div>text</div> is not lost.
             var hasBlockChild = false;
             for (var c2 = n.firstChild; c2; c2 = c2.nextSibling) {
-              if (c2.nodeType === 1 && /^(P|H[1-6]|UL|OL|BLOCKQUOTE|PRE|HR|FIGURE|TABLE|DIV|SECTION|ARTICLE|MAIN|HEADER|FOOTER|ASIDE|PICTURE|SVG|IMG)$/
-                  .test(c2.tagName.toUpperCase())) { hasBlockChild = true; break; }
+              if (c2.nodeType === 1 && !INLINE[c2.tagName.toUpperCase()]) {
+                hasBlockChild = true;
+                break;
+              }
             }
             if (hasBlockChild) { walk(n); }
             else {
