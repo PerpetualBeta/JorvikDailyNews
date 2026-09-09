@@ -4,12 +4,19 @@ enum FeedFetchError: Error, LocalizedError {
     case invalidResponse(Int)
     case parseFailure
     case emptyFeed
+    /// The response is well-formed XML but it is not a feed. Distinct from
+    /// `parseFailure` because it fails in the opposite way: nothing errors.
+    case notAFeed(root: String)
+    /// A parse failure that can say where and why.
+    case parseFailureDetail(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse(let code): "Server returned \(code)"
         case .parseFailure: "Could not parse feed"
         case .emptyFeed: "Feed contained no items"
+        case .notAFeed(let root): "Served a <\(root)> document, not a feed"
+        case .parseFailureDetail(let detail): "Could not parse feed — \(detail)"
         }
     }
 }
@@ -35,7 +42,18 @@ final class FeedFetcher: Sendable {
         }
 
         let parser = RSSAtomParser(data: data, feed: feed)
-        guard let result = parser.parse() else { throw FeedFetchError.parseFailure }
+        guard let result = parser.parse() else {
+            // Two different faults, and lumping them together hid one of them
+            // for as long as this app has existed. "Could not parse" is a
+            // malformed feed. "Served a <html> document" is a feed that has
+            // been retired and replaced with a web page, which is a thing to
+            // go and fix rather than wait out.
+            if let wrong = parser.wrongRoot { throw FeedFetchError.notAFeed(root: wrong) }
+            if let detail = parser.failureDetail {
+                throw FeedFetchError.parseFailureDetail(detail)
+            }
+            throw FeedFetchError.parseFailure
+        }
         return result
     }
 }
@@ -51,6 +69,10 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
     private var flavour: Flavour = .unknown
 
     private var path: [String] = []
+    /// The document's outermost element, so a fetch can tell a feed from a web
+    /// page. An HTML page is usually well-formed enough to satisfy `XMLParser`,
+    /// which then reports a clean parse of a document containing no items.
+    private var rootElement: String?
     private var buffer = ""
 
     private struct ItemBuilder {
@@ -77,21 +99,125 @@ private final class RSSAtomParser: NSObject, XMLParserDelegate {
         self.parser.delegate = self
     }
 
+    /// Keeps what parsed, rather than discarding a feed because it breaks
+    /// somewhere near the bottom.
+    ///
+    /// `XMLParser` reports items to the delegate as it goes, so by the time it
+    /// hits bad markup `items` already holds everything above the fault.
+    /// Returning nil threw all of that away. Measured on
+    /// `nickschaden.com/feed/` on 2026-09-09: **nine items parse cleanly** and
+    /// the parser then dies at line 726 on an unterminated `<![CDATA[`, so the
+    /// reader was losing nine perfectly good articles to a defect 726 lines
+    /// past them. That feed reads as simply dead in the log, which is why it
+    /// went unnoticed.
+    ///
+    /// An item is only appended once its closing tag is seen, so a half-read
+    /// item at the point of failure was never added and cannot leak through.
+    /// Nothing is returned when nothing parsed, so a server handing back an
+    /// HTML page still fails as it should.
+    /// Why `XMLParser` gave up, if it did. Without this a parse failure could
+    /// only ever be reported as "could not parse feed", which names no line, no
+    /// column and no reason, and is therefore unactionable for the one person
+    /// who could fix it — whoever publishes the feed.
+    private var parseError: String?
+
+    /// An element name without its namespace prefix.
+    ///
+    /// `XMLParser` runs without namespace processing here, so RSS 1.0 reports
+    /// its root as `rdf:RDF` rather than `RDF`. Comparing qualified names
+    /// against bare ones rejected a working feed, so both the root check and
+    /// the flavour detection go through this.
+    static func localName(_ qualified: String) -> String {
+        qualified.split(separator: ":").last.map(String.init) ?? qualified
+    }
+
+    /// The outermost elements a feed can legitimately have. RSS 2.0 is `rss`,
+    /// Atom is `feed`, and RSS 1.0 is an RDF document. Anything else is not a
+    /// feed however cleanly it parses.
+    private static let feedRoots: Set<String> = ["rss", "feed", "rdf"]
+
+    /// Whether an element name is a root a feed can legitimately have.
+    ///
+    /// One predicate, because the first version of this asked the same question
+    /// in two places and got two answers: `parse()` compared the qualified name
+    /// `rdf:rdf` against the bare set and rejected it, while `wrongRoot`
+    /// compared the local name and accepted it. The feed was then reported as
+    /// "could not parse" with no detail, because the detailed paths had both
+    /// concluded there was nothing wrong. A set plus two call sites is a
+    /// standing invitation to that; a function is not.
+    static func isFeedRoot(_ elementName: String) -> Bool {
+        feedRoots.contains(localName(elementName))
+    }
+
+    /// What went wrong and where, for the log. Nil when nothing went wrong.
+    var failureDetail: String? {
+        guard let parseError else { return nil }
+        return "root <\(rootElement ?? "none")>, \(items.count) item(s) built, \(parseError)"
+    }
+
+    /// The root element when it is not one a feed can have, so the caller can
+    /// report "served a web page" rather than the misleading "could not parse".
+    /// Nil when the document is feed-shaped or never got as far as an element.
+    var wrongRoot: String? {
+        guard let rootElement else { return nil }
+        guard !Self.isFeedRoot(rootElement) else { return nil }
+        return rootElement
+    }
+
     func parse() -> FetchedFeed? {
-        guard parser.parse() else { return nil }
+        guard parser.parse() else {
+            guard !items.isEmpty else { return nil }
+            jdnLog("fetch: \(feed.url.host ?? "?") is malformed at line "
+                   + "\(parser.lineNumber) — keeping the \(items.count) item(s) "
+                   + "that parsed before it")
+            return FetchedFeed(title: channelTitle, items: items)
+        }
+        // A clean parse is not the same as a feed.
+        //
+        // FeedBurner serves a plain web page for retired feeds, and an HTML
+        // page is usually well-formed enough that `XMLParser` accepts it. The
+        // fetch was then recorded as a success containing no items, so a feed
+        // that had quietly died looked exactly like a blog nobody had updated,
+        // and it never appeared in the failure count. Measured 2026-09-09 on
+        // `feeds.feedburner.com/philwhelansblog`: PARSED, root <html>, 0 items.
+        guard let rootElement, Self.isFeedRoot(rootElement) else {
+            return nil
+        }
         return FetchedFeed(title: channelTitle, items: items)
     }
 
     // MARK: - XMLParserDelegate
 
+    func parser(_ parser: XMLParser, parseErrorOccurred error: Error) {
+        parseError = "line \(parser.lineNumber) col \(parser.columnNumber): "
+                   + error.localizedDescription
+    }
+
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
         let name = elementName.lowercased()
+        if rootElement == nil { rootElement = name }
         path.append(name)
         buffer = ""
 
         if flavour == .unknown {
-            if name == "rss" { flavour = .rss }
-            else if name == "feed" { flavour = .atom }
+            // RSS 1.0 was never recognised, and the consequence was invisible.
+            //
+            // Its root is `rdf:RDF`, which matched neither test, so `flavour`
+            // stayed `.unknown`. `<link>` is only read for the RSS flavour, so
+            // every item came out with no link, and `buildItem` rejects an item
+            // without an `http` link. The parse succeeded, ten items were
+            // built, and all ten were discarded. Nothing was logged, because
+            // `emptyFeed` is declared and never thrown, so the fetch was
+            // recorded as a healthy feed that happened to be empty.
+            //
+            // Measured on `nedbatchelder.com/blog/rss.xml` on 2026-09-09: 69 KB,
+            // parses clean, 10 items, 0 kept. RSS 1.0 carries its link the
+            // same way RSS 2.0 does, as element text, so it takes the RSS path.
+            switch Self.localName(name) {
+            case "rss", "rdf": flavour = .rss
+            case "feed": flavour = .atom
+            default: break
+            }
         }
 
         switch name {
