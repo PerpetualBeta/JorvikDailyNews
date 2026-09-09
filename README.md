@@ -278,13 +278,13 @@ The reader is instrumented end to end: which branch a link took, the fetch's sta
 **The refresh is instrumented too, and until recently it was not instrumented at all.** A paper that quietly stops filling up is the hardest kind of fault to report, because a quiet news day looks exactly the same. Every refresh now accounts for itself in a few lines:
 
 ```
-refresh: 254 feeds, 235 ok, 19 failed, 7189 items
+refresh: 242 feeds, 239 ok, 3 failed, 7086 items
 refresh: feed failed — carpeaqua.com: Server returned 404
 refresh: feed failed — donmelton.com: The certificate for this server is invalid…
 refresh: feed failed — www.planet-php.org: Could not parse feed
 refresh: carried over 168 from the existing edition
 refresh: enriching 423 of 7357 across 27 sections
-refresh: published 168 items of 229 eligible from 7357 fetched in 45.7s of 300s allowed
+refresh: published 479 items of 520 eligible from 7522 fetched in 52.6s of 300s allowed
 ```
 
 A retired feed is reported as retired rather than as unparseable. FeedBurner serves an ordinary web page where a discontinued feed used to be, and an HTML page is usually well-formed enough that `XMLParser` accepts it, so the fetch was recorded as a success that happened to contain no items. A feed that had quietly died therefore looked exactly like a blog nobody had updated, and it never appeared in the failure count at all. A parse that returns a root element other than `rss`, `feed` or `rdf` now says `Served a <html> document, not a feed`, which is a thing to go and fix rather than something to wait out. Malformed markup keeps its own separate message, because the two faults call for different actions.
@@ -301,15 +301,15 @@ Three lines appear only when something is wrong, and each names a distinct fault
 
 ```
 refresh: SKIPPED — one is already in flight
-refresh: ABANDONED after 120s — it will not publish
+refresh: ABANDONED after 300s — it will not publish
 refresh: rebuild was EMPTY of 0 eligible — KEPT the STALE edition dated 2026-09-08, 396 items
 ```
 
 The first two are about a refresh that will not finish. A refresh holds a flag so two cannot overlap, and that flag used to be cleared by the refresh itself, which is only safe if it always finishes. One network call that never returns and the flag stays set for the life of the process, after which every refresh returns immediately and silently: the hourly timer, and the reader's own refresh button. The paper simply stops changing and nothing says so. A refresh now races a clock, the flag is released by whichever finishes first, and an abandoned refresh is cancelled and checks for that before publishing, so a late arrival cannot overwrite an edition built after it.
 
-**Requests are windowed rather than fired all at once.** A refresh used to add one task per feed and one per enrichment candidate, so a 254-feed subscription list put 254 fetches in flight and the enrichment pass added up to 420 more: about 670 concurrent requests, hourly. A GUI app on macOS gets a soft ceiling of 256 file descriptors and this one already holds about 94, so the feed fetch alone was over the line before enrichment started. Sixteen feeds and eight article pages now run at a time, a peak of 24 against 674. Measured cost on 254 feeds: the refresh went from 33.8 to 45.7 seconds, which is twelve seconds once an hour against a 300-second allowance.
+**Requests are windowed rather than fired all at once.** A refresh used to add one task per feed and one per enrichment candidate, so a 242-feed subscription list put 242 fetches in flight and the enrichment pass added up to 420 more: about 670 concurrent requests, hourly. A GUI app on macOS gets a soft ceiling of 256 file descriptors and this one already holds about 94, so the feed fetch alone was over the line before enrichment started. Sixteen feeds and eight article pages now run at a time, a peak of 24 against 674. Measured across a day of hourly refreshes the cost is real but small, and the spread matters more than the average: 47 to 183 seconds, against the 21 seconds an uncapped fetch took. The 183-second outlier is 61% of the allowance on its own, which is the figure to watch rather than the mean.
 
-That clock is sized from the parts rather than picked. Feeds are fetched concurrently at 20 seconds each and the self-healing path can go round twice, so the fetch is worth 40 seconds on its own; enrichment then fetches article pages at 10 seconds each, and the lead's image is warmed through up to eight candidates. Roughly 90 seconds of worst case, against 33.8 seconds measured on a real subscription list of 254 feeds. The allowance is 300 seconds, and every refresh reports what it used against what it was allowed, because the only way that margin stays honest is if somebody can see it.
+That clock is sized from the parts rather than picked. Feeds are fetched concurrently at 20 seconds each and the self-healing path can go round twice, so the fetch is worth 40 seconds on its own; enrichment then fetches article pages at 10 seconds each, and the lead's image is warmed through up to eight candidates. Roughly 90 seconds of worst case, against a measured spread of 47 to 183 seconds on a real subscription list of 242 feeds. The allowance is 300 seconds, and every refresh reports what it used against what it was allowed, because the only way that margin stays honest is if somebody can see it.
 
 The third line is about the midnight boundary, and the word `STALE` is the whole message. Keeping the current edition when a rebuild comes back empty is deliberate, and usually means the network is down. Keeping *yesterday's* is a different event: just after midnight nothing has been published yet, so an empty rebuild is correct, and holding the previous edition puts a paper on screen that the app otherwise promises never to show.
 
