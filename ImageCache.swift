@@ -282,6 +282,41 @@ final class ImageCache: @unchecked Sendable {
         String(format: "%.1f MB", Double(bytes) / 1_048_576)
     }
 
+    /// Drop everything at the turn of the day.
+    ///
+    /// The memory cache has no expiry and is consulted **before** the disk
+    /// cache, so the layer with proper HTTP freshness checking sits behind a
+    /// layer with none: a CDN serving different bytes at the same URL would be
+    /// noticed on revalidation and never get that far. Putting a TTL on the
+    /// memory cache would mean re-decoding pictures the CDN would have said
+    /// were still fresh, which costs more than it saves. An edition lasts a
+    /// day, so the day boundary is the right granularity and makes the
+    /// ordering moot.
+    ///
+    /// The negative caches go too. `failed` is a settled fact *for the
+    /// session*, and a 404 yesterday is not evidence about today.
+    func newDay() {
+        lock.lock()
+        let hadFailed = failed.count, hadCooling = retryAfter.count
+        failed.removeAll()
+        retryAfter.removeAll()
+        lock.unlock()
+
+        images.removeAllObjects()
+        // Zero the tally AFTER emptying the cache. Whether `NSCache` calls its
+        // delegate for `removeAllObjects` is unspecified, so the watcher may
+        // have decremented already; it clamps at zero and this settles it
+        // either way.
+        bytesLock.lock()
+        heldBytes = 0
+        heldCount = 0
+        bytesLock.unlock()
+
+        SaliencyCache.shared.newDay()
+        jdnLog("image: new day — dropped the picture cache, \(hadFailed) failed "
+               + "URL(s) and \(hadCooling) in cool-off")
+    }
+
     /// Synchronous cache peek — for instant `@State` seeding in `OptionalImage.init`.
     func cachedImage(for url: URL) -> NSImage? {
         guard Self.picturesEnabled else { return nil }
@@ -578,6 +613,8 @@ final class ImageCache: @unchecked Sendable {
 final class SaliencyCache: @unchecked Sendable {
     static let shared = SaliencyCache()
 
+    private init() { spans.countLimit = Self.spanCountLimit }
+
     /// The subject's vertical extent, normalised as distance DOWN from the top
     /// of the picture, so the caller never has to flip Vision's bottom-left
     /// coordinates itself.
@@ -607,7 +644,32 @@ final class SaliencyCache: @unchecked Sendable {
     private let lock = NSLock()
     /// Cached as `.some(nil)` when Vision ran and found nothing, so it does not
     /// run twice on the same picture.
-    private var spans: [URL: Span?] = [:]
+    /// Boxed so the spans can live in an `NSCache`, which is the whole point.
+    ///
+    /// The two levels of optional are both meaningful and had to survive the
+    /// change: **no box** means this picture has never been examined, and a
+    /// box holding nil means Vision looked and found nothing salient. Collapse
+    /// those and every featureless picture gets re-examined on every reflow,
+    /// which is a Vision request per card.
+    private final class SpanBox {
+        let span: Span?
+        init(_ span: Span?) { self.span = span }
+    }
+
+    /// Was a plain `[URL: Span?]` with **no bound and no expiry**: every
+    /// picture the app ever cropped added an entry for the life of the
+    /// process and nothing ever removed one. Two `CGFloat`s an entry, so the
+    /// leak is small, but an unbounded dictionary keyed by URL in an app that
+    /// runs for days is the same shape of mistake as setting `countLimit`
+    /// without `totalCostLimit`.
+    ///
+    /// `NSCache` also gives up its contents under memory pressure, which is
+    /// right for a value that can be recomputed from a picture we still hold.
+    private let spans = NSCache<NSURL, SpanBox>()
+    /// Generous, because re-running Vision is expensive and a span is tiny.
+    /// A day's edition is a few hundred pictures, so this is several days'
+    /// worth and exists to stop unbounded growth rather than to be reached.
+    private static let spanCountLimit = 4000
 
     /// The subject's span. Runs Vision at most once per URL.
     func span(for url: URL, image: NSImage) async -> Span? {
@@ -626,14 +688,17 @@ final class SaliencyCache: @unchecked Sendable {
     /// Doubly optional on purpose: the outer layer is "have we run Vision on
     /// this URL", the inner is "did Vision find anything".
     private func cached(_ url: URL) -> Span?? {
-        lock.lock(); defer { lock.unlock() }
-        return spans[url]
+        // `NSCache` is thread-safe, so no lock of our own is needed here.
+        guard let box = spans.object(forKey: url as NSURL) else { return nil }
+        return .some(box.span)
     }
 
     private func store(_ span: Span?, for url: URL) {
-        lock.lock(); defer { lock.unlock() }
-        spans[url] = span
+        spans.setObject(SpanBox(span), forKey: url as NSURL)
     }
+
+    /// Spans are derived from pictures, so when the pictures go, so do these.
+    func newDay() { spans.removeAllObjects() }
 
     private static func subjectSpan(of image: NSImage, crownAllowance: CGFloat) -> Span? {
         var rect = CGRect(origin: .zero, size: image.size)

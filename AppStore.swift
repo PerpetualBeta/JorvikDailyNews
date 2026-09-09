@@ -433,6 +433,8 @@ final class AppStore {
             // stays open.
             enrichmentAttempted.removeAll()
             enrichmentRetries.removeAll()
+            // The picture caches are day-scoped for the same reason.
+            ImageCache.shared.newDay()
             jdnLog("refresh: new day — dropped the edition dated "
                    + "\(Self.dayFormatter.string(from: existing.date)) "
                    + "and cleared the enrichment memo")
