@@ -46,6 +46,10 @@
       if (n.nodeType !== 1) return;
       var tag = n.tagName.toUpperCase();
       if (DROP[tag]) return;
+      // A nested list is structure, not text. Walking into it welded its
+      // items onto the parent's: "First itemNested oneNested two", with no
+      // separator and no bullets. `emitList` recurses into them instead.
+      if (tag === 'UL' || tag === 'OL') return;
       if (tag === 'BR') { push('\n', s); return; }
 
       var next = {
@@ -115,13 +119,29 @@
 
     function drop(tag) { dropped[tag] = (dropped[tag] || 0) + 1; }
 
-    function emitList(node, ordered) {
-      var items = [];
+    // Lists nest, and a flat list of runs cannot say so. Each item carries
+    // its depth and its own ordered-ness, so the renderer can indent and
+    // number correctly without knowing anything about HTML.
+    function collectItems(node, ordered, depth, into) {
+      var index = 0;
       for (var li = node.firstChild; li; li = li.nextSibling) {
         if (li.nodeType !== 1 || li.tagName.toUpperCase() !== 'LI') continue;
+        index += 1;
         var r = runsOf(li);
-        if (r.length) items.push(r);
+        if (r.length) into.push({ runs: r, depth: depth, ordered: !!ordered, index: index });
+        // Then whatever hangs below it.
+        for (var c = li.firstChild; c; c = c.nextSibling) {
+          if (c.nodeType !== 1) continue;
+          var t = c.tagName.toUpperCase();
+          if (t === 'UL') collectItems(c, false, depth + 1, into);
+          else if (t === 'OL') collectItems(c, true, depth + 1, into);
+        }
       }
+    }
+
+    function emitList(node, ordered) {
+      var items = [];
+      collectItems(node, ordered, 0, items);
       if (items.length) blocks.push({ kind: 'list', ordered: !!ordered, items: items });
     }
 

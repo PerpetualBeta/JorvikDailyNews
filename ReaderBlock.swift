@@ -35,7 +35,21 @@ struct ReaderBlock: Codable, Sendable, Identifiable {
     var width: Double?
     var height: Double?
     var ordered: Bool?
-    var items: [[Run]]?
+    var items: [Item]?
+
+    /// One line of a list, with the depth it sits at.
+    ///
+    /// A flat `[[Run]]` could not express nesting, and the walker was welding
+    /// a nested list's items onto its parent's text: "First itemNested one
+    /// Nested two", no separator and no bullets. Each item now carries its own
+    /// depth, ordered-ness and position, so the renderer indents and numbers
+    /// without knowing anything about HTML.
+    struct Item: Codable, Sendable {
+        let runs: [Run]
+        var depth: Int = 0
+        var ordered: Bool = false
+        var index: Int = 1
+    }
     var text: String?
     var rows: [[[Run]]]?
 
@@ -71,7 +85,7 @@ extension Array where Element == ReaderBlock {
         compactMap { block -> String? in
             if let runs = block.runs { return runs.map(\.text).joined() }
             if let text = block.text { return text }
-            if let items = block.items { return items.map { $0.map(\.text).joined() }.joined(separator: "\n") }
+            if let items = block.items { return items.map { $0.runs.map(\.text).joined() }.joined(separator: "\n") }
             return nil
         }.joined(separator: "\n\n")
     }

@@ -172,13 +172,17 @@ struct NativeReaderView: View {
 
         case .list:
             VStack(alignment: .leading, spacing: Style.body * Style.listItemGap) {
-                ForEach(Array((block.items ?? []).enumerated()), id: \.offset) { index, runs in
+                ForEach(Array((block.items ?? []).enumerated()), id: \.offset) { _, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(block.ordered == true ? "\(index + 1)." : "\u{2022}")
+                        // Nested items are indented a full marker column each,
+                        // and a nested bullet changes shape the way a printed
+                        // list does rather than repeating the same dot.
+                        Text(item.ordered ? "\(item.index)." : marker(depth: item.depth))
                             .font(.custom(Style.serif, size: Style.body))
                             .foregroundStyle(Palette.text(dark))
                             .frame(width: Style.listIndent, alignment: .trailing)
-                        styled(runs, size: Style.body)
+                            .padding(.leading, CGFloat(item.depth) * Style.listIndent)
+                        styled(item.runs, size: Style.body)
                             .lineSpacing(Style.body * (Style.lineHeight - 1))
                     }
                 }
@@ -214,6 +218,12 @@ struct NativeReaderView: View {
         case .table:
             table(block)
         }
+    }
+
+    /// Bullet, ring, dash — the sequence a printed list uses as it nests.
+    private func marker(depth: Int) -> String {
+        let markers = ["\u{2022}", "\u{25E6}", "\u{2013}"]
+        return markers[min(depth, markers.count - 1)]
     }
 
     private func headingSize(_ level: Int) -> CGFloat {
