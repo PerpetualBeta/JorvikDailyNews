@@ -101,9 +101,25 @@ final class ImageCache: @unchecked Sendable {
     /// Hits and misses, so the benefit is measured rather than assumed.
     private var servedFromDisk = 0
     private var servedFromNetwork = 0
-    /// Report the running rate every this many pictures. Often enough to see
-    /// it on a single launch, rarely enough not to drown the log.
-    private static let hitRateEvery = 50
+    private var firstPictureAt: Date?
+    private var launchWindowReported = false
+
+    /// The rate is only meaningful over the pictures a cache could possibly
+    /// serve, which is the ones already on the page from last time.
+    ///
+    /// Measured on 2026-09-09: **all 14 disk hits of a session arrived within
+    /// one second of launch, and none of the following 76 pictures came from
+    /// disk.** A lifetime figure of "14 of 126, 11%" is arithmetically true
+    /// and invites exactly the wrong conclusion, because everything after the
+    /// launch window is a story that did not exist an hour ago and no cache
+    /// can help with a picture nobody has ever fetched. So the hit rate is
+    /// reported once, over the launch window, and then not again: within a
+    /// session the in-memory cache handles page turns and reflows anyway.
+    ///
+    /// The window closes on whichever comes first, so a quiet launch that
+    /// never reaches fifty pictures still reports.
+    private static let launchWindowPictures = 50
+    private static let launchWindowSeconds: TimeInterval = 5
 
     private let images = NSCache<NSURL, NSImage>()
     private let lock = NSLock()
@@ -312,6 +328,12 @@ final class ImageCache: @unchecked Sendable {
         heldCount = 0
         bytesLock.unlock()
 
+        // A new day is a new launch window as far as this measurement goes.
+        firstPictureAt = nil
+        launchWindowReported = false
+        servedFromDisk = 0
+        servedFromNetwork = 0
+
         SaliencyCache.shared.newDay()
         jdnLog("image: new day — dropped the picture cache, \(hadFailed) failed "
                + "URL(s) and \(hadCooling) in cool-off")
@@ -380,10 +402,17 @@ final class ImageCache: @unchecked Sendable {
                    + " of \(Self.mb(Self.cacheByteLimit)) across \(count) — \(url.host ?? "?")"
                    + (decoded.fromDisk ? " [disk]" : ""))
             if decoded.fromDisk { servedFromDisk += 1 } else { servedFromNetwork += 1 }
+            let now = Date()
+            if firstPictureAt == nil { firstPictureAt = now }
             let total = servedFromDisk + servedFromNetwork
-            if total % Self.hitRateEvery == 0 {
-                jdnLog("image: \(servedFromDisk) of \(total) came from the disk cache "
-                       + "(\(100 * servedFromDisk / total)%)")
+            let elapsed = now.timeIntervalSince(firstPictureAt ?? now)
+            if !launchWindowReported,
+               total >= Self.launchWindowPictures || elapsed > Self.launchWindowSeconds {
+                launchWindowReported = true
+                jdnLog("image: \(servedFromDisk) of the first \(total) pictures came from the "
+                       + "disk cache (\(100 * servedFromDisk / total)%) — the launch window, "
+                       + "which is the only stretch a cache can serve; later pictures are "
+                       + "stories that did not exist last time")
             }
             // The rep's dimensions are deliberately not used or reported. They
             // are scaled by the backing store and disagree with the bitmap on
