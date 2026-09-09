@@ -255,11 +255,15 @@ struct ReaderView: View {
             switch target {
             case .youTube(let id):
                 VideoEmbedView(html: Self.youTubeEmbedHTML(id),
-                               baseURL: URL(string: "https://jorviksoftware.cc"))
+                               baseURL: URL(string: "https://jorviksoftware.cc"),
+                               what: "YouTube \(id)",
+                               link: item.link)
                     .background(Color.black)
             case .vimeo(let id):
                 VideoEmbedView(html: Self.vimeoEmbedHTML(id),
-                               baseURL: URL(string: "https://player.vimeo.com"))
+                               baseURL: URL(string: "https://player.vimeo.com"),
+                               what: "Vimeo \(id)",
+                               link: item.link)
                     .background(Color.black)
             case .native(let mediaURL):
                 NativeVideoView(url: mediaURL)
@@ -946,8 +950,14 @@ struct PDFKitView: NSViewRepresentable {
 struct VideoEmbedView: NSViewRepresentable {
     let html: String
     let baseURL: URL?
+    /// What was detected, for the log. A wrong or empty video id produces the
+    /// same black rectangle as a working one, so the id has to be recorded or
+    /// a detection bug is indistinguishable from a player failure.
+    var what: String = "video"
+    /// The original link, so a failure can offer the way through.
+    var link: URL?
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> NSView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.mediaTypesRequiringUserActionForPlayback = []   // allow autoplay
@@ -957,19 +967,113 @@ struct VideoEmbedView: NSViewRepresentable {
         // would otherwise swallow. Route it into the same view so the full
         // watch page loads in-app and plays, instead of doing nothing.
         web.uiDelegate = context.coordinator
-        return web
+        context.coordinator.web = web
+        return context.coordinator.host(web)
     }
 
-    func updateNSView(_ web: WKWebView, context: Context) {
-        guard !context.coordinator.loaded else { return }
+    func updateNSView(_ view: NSView, context: Context) {
+        guard !context.coordinator.loaded, context.coordinator.web != nil else { return }
         context.coordinator.loaded = true
-        web.loadHTMLString(html, baseURL: baseURL)
+        jdnLog("video: loading \(what) — \(html.count) char host page")
+        context.coordinator.show(html, baseURL: baseURL, what: what, link: link)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    /// Watches for the failure this path could not previously report.
+    ///
+    /// The host page is a 511-character `<iframe>` wrapper handed to
+    /// `loadHTMLString`, which is the API measured dead on one reporter's
+    /// macOS 27 beta above about 8 KB — and this path had no blank detection,
+    /// no logging and no failure state, so a video that would not play was a
+    /// white rectangle and complete silence. That is the fourth place in this
+    /// app where a `defer` or a missing check turned a failure into a blank
+    /// pane; the reader, the live page and the PDF view were the others.
+    @MainActor
     final class Coordinator: NSObject, WKUIDelegate {
         var loaded = false
+        weak var web: WKWebView?
+        private var container: NSView?
+        private var check: Task<Void, Never>?
+
+        /// A player needs longer than a document: the host page has to load,
+        /// then the iframe, then the player's own scripts.
+        private static let grace: TimeInterval = 8
+        private static let emptyDocumentChars =
+            "<html><head></head><body></body></html>".count
+
+        func host(_ web: WKWebView) -> NSView {
+            let container = NSView()
+            web.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(web)
+            NSLayoutConstraint.activate([
+                web.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                web.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                web.topAnchor.constraint(equalTo: container.topAnchor),
+                web.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
+            self.container = container
+            return container
+        }
+
+        func show(_ html: String, baseURL: URL?, what: String, link: URL?) {
+            guard let web else { return }
+            web.loadHTMLString(html, baseURL: baseURL)
+            check?.cancel()
+            check = Task { @MainActor [weak self, weak web] in
+                try? await Task.sleep(nanoseconds: UInt64(Self.grace * Double(NSEC_PER_SEC)))
+                guard !Task.isCancelled, let self, let web else { return }
+                let probe = "document.documentElement.outerHTML.length"
+                let chars = (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
+                guard chars <= Self.emptyDocumentChars else {
+                    jdnLog("video: \(what) host page rendered \(chars) chars")
+                    return
+                }
+                jdnLog("video: \(what) drew nothing after \(Int(Self.grace))s — "
+                       + "the host page never rendered")
+                self.showFailure(link: link)
+            }
+        }
+
+        /// Replace the empty web view with something that explains itself.
+        /// Done in AppKit rather than by pushing a new SwiftUI state, because
+        /// this view is a leaf in the reader's `switch` and does not own it.
+        private func showFailure(link: URL?) {
+            guard let container else { return }
+            web?.removeFromSuperview()
+            let label = NSTextField(labelWithString:
+                "This video would not play.\n\nThe player did not load. "
+                + "Opening it in your browser will work.")
+            label.alignment = .center
+            label.maximumNumberOfLines = 0
+            label.font = NSFont(name: "Charter", size: 14) ?? .systemFont(ofSize: 14)
+            label.textColor = .white
+            label.translatesAutoresizingMaskIntoConstraints = false
+
+            let button = NSButton(title: "Open in Browser", target: self,
+                                  action: #selector(openInBrowser))
+            button.translatesAutoresizingMaskIntoConstraints = false
+            self.failureLink = link
+
+            let stack = NSStackView(views: [label, button])
+            stack.orientation = .vertical
+            stack.spacing = 18
+            stack.alignment = .centerX
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+                stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                label.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
+            ])
+        }
+
+        private var failureLink: URL?
+
+        @objc private func openInBrowser() {
+            guard let failureLink else { return }
+            NSWorkspace.shared.open(failureLink)
+        }
 
         func webView(_ webView: WKWebView,
                      createWebViewWith configuration: WKWebViewConfiguration,
