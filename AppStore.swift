@@ -65,12 +65,32 @@ final class AppStore {
     /// budget is now the outcome rather than a count: keep fetching until the
     /// page hits the target or the section runs out of pages to ask.
     ///
-    /// It is a target, not a promise. Measured over 30 picture-less items from
-    /// this paper's tail, only 3 offered an `og:image` at all — the rest are
-    /// Show HN posts, Ask HN threads and repositories with no artwork anywhere
-    /// to find. A section of those will stop short of the target having tried
-    /// everything, which is the right place to stop.
-    static let imageCoverageTargetDefault = 0.30
+    /// It is a target, not a promise. A section of Show HN posts, Ask HN
+    /// threads and repositories with no artwork anywhere to find will stop
+    /// short of it having asked everything, which is the right place to stop:
+    /// the loop ends when a section runs out of unasked items, not when the
+    /// number is met.
+    ///
+    /// **0.70, raised from 0.30 on 2026-09-09, and the old value made the whole
+    /// top-up a no-op.** The guard skips any section already at target, so with
+    /// real coverage measured at 51% to 59% every section was above 0.30 and
+    /// nothing was ever topped up. Pictures appeared to "dry up" as items were
+    /// read, because hide-read promotes items from deeper in the list and the
+    /// only thing that would have fetched their pictures had switched itself
+    /// off.
+    ///
+    /// 0.70 comes from the ceiling rather than from taste. Sampling 40
+    /// picture-less unread items and fetching each: **23 declare no `og:image`
+    /// or `twitter:image` at all, 14 have one, 3 would not fetch.** So about
+    /// 35% of what is missing is recoverable, which on 51% actual coverage puts
+    /// the reachable figure near 68%. A target above that would just burn
+    /// rounds on pages with nothing to give.
+    ///
+    /// The comment this replaces said 3 of 30 offered an `og:image`, which is
+    /// 10%. Today's sample says 35%. That older figure is what justified a
+    /// target low enough to disable the feature, so it is worth re-measuring
+    /// rather than trusting either number for long.
+    static let imageCoverageTargetDefault = 0.70
     static let imageCoverageKey = "imageCoverageTarget"
 
     static var imageCoverageTarget: Double {
@@ -423,7 +443,11 @@ final class AppStore {
         jdnLog("refresh: enriching \(topSlice.count) of \(sortedByDate.count) "
                + "across \(takenPerSection.count) sections")
         enrichmentAttempted.formUnion(topSlice.map(\.itemId))
-        let enrichedSlice = await enricher.enrich(topSlice)
+        let enrichment = await enricher.enrich(topSlice)
+        // A page that would not fetch has told us nothing, so it must not be
+        // written off for the day on one bad round trip.
+        enrichmentAttempted.subtract(enrichment.retryable)
+        let enrichedSlice = enrichment.items
         // Order doesn't matter here — `builder.build` re-sorts by date.
         let merged = enrichedSlice + tail
 
@@ -695,7 +719,9 @@ final class AppStore {
                 let batch = self.nextBatch(from: pool)
                 guard !batch.isEmpty else { break }
                 self.enrichmentAttempted.formUnion(batch.map(\.itemId))
-                let enriched = await self.enricher.enrich(batch)
+                let enrichment = await self.enricher.enrich(batch)
+                self.enrichmentAttempted.subtract(enrichment.retryable)
+                let enriched = enrichment.items
                 let found = Dictionary(uniqueKeysWithValues: enriched.map { ($0.itemId, $0) })
                 pool = pool.map { found[$0.itemId] ?? $0 }
                 self.applyEnrichment(enriched)

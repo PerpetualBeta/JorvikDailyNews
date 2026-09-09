@@ -40,14 +40,28 @@ struct ImageEnricher: Sendable {
         var failure: String?
     }
 
-    func enrich(_ items: [FeedItem]) async -> [FeedItem] {
+    /// Enriched items, plus the ids worth asking about again.
+    ///
+    /// The caller records every item it asks about so it never asks twice,
+    /// which is right for a page that declares no picture: the answer cannot
+    /// change today. It is wrong for a page that timed out or refused the
+    /// connection, and that was indistinguishable until `PageMeta` started
+    /// carrying a reason. Three of forty sampled picture-less items on
+    /// 2026-09-09 had failed to fetch rather than having nothing to give, and
+    /// each was written off for the rest of the day on one bad round trip.
+    struct Enrichment: Sendable {
+        let items: [FeedItem]
+        let retryable: Set<String>
+    }
+
+    func enrich(_ items: [FeedItem]) async -> Enrichment {
         // A candidate is missing an image OR a standfirst. One fetch answers
         // both questions, so an item short of either is worth the round trip;
         // an item that already has both is not.
         let indexedMissing = items.enumerated().filter {
             $0.element.imageURL == nil || $0.element.summary.isEmpty
         }
-        guard !indexedMissing.isEmpty else { return items }
+        guard !indexedMissing.isEmpty else { return Enrichment(items: items, retryable: []) }
 
         let me = self
         // A sliding window, not one task per candidate.
@@ -85,13 +99,16 @@ struct ImageEnricher: Sendable {
         // interpretable.
         var gainedImage = 0, gainedSummary = 0
         var noneDeclared = 0, iconOnly = 0, fetchFailed = 0, otherFailure = 0
+        var retryable: Set<String> = []
         for (idx, meta) in resolved {
             if meta.image != nil, items[idx].imageURL == nil { gainedImage += 1 }
             if meta.description?.isEmpty == false, items[idx].summary.isEmpty { gainedSummary += 1 }
             switch meta.failure {
             case .some(let f) where f.hasPrefix("declares no"): noneDeclared += 1
             case .some(let f) where f.hasPrefix("all "): iconOnly += 1
-            case .some(let f) where f.hasPrefix("fetch failed"): fetchFailed += 1
+            case .some(let f) where f.hasPrefix("fetch failed"):
+                fetchFailed += 1
+                retryable.insert(items[idx].itemId)
             case .some: otherFailure += 1
             case .none: break
             }
@@ -121,7 +138,7 @@ struct ImageEnricher: Sendable {
                 sourceTitle: old.sourceTitle
             )
         }
-        return updated
+        return Enrichment(items: updated, retryable: retryable)
     }
 
     private func extractMeta(from url: URL) async -> PageMeta {
