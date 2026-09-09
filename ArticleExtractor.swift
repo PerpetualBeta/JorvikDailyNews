@@ -389,6 +389,24 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
 
     // MARK: - Entry point
 
+    /// How long the article's own HTTP request is given.
+    ///
+    /// Named rather than derived. It used to be `timeout / 2`, half the whole
+    /// extraction budget, which is a coupling nobody would guess from the call
+    /// site: changing the extraction timeout silently changed the fetch's.
+    ///
+    /// **12 seconds**, raised from 10 on 2026-09-09. `spectrum.ieee.org` was
+    /// measured three times at the app's own request shape and returned the
+    /// same 469,053 bytes in 5.89s, 13.77s and 5.22s. A 10-second allowance
+    /// sits inside that spread, so the page succeeded or failed on the toss of
+    /// a coin. 12s covers the common case and still gives up on a dead host
+    /// inside the reader's patience.
+    ///
+    /// Known limitation: it does **not** cover the 13.77s observation. Chosen
+    /// deliberately as a compromise rather than sized to the worst case, since
+    /// a slow host should not be able to hold the reader for much longer.
+    private static let fetchTimeout: TimeInterval = 12
+
     func extract(url: URL, minimumLength: Int = 500, timeout: TimeInterval = 20) async throws -> Article {
         jdnLog("extract: begin \(url.absoluteString)")
         guard let path = Bundle.main.path(forResource: "Readability", ofType: "js"),
@@ -408,7 +426,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             jdnLog("extract: subresource blocking UNAVAILABLE — falling back to fetching them")
         }
 
-        let page = try await fetchHTML(url: url, timeout: timeout / 2)
+        let page = try await fetchHTML(url: url, timeout: Self.fetchTimeout)
 
         var lastError: Error = ExtractionError.noStrategyWorked
         for strategy in Self.ladder() {

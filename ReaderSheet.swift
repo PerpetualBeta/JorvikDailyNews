@@ -37,11 +37,29 @@ struct ReaderView: View {
         case ready(ArticleExtractor.Article)
         case pdf(URL)
         case video(VideoTarget)
-        case failed(String)
+        case failed(Failure)
         /// Nothing could be shown: not the reader, not the original page.
         /// Carries what to tell the reader, because the alternative is the
         /// blank sheet this state exists to replace.
         case unavailable(Problem)
+    }
+
+    /// Why the reader fell through to the live page, kept as a type rather
+    /// than a sentence.
+    ///
+    /// The two cases need opposite advice and the first version gave them the
+    /// same. A page whose bytes never arrived has nothing to do with macOS,
+    /// and telling somebody "that points at the part of macOS that draws web
+    /// pages" when a slow server timed out is a confident wrong answer of
+    /// exactly the kind this whole day was spent removing. Seen live on
+    /// `spectrum.ieee.org`, which returns the same 469 KB in anywhere from
+    /// 5.2s to 13.8s.
+    struct Failure {
+        /// The measurements, for the small print and for a bug report.
+        let detail: String
+        /// True when the article's own request never completed, so nothing was
+        /// ever handed to a web view and macOS is not implicated.
+        var neverArrived = false
     }
 
     /// What went wrong, in the reader's language and in mine.
@@ -220,7 +238,7 @@ struct ReaderView: View {
                 // worse than the one before it.
                 guard case .ready = state else { return }
                 jdnLog("reader: nothing rendered the article — live page fallback")
-                state = .failed(detail)
+                state = .failed(Failure(detail: detail))
             }, onDrew: { articleDrew = true })
 
             if !articleDrew {
@@ -253,7 +271,7 @@ struct ReaderView: View {
                 NativeVideoView(url: mediaURL)
             }
 
-        case .failed(let reason):
+        case .failed(let failure):
             // No clean reader view (link lists like HN, paywalls, SPA-rendered
             // pages). Rather than dead-ending the user out to a browser, render
             // the real page inline in a full web view. The header's "Open in
@@ -284,16 +302,28 @@ struct ReaderView: View {
                 // later, with no restart involved. Telling somebody to do a
                 // thing that will not work is worse than telling them nothing,
                 // because they will conclude the app is lying to them.
-                state = .unavailable(Problem(
-                    headline: "This article would not open",
-                    advice: "Neither the reader nor the original page could be "
-                          + "displayed. That points at the part of macOS that "
-                          + "draws web pages, rather than at anything being "
-                          + "wrong with the article. Opening it in your browser "
-                          + "will work. If every article does this, it usually "
-                          + "comes right on its own after a few minutes. A "
-                          + "restart is worth trying but may not help.",
-                    technical: reason))
+                state = .unavailable(failure.neverArrived
+                    ? Problem(
+                        headline: "This article would not download",
+                        advice: "The site did not answer in time, so there was "
+                              + "nothing to read. That is the site being slow "
+                              + "or unreachable rather than anything wrong on "
+                              + "this Mac. Trying again often works, and so "
+                              + "does opening it in your browser, which waits "
+                              + "longer than the reader does.",
+                        technical: failure.detail)
+                    : Problem(
+                        headline: "This article would not open",
+                        advice: "The article was downloaded but nothing would "
+                              + "display it, neither the reader nor the "
+                              + "original page. That points at the part of "
+                              + "macOS that draws web pages rather than at "
+                              + "anything wrong with the article. Opening it in "
+                              + "your browser will work. If every article does "
+                              + "this, it usually comes right on its own after "
+                              + "a few minutes. A restart is worth trying but "
+                              + "may not help.",
+                        technical: failure.detail))
               }, onDrew: { liveDrew = true })
 
               if !liveDrew {
@@ -353,7 +383,7 @@ struct ReaderView: View {
             guard !Task.isCancelled else { return }
             if case .loading = state {
                 jdnLog("reader: BACKSTOP deadline at \(Self.readerDeadline)s — the extractor never returned; live page fallback")
-                state = .failed("The reader took too long to open this article")
+                state = .failed(Failure(detail: "The reader took too long to open this article"))
             }
         }
         defer { deadline.cancel() }
@@ -376,7 +406,17 @@ struct ReaderView: View {
         } catch {
             guard case .loading = state else { return }
             jdnLog("reader: extraction failed (\(error.localizedDescription)) — live page fallback")
-            state = .failed(error.localizedDescription)
+            // Classified on the error type, not by reading the message. Only
+            // `fetchFailed` means the bytes never arrived; every other case
+            // means we had the page and could not make an article of it.
+            let neverArrived: Bool
+            if case ArticleExtractor.ExtractionError.fetchFailed = error {
+                neverArrived = true
+            } else {
+                neverArrived = false
+            }
+            state = .failed(Failure(detail: error.localizedDescription,
+                                    neverArrived: neverArrived))
         }
         jdnLog("reader: settled")
     }
