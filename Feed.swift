@@ -102,7 +102,7 @@ struct FeedItem: Codable, Hashable, Identifiable {
     /// item was parsed. Most video feeds label their own items; this catches
     /// the few submitters who don't, so you're never sent to a video unawares.
     var displayTitle: String {
-        guard ReaderView.detectVideo(link) != nil else { return title }
+        guard VideoLink.detect(link) != nil else { return title }
         let haystack = (title + " " + summary).lowercased()
         let alreadyFlagged = ["video", "watch", "▶", "📺", "🎥", "🎬"]
             .contains { haystack.contains($0) }

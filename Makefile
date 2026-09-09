@@ -30,6 +30,7 @@ SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                     ArticleClassifier.swift \
                     AppStore.swift \
                     Feed.swift \
+                    VideoLink.swift \
                     Edition.swift \
                     FeedStore.swift \
                     EditionStore.swift \

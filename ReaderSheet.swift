@@ -36,7 +36,7 @@ struct ReaderView: View {
         case loading
         case ready(ArticleExtractor.Article)
         case pdf(URL)
-        case video(VideoTarget)
+        case video(VideoLink)
         case failed(Failure)
         /// Nothing could be shown: not the reader, not the original page.
         /// Carries what to tell the reader, because the alternative is the
@@ -78,12 +78,6 @@ struct ReaderView: View {
     /// How a video link is played in-app: a YouTube/Vimeo player embedded
     /// chrome-free (as an `<iframe>` in a host page so the player gets a valid
     /// origin), or a native `AVPlayer` for a direct media file.
-    enum VideoTarget {
-        case youTube(String)   // video id
-        case vimeo(String)     // video id
-        case native(URL)
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -364,7 +358,7 @@ struct ReaderView: View {
             return
         }
         // Video links play in-app, chrome-free, rather than opening a browser.
-        if let video = Self.detectVideo(item.link) {
+        if let video = VideoLink.detect(item.link) {
             jdnLog("reader: video link — player view")
             state = .video(video)
             return
@@ -426,22 +420,6 @@ struct ReaderView: View {
     /// Classify a link as a playable video, or nil if it isn't one. Direct
     /// media files play natively; YouTube / Vimeo resolve to a chrome-free
     /// embed URL (autoplay, no surrounding page).
-    static func detectVideo(_ url: URL) -> VideoTarget? {
-        let host = url.host?.lowercased() ?? ""
-        let ext = url.pathExtension.lowercased()
-
-        if ["mp4", "m4v", "mov", "webm"].contains(ext) {
-            return .native(url)
-        }
-        if host.contains("youtube.com") || host == "youtu.be" || host.hasSuffix(".youtu.be") {
-            if let id = youTubeID(url) { return .youTube(id) }
-        }
-        if host.contains("vimeo.com") {
-            if let id = vimeoID(url) { return .vimeo(id) }
-        }
-        return nil
-    }
-
     /// Host page wrapping a YouTube `<iframe>`, loaded via
     /// `loadHTMLString(_, baseURL: jorviksoftware.cc)` so the player sees a
     /// legitimate **third-party** origin. Loading the bare `/embed/` URL as a
@@ -466,28 +444,6 @@ struct ReaderView: View {
         <body><iframe src="https://player.vimeo.com/video/\(id)?autoplay=1"
         allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe></body></html>
         """
-    }
-
-    private static func youTubeID(_ url: URL) -> String? {
-        let host = url.host?.lowercased() ?? ""
-        let parts = url.pathComponents.filter { $0 != "/" }
-        if host.hasSuffix("youtu.be") { return parts.first }
-        if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?.first(where: { $0.name == "v" })?.value, !v.isEmpty {
-            return v
-        }
-        // /embed/ID, /shorts/ID, /v/ID
-        if let idx = parts.firstIndex(where: { ["embed", "shorts", "v"].contains($0) }),
-           idx + 1 < parts.count {
-            return parts[idx + 1]
-        }
-        return nil
-    }
-
-    private static func vimeoID(_ url: URL) -> String? {
-        // vimeo.com/123456789 or player.vimeo.com/video/123456789
-        let parts = url.pathComponents.filter { $0 != "/" }
-        return parts.last(where: { !$0.isEmpty && $0.allSatisfy(\.isNumber) })
     }
 
     private func renderHTML(_ article: ArticleExtractor.Article) -> String {
