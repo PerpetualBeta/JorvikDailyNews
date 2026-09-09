@@ -17,6 +17,22 @@ final class AppStore {
     /// `og:image` is not fetched again every time the paper reflows.
     private var enrichmentAttempted: Set<String> = []
     private var isToppingUp = false
+    /// How many times each item has been re-asked after a failed fetch.
+    ///
+    /// A transient failure is un-marked so the page can be asked again, and
+    /// without a cap that is an infinite loop: the item is unasked, it has no
+    /// picture, so `nextBatch` picks it, it fails, it is un-marked again.
+    /// Observed on 2026-09-09 within forty minutes of adding the retry — two
+    /// dead URLs re-fetched every ten seconds indefinitely.
+    ///
+    /// `ImageCache` had already solved this for pictures with a cool-off, and
+    /// a cool-off alone only slows the loop down. What ends it is a count.
+    private var enrichmentRetries: [String: Int] = [:]
+    /// Three attempts in total: the first, then two retries. Enough for a
+    /// server having a moment, few enough that a permanently dead URL costs
+    /// three round trips a day rather than one every ten seconds.
+    private static let maxEnrichmentRetries = 2
+
     /// When the in-flight refresh began, so it can report its own duration.
     /// The watchdog's margin is only trustworthy while somebody can see it.
     private var refreshStarted = Date()
@@ -399,6 +415,7 @@ final class AppStore {
             // new day's items and would otherwise grow for as long as the app
             // stays open.
             enrichmentAttempted.removeAll()
+            enrichmentRetries.removeAll()
             jdnLog("refresh: new day — dropped the edition dated "
                    + "\(Self.dayFormatter.string(from: existing.date)) "
                    + "and cleared the enrichment memo")
@@ -445,8 +462,9 @@ final class AppStore {
         enrichmentAttempted.formUnion(topSlice.map(\.itemId))
         let enrichment = await enricher.enrich(topSlice)
         // A page that would not fetch has told us nothing, so it must not be
-        // written off for the day on one bad round trip.
-        enrichmentAttempted.subtract(enrichment.retryable)
+        // written off for the day on one bad round trip — but it must not be
+        // asked for ever either.
+        allowRetry(of: enrichment.retryable)
         let enrichedSlice = enrichment.items
         // Order doesn't matter here — `builder.build` re-sorts by date.
         let merged = enrichedSlice + tail
@@ -720,7 +738,7 @@ final class AppStore {
                 guard !batch.isEmpty else { break }
                 self.enrichmentAttempted.formUnion(batch.map(\.itemId))
                 let enrichment = await self.enricher.enrich(batch)
-                self.enrichmentAttempted.subtract(enrichment.retryable)
+                self.allowRetry(of: enrichment.retryable)
                 let enriched = enrichment.items
                 let found = Dictionary(uniqueKeysWithValues: enriched.map { ($0.itemId, $0) })
                 pool = pool.map { found[$0.itemId] ?? $0 }
@@ -733,6 +751,21 @@ final class AppStore {
     /// The next round of pages worth asking about: from each section still
     /// under the coverage target, the newest items that have no picture and
     /// have not been asked about, capped per section.
+    /// Let a failed fetch be asked again, up to a limit, then leave it alone.
+    private func allowRetry(of ids: Set<String>) {
+        var spent = 0
+        for id in ids {
+            let used = enrichmentRetries[id, default: 0]
+            guard used < Self.maxEnrichmentRetries else { spent += 1; continue }
+            enrichmentRetries[id] = used + 1
+            enrichmentAttempted.remove(id)
+        }
+        if spent > 0 {
+            jdnLog("enrich: \(spent) page(s) have now failed to fetch "
+                   + "\(Self.maxEnrichmentRetries + 1) times — not asking again today")
+        }
+    }
+
     private func nextBatch(from pool: [FeedItem]) -> [FeedItem] {
         let target = Self.imageCoverageTarget
         let sectionByFeed = Dictionary(uniqueKeysWithValues: feedStore.feeds.map { ($0.id, $0.section) })
