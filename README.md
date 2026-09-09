@@ -269,12 +269,60 @@ config: subresource blocking ON
 
 The reader is instrumented end to end: which branch a link took, the fetch's status and size, each web view callback, whether a timeout fired, what Readability returned, and which fallback was chosen. If you are reporting a problem with opening articles, that log is the thing worth attaching.
 
+**The refresh is instrumented too, and until recently it was not instrumented at all.** A paper that quietly stops filling up is the hardest kind of fault to report, because a quiet news day looks exactly the same. Every refresh now accounts for itself in a few lines:
+
+```
+refresh: 254 feeds, 235 ok, 19 failed, 7189 items
+refresh: feed failed — carpeaqua.com: Server returned 404
+refresh: feed failed — donmelton.com: The certificate for this server is invalid…
+refresh: feed failed — www.planet-php.org: Could not parse feed
+refresh: carried over 168 from the existing edition
+refresh: enriching 423 of 7357 across 27 sections
+refresh: published 168 items of 229 eligible from 7357 fetched in 45.7s of 300s allowed
+```
+
+A retired feed is reported as retired rather than as unparseable. FeedBurner serves an ordinary web page where a discontinued feed used to be, and an HTML page is usually well-formed enough that `XMLParser` accepts it, so the fetch was recorded as a success that happened to contain no items. A feed that had quietly died therefore looked exactly like a blog nobody had updated, and it never appeared in the failure count at all. A parse that returns a root element other than `rss`, `feed` or `rdf` now says `Served a <html> document, not a feed`, which is a thing to go and fix rather than something to wait out. Malformed markup keeps its own separate message, because the two faults call for different actions.
+
+A parse failure says where and why. `RSSAtomParser` never implemented `parser(_:parseErrorOccurred:)`, so for the whole life of the app "Could not parse feed" was the entirety of what it knew: no line, no column, no reason, and therefore nothing actionable for the only person who could fix it, whoever publishes the feed. It now reports `root <rss>, 4 item(s) built, line 726 col 37: …`, which says how far it got as well as what stopped it.
+
+A feed that breaks partway through keeps what parsed. `XMLParser` reports items to its delegate as it goes, so by the time it hits bad markup the items above the fault are already in hand; returning nothing threw them away. Measured on one subscription: nine items parse cleanly and the parser then dies on an unterminated `<![CDATA[` 726 lines in, so the reader was losing nine good articles to a defect well past them, and the log described the feed as simply dead. An item is only kept once its closing tag is seen, so a half-read item at the point of failure cannot leak through.
+
+Each failing feed gets its own line, sorted so this hour can be compared with the last. The first version of this crammed the names into the summary and capped it at eight, which on a 254-feed subscription list with nineteen failures hid eleven of them, and answering "which ones?" meant fetching all 254 by hand outside the app. A log should not need a second tool. Sorted matters too: the fetches finish in whatever order the network hands them back, and an unstable list cannot be diffed against yesterday's.
+
+Each number answers a different question, which is the point of having four of them. *Feeds ok against feeds failed* catches partial failure: ten dead feeds out of forty used to be completely invisible, because the app only reported an error when every single feed failed, so a morning of them read as a quiet day. *Items fetched against items eligible* is the day filter doing its job, and the gap between them is simply yesterday's news arriving in a feed's rolling window. *Eligible against published* is dedupe and the front page's slot budgets.
+
+Three lines appear only when something is wrong, and each names a distinct fault:
+
+```
+refresh: SKIPPED — one is already in flight
+refresh: ABANDONED after 120s — it will not publish
+refresh: rebuild was EMPTY of 0 eligible — KEPT the STALE edition dated 2026-09-08, 396 items
+```
+
+The first two are about a refresh that will not finish. A refresh holds a flag so two cannot overlap, and that flag used to be cleared by the refresh itself, which is only safe if it always finishes. One network call that never returns and the flag stays set for the life of the process, after which every refresh returns immediately and silently: the hourly timer, and the reader's own refresh button. The paper simply stops changing and nothing says so. A refresh now races a clock, the flag is released by whichever finishes first, and an abandoned refresh is cancelled and checks for that before publishing, so a late arrival cannot overwrite an edition built after it.
+
+**Requests are windowed rather than fired all at once.** A refresh used to add one task per feed and one per enrichment candidate, so a 254-feed subscription list put 254 fetches in flight and the enrichment pass added up to 420 more: about 670 concurrent requests, hourly. A GUI app on macOS gets a soft ceiling of 256 file descriptors and this one already holds about 94, so the feed fetch alone was over the line before enrichment started. Sixteen feeds and eight article pages now run at a time, a peak of 24 against 674. Measured cost on 254 feeds: the refresh went from 33.8 to 45.7 seconds, which is twelve seconds once an hour against a 300-second allowance.
+
+That clock is sized from the parts rather than picked. Feeds are fetched concurrently at 20 seconds each and the self-healing path can go round twice, so the fetch is worth 40 seconds on its own; enrichment then fetches article pages at 10 seconds each, and the lead's image is warmed through up to eight candidates. Roughly 90 seconds of worst case, against 33.8 seconds measured on a real subscription list of 254 feeds. The allowance is 300 seconds, and every refresh reports what it used against what it was allowed, because the only way that margin stays honest is if somebody can see it.
+
+The third line is about the midnight boundary, and the word `STALE` is the whole message. Keeping the current edition when a rebuild comes back empty is deliberate, and usually means the network is down. Keeping *yesterday's* is a different event: just after midnight nothing has been published yet, so an empty rebuild is correct, and holding the previous edition puts a paper on screen that the app otherwise promises never to show.
+
 Pictures are instrumented too. Each one reports the size it arrived at, the size it was kept at, and the cache's running total against its cap; `SCALED` appears only when the two sizes differ, so a glance says whether the pixel cap is doing anything on your feeds:
 
 ```
 image: 6000x3375 -> 2048x1152 SCALED 9.0 MB — holding 43.6 MB of 1152.0 MB across 13 — cdn.example.com
 image: EVICTED 9.0 MB — holding 34.6 MB of 1152.0 MB across 12
 ```
+
+A picture that fails now says so. Every log line in the picture path used to be a success: decoded, evicted, decode-corrected. So "this story has no picture" and "this story's picture was refused" were the same event as far as the log was concerned, which is no event at all, and a front page of text-only cards could not be told from a front page of failures. There are now two failure lines and one summary:
+
+```
+image: REJECTED cdn.example.com — HTTP 404; not asked again this session
+image: FAILED i.example.com — The request timed out; retrying after 60s
+enrich: 420 page(s) asked — 96 gained a picture, 31 a standfirst; 284 declare none, 2 offer only their site icon, 7 would not fetch
+```
+
+`REJECTED` is a settled fact about the URL and is remembered for the session. `FAILED` gets a cool-off and another try. The enrichment summary is the one that makes a sparse page interpretable, because the interesting number is `declare none`: measured on a Hacker News front page, of twelve stories with no picture **nine of the target pages genuinely declare no `og:image` or `twitter:image` at all**, so the sparse look was mostly honest reporting rather than a fault. Three were misses. Without that split, both look identical.
 
 The source dimensions come from the file's metadata, so reading them costs no decode. `EVICTED` lines are the ones worth counting: a machine that evicts steadily is running against its cap, and a machine that never evicts is not, which is the difference between a memory problem and something else entirely.
 
