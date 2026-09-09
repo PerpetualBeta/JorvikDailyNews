@@ -41,6 +41,19 @@ final class FeedFetcher: Sendable {
             throw FeedFetchError.invalidResponse(http.statusCode)
         }
 
+        return try Self.parse(data, from: feed)
+    }
+
+    /// Turn bytes into a feed, with no network involved.
+    ///
+    /// Split out of `fetch` so it can be exercised against saved fixtures.
+    /// Four faults lived in this code from the day it was written — items
+    /// above a parse error discarded, an HTML page counting as a healthy
+    /// feed, RSS 1.0 silently dropped, and two root checks disagreeing — and
+    /// every one is a pure function of these bytes. They went unnoticed
+    /// because nothing could call this without a network and a user
+    /// interface. See `Tests/FeedFetcherTests.swift`.
+    static func parse(_ data: Data, from feed: Feed) throws -> FetchedFeed {
         let parser = RSSAtomParser(data: data, feed: feed)
         guard let result = parser.parse() else {
             // Two different faults, and lumping them together hid one of them
@@ -58,7 +71,7 @@ final class FeedFetcher: Sendable {
     }
 }
 
-private final class RSSAtomParser: NSObject, XMLParserDelegate {
+final class RSSAtomParser: NSObject, XMLParserDelegate {
     private let parser: XMLParser
     private let feed: Feed
 
