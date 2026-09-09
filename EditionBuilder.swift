@@ -1,6 +1,19 @@
 import Foundation
 
 struct EditionBuilder {
+    /// The span of local time an edition covers.
+    ///
+    /// Exposed rather than inlined because a refresh has to report how many of
+    /// the items it fetched were even eligible, and deriving that boundary a
+    /// second time at the call site would give the app two definitions of
+    /// "today" that could drift apart. There is one, and it lives here.
+    static func dayRange(for date: Date) -> Range<Date> {
+        let start = Calendar.current.startOfDay(for: date)
+        let end = Calendar.current.date(byAdding: .day, value: 1, to: start)
+            ?? start.addingTimeInterval(86_400)
+        return start..<end
+    }
+
     // Front-page slot budgets, chosen so a quiet day still looks like a paper
     // and a busy day doesn't overfill the front.
     let secondariesCap = 3
@@ -11,10 +24,8 @@ struct EditionBuilder {
         // (local calendar). Older items never appear, even if they'd otherwise
         // rank highly — hence "Daily". Refreshes during the day pick up new
         // today-items as they publish.
-        let startOfDay = Calendar.current.startOfDay(for: date)
-        let endOfDay = Calendar.current.date(byAdding: .day, value: 1, to: startOfDay)
-            ?? startOfDay.addingTimeInterval(86_400)
-        let todayOnly = items.filter { $0.publishedAt >= startOfDay && $0.publishedAt < endOfDay }
+        let today = Self.dayRange(for: date)
+        let todayOnly = items.filter { today.contains($0.publishedAt) }
         // Dedupe by canonical link (multiple feeds often carry the same
         // article, e.g. Guardian main + Guardian football), then by itemId
         // as a fallback for feeds that share guids but not URLs.
