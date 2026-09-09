@@ -842,6 +842,16 @@ private struct PDFReader: View {
     }
 }
 
+extension PDFView {
+    /// Scroll to the top-left of the first page.
+    func goToTop() {
+        guard let first = document?.page(at: 0) else { return }
+        let box = first.bounds(for: .cropBox)
+        // PDF coordinates run bottom-up, so the top of the page is maxY.
+        go(to: CGRect(x: box.minX, y: box.maxY - 1, width: 1, height: 1), on: first)
+    }
+}
+
 struct PDFKitView: NSViewRepresentable {
     let url: URL
     var onProgress: (Int64, Int64) -> Void = { _, _ in }
@@ -929,6 +939,21 @@ struct PDFKitView: NSViewRepresentable {
                 let bytes = data.count
                 await MainActor.run {
                     view.document = document
+                    // Open at the top of page one.
+                    //
+                    // `PDFView` does not, and setting `document` leaves the
+                    // scroll position somewhere in the first page, so every
+                    // document opened part-way down. `goToFirstPage` selects
+                    // the page without moving to its top edge, so the
+                    // destination is built explicitly at the top-left of the
+                    // crop box. `autoScales` recomputes the zoom after the
+                    // document is set, which moves the origin again, so this
+                    // is done once more on the next run-loop turn.
+                    view.goToTop()
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        view.goToTop()
+                    }
                     jdnLog("pdf: \(document.pageCount) page(s), \(bytes) bytes in \(elapsed)s")
                     onReady()
                 }

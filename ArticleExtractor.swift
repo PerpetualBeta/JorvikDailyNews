@@ -428,7 +428,17 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
 
         let page = try await fetchHTML(url: url, timeout: Self.fetchTimeout)
 
-        var lastError: Error = ExtractionError.noStrategyWorked
+        // Which of two different failures happened, because they are not the
+        // same news for the reader.
+        //
+        // If a rung produced a document and Readability found no article in
+        // it, the page is a link list or an index and there was nothing to lay
+        // out — true of `catastrophe.co.za`, which parsed cleanly in 0.02s and
+        // has no article on it. If no rung produced a document at all, the
+        // loader is the fault. Rethrowing whichever rung failed last conflated
+        // them and reported "The page took too long to load" for a ladder that
+        // had exhausted itself in four seconds.
+        var sawDocumentWithoutArticle = false
         for strategy in Self.ladder() {
             switch await attempt(strategy, page: page, blocker: blocker, minimumLength: minimumLength) {
             case .article(let article):
@@ -452,15 +462,18 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                     throw error
                 }
                 jdnLog("extract: \(strategy.name) found no article — asking WebKit for a second opinion")
-                lastError = error
+                sawDocumentWithoutArticle = true
                 continue
-            case .noDocument(let why):
-                lastError = why
+            case .noDocument:
                 continue
             }
         }
         jdnLog("extract: every rung failed — no document by any route")
-        throw lastError
+        // Each rung's own reason is already logged above this line, so the
+        // error only has to name which of the two failures this was.
+        throw sawDocumentWithoutArticle
+            ? ExtractionError.noArticle
+            : ExtractionError.noStrategyWorked
     }
 
     /// Pin the extractor to one rung and disable the ladder.

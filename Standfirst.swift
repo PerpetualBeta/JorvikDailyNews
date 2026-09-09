@@ -343,8 +343,21 @@ enum Standfirst {
             "<(script|style|pre|figcaption|table|form|noscript|iframe|svg)\\b[^>]*>.*?</\\1\\s*>",
             dotMatchesLineSeparators: true
         )
+        /// A paragraph boundary, opening or closing.
+        ///
+        /// It used to match closing tags only, and HTML does not require a
+        /// closing `</p>`. Hacker News comments are written exactly that way —
+        /// the real markup for one item reads
+        /// `...actually banned it.<p>Some local governments...` — so the bare
+        /// `<p>` was no boundary, `flatten` then removed it as an inline tag
+        /// with no separator, and the standfirst read "banned it.Some local".
+        /// Two sentences welded together, on the front page, for as long as
+        /// this code has existed.
+        ///
+        /// Attributes are allowed for, because a `<div class="...">` opens a
+        /// block just as much as a bare `<div>` does.
         static let blockEnd = regex(
-            "</(?:p|div|h[1-6]|li|blockquote|section|article|figure|tr|dd|dt)\\s*>|<br\\s*/?>"
+            "</?(?:p|div|h[1-6]|li|blockquote|section|article|figure|tr|dd|dt)(?:\\s[^>]*)?\\s*>|<br\\s*/?>"
         )
         static let tag = regex("<[^>]+>")
         static let whitespace = regex("\\s+")
