@@ -166,7 +166,24 @@ final class AppStore {
         if pageIndex == 0 { return "Front Page" }
         let idx = pageIndex - 1
         guard idx < edition.sections.count else { return "Front Page" }
-        return edition.sections[idx].name
+        let name = edition.sections[idx].name
+        // A section too big for one page becomes several of the same name, so
+        // say which one this is. Counted rather than stored, so an edition
+        // saved before this existed still decodes.
+        let sameName = edition.sections.enumerated().filter { $0.element.name == name }
+        guard sameName.count > 1 else { return name }
+        let part = (sameName.firstIndex { $0.offset == idx } ?? 0) + 1
+        return "\(name) (\(part) of \(sameName.count))"
+    }
+
+    /// How many pages the current section runs to, for anything that wants to
+    /// skip a whole section rather than turn a page at a time.
+    var currentSectionPageCount: Int {
+        guard let edition = visibleEdition ?? editionStore.today, pageIndex > 0 else { return 1 }
+        let idx = pageIndex - 1
+        guard idx < edition.sections.count else { return 1 }
+        let name = edition.sections[idx].name
+        return max(1, edition.sections.filter { $0.name == name }.count)
     }
 
     /// Open an article in the reader and mark it read. Single entry point so

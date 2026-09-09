@@ -1,6 +1,28 @@
 import Foundation
 
 struct EditionBuilder {
+    /// How many stories fit on one section page.
+    ///
+    /// Sixty, against a front page of sixteen plus a lead, so a section page
+    /// is a long read rather than an endless one: twenty per column in the
+    /// three-column masonry. The number that matters is the one it replaces,
+    /// which was unbounded and produced a 505-item page.
+    ///
+    /// Tunable live, because the right figure is a matter of how it feels to
+    /// turn a page and that cannot be settled by arithmetic:
+    ///
+    ///     defaults write cc.jorviksoftware.JorvikDailyNews sectionPageCap -int 96
+    ///
+    /// Read with `object(forKey:) as? Int` so an unset key keeps the default:
+    /// `integer(forKey:)` answers 0 for a missing key, which here would mean
+    /// a page holding nothing.
+    static var sectionPageCap: Int {
+        let stored = UserDefaults.standard.object(forKey: "sectionPageCap") as? Int
+        guard let stored, stored > 0 else { return sectionPageCapDefault }
+        return stored
+    }
+    static let sectionPageCapDefault = 60
+
     /// The span of local time an edition covers.
     ///
     /// Exposed rather than inlined because a refresh has to report how many of
@@ -77,9 +99,25 @@ struct EditionBuilder {
         remaining = Array(remaining.dropFirst(briefs.count))
         let leftover = remaining
         let bySection = Dictionary(grouping: leftover) { $0.section }
+        // A section page used to be "everything left over", with no cap, so a
+        // busy News section put **505 items on one page**. Every card in the
+        // masonry publishes its height through a `GeometryReader` and every
+        // height change triggers a redistribute, so 505 of them is a
+        // measure-and-relayout storm on the main thread: the page took
+        // seconds to open and spun the beachball while it did.
+        //
+        // A newspaper page has an extent. An oversized section becomes several
+        // pages of the same name, which the page title renders as
+        // "News (2 of 9)", and which is what a broadsheet does anyway.
         let sections = bySection
-            .map { SectionPage(name: $0.key, items: $0.value) }
+            .map { (name: $0.key, items: $0.value) }
             .sorted { $0.name.lowercased() < $1.name.lowercased() }
+            .flatMap { section -> [SectionPage] in
+                stride(from: 0, to: section.items.count, by: Self.sectionPageCap).map { start in
+                    let end = min(start + Self.sectionPageCap, section.items.count)
+                    return SectionPage(name: section.name, items: Array(section.items[start..<end]))
+                }
+            }
 
         return Edition(
             date: Calendar.current.startOfDay(for: date),
