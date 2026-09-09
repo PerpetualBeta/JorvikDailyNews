@@ -817,6 +817,13 @@ private struct PDFReader: View {
 
             case .starting, .downloading:
                 VStack(spacing: 14) {
+                    // Three states, not two. A server that declares no length
+                    // gets a spinner and a running byte count rather than the
+                    // bare "Loading PDF…", which is what happened on a 7.4 MB
+                    // report that took 163 seconds: `Content-Length` was
+                    // absent on that request, so the determinate branch never
+                    // fired and the reader got no sign of progress for nearly
+                    // three minutes.
                     if case .downloading(let got, let total) = state, total > 0 {
                         ProgressView(value: Double(got), total: Double(total))
                             .frame(width: 220)
@@ -824,6 +831,15 @@ private struct PDFReader: View {
                             .font(.custom("Charter", size: 12))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
+                    } else if case .downloading(let got, _) = state {
+                        ProgressView()
+                        Text("\(Self.mb(got)) downloaded")
+                            .font(.custom("Charter", size: 12))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                        Text("the server did not say how big this is")
+                            .font(.custom("Charter", size: 11))
+                            .foregroundStyle(.tertiary)
                     } else {
                         ProgressView()
                         Text("Loading PDF\u{2026}")
@@ -864,6 +880,13 @@ struct PDFKitView: NSViewRepresentable {
     /// at all before, so it inherited URLSession's 60-second default and gave
     /// no sign of which it was doing.
     private static let timeout: TimeInterval = 120
+    /// How often to publish progress. Five times a second is smooth to watch
+    /// and costs nothing against a download measured in minutes.
+    ///
+    /// `nonisolated` because it is read from the detached download task. The
+    /// view is main-actor isolated, so a plain `static let` on it is too, and
+    /// Swift 6 makes that an error rather than a warning.
+    nonisolated static let reportEvery: TimeInterval = 0.2
 
     func makeNSView(context: Context) -> PDFView {
         let view = PDFView()
@@ -921,7 +944,7 @@ struct PDFKitView: NSViewRepresentable {
                     // Report on a timer, not per byte: a 7.4 MB file is 7.4
                     // million iterations and a state write on each would cost
                     // far more than the download.
-                    if Date().timeIntervalSince(lastReport) > 0.2 {
+                    if Date().timeIntervalSince(lastReport) > Self.reportEvery {
                         lastReport = Date()
                         let got = Int64(data.count)
                         await MainActor.run { onProgress(got, total) }
