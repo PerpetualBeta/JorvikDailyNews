@@ -68,6 +68,11 @@ struct ReaderView: View {
         /// True when the article's own request never completed, so nothing was
         /// ever handed to a web view and macOS is not implicated.
         var neverArrived = false
+        /// True when the page downloaded and simply is not an article — a
+        /// product homepage, a picture page, a link. Telling somebody the
+        /// reader could not lay it out is technically right and useless; what
+        /// they need to know is that there was never an article to lay out.
+        var notAnArticle = false
     }
 
     /// What went wrong, in the reader's language and in mine.
@@ -357,6 +362,17 @@ struct ReaderView: View {
                 // later, with no restart involved. Telling somebody to do a
                 // thing that will not work is worse than telling them nothing,
                 // because they will conclude the app is lying to them.
+                if failure.notAnArticle {
+                    state = .unavailable(Problem(
+                        headline: "There is no article on this page",
+                        advice: "The link goes to a page rather than a story — "
+                              + "a product site, a picture, or a video, say — so "
+                              + "there was nothing for the reader to lay out. "
+                              + "The page itself could not be shown either, so "
+                              + "your browser is the way to see it.",
+                        technical: failure.detail))
+                    return
+                }
                 state = .unavailable(failure.neverArrived
                     ? Problem(
                         headline: "This article would not download",
@@ -464,14 +480,24 @@ struct ReaderView: View {
             // Classified on the error type, not by reading the message. Only
             // `fetchFailed` means the bytes never arrived; every other case
             // means we had the page and could not make an article of it.
-            let neverArrived: Bool
-            if case ArticleExtractor.ExtractionError.fetchFailed = error {
+            var neverArrived = false
+            var notAnArticle = false
+            switch error {
+            case ArticleExtractor.ExtractionError.fetchFailed:
                 neverArrived = true
-            } else {
-                neverArrived = false
+            case ArticleExtractor.ExtractionError.tooShort,
+                 ArticleExtractor.ExtractionError.noArticle:
+                // The page came down fine and there is no article on it: a
+                // product homepage, a picture page, a Show HN link. Showing
+                // the page itself is the right answer, and if that fails the
+                // reader deserves to be told which of the two things happened.
+                notAnArticle = true
+            default:
+                break
             }
             state = .failed(Failure(detail: error.localizedDescription,
-                                    neverArrived: neverArrived))
+                                    neverArrived: neverArrived,
+                                    notAnArticle: notAnArticle))
         }
         jdnLog("reader: settled")
     }

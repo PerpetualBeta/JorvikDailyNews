@@ -414,7 +414,38 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// a slow host should not be able to hold the reader for much longer.
     private static let fetchTimeout: TimeInterval = 12
 
-    func extract(url: URL, minimumLength: Int = 500, timeout: TimeInterval = 20) async throws -> Article {
+    /// Below this many characters, a page is not an article.
+    ///
+    /// **250, lowered from 500 on 2026-09-10**, and the old figure was
+    /// throwing away real posts. Pairing every thin extraction in a day's log
+    /// with its URL shows a sharp boundary that 500 sat well above:
+    ///
+    /// | chars   | what the links actually were                          |
+    /// |---------|-------------------------------------------------------|
+    /// | 19–226  | product landing pages, Show HN links, a Guardian      |
+    /// |         | picture page, a video page — genuinely no article     |
+    /// | 258–283 | two Six Colors podcast notes, an iamcal microblog     |
+    /// |         | entry — the whole post, correctly extracted           |
+    ///
+    /// So a 283-character microblog post was rejected, sent to the live page,
+    /// and the reader got an error for an article that had extracted
+    /// perfectly. Below 250 the live page is the right answer, because a
+    /// product homepage should be shown as a page.
+    ///
+    /// Tunable, because the boundary is a judgement about what counts as a
+    /// post and one day of one person's feeds is a small sample:
+    ///
+    ///     defaults write cc.jorviksoftware.JorvikDailyNews minimumArticleLength -int 400
+    /// `nonisolated` so it can be a default argument: a default is evaluated
+    /// at the call site, which may be anywhere.
+    nonisolated static var minimumArticleLength: Int {
+        let stored = UserDefaults.standard.object(forKey: "minimumArticleLength") as? Int
+        guard let stored, stored > 0 else { return 250 }
+        return stored
+    }
+
+    func extract(url: URL, minimumLength: Int = ArticleExtractor.minimumArticleLength,
+                 timeout: TimeInterval = 20) async throws -> Article {
         jdnLog("extract: begin \(url.absoluteString)")
         guard let path = Bundle.main.path(forResource: "Readability", ofType: "js"),
               let js = try? String(contentsOfFile: path, encoding: .utf8) else {

@@ -259,6 +259,10 @@ swift generate_icon.swift
 
 Either no feeds have published today yet, or every feed fetch failed (check your internet connection and hit `command` `R`). The today-only filter is strict — items dated before midnight local time don't appear. If you've just added feeds and they don't seem to have today's items, some feeds only publish weekly or less frequently.
 
+**A short post is still a post.** The floor below which a page is judged not to be an article was 500 characters, and that was throwing real writing away. Pairing every thin extraction in a day's log with its link shows a sharp boundary well below it: from 19 to 226 characters the links were product landing pages, Show HN submissions, a Guardian picture page and a video page, with genuinely no article on them; from 258 to 283 they were two Six Colors podcast notes and an iamcal microblog entry, correctly extracted in full. A 283-character post was being rejected, sent to the live page, and reported as an error. The floor is now **250** and it is `minimumArticleLength`, because where a post stops being a post is a judgement and one day of one person's feeds is a small sample.
+
+When there really is no article, the reader says so in those words rather than blaming the renderer. "The reader could not lay this out" is true of a product homepage and useless; what a reader needs to know is that there was never an article there, and that their browser is the way to see the page.
+
 ### Readability fails on a site
 
 Paywalled sites, JavaScript-rendered SPAs and some custom CMSes resist extraction. The reader does not dead-end you: it renders the real page inline instead, with **Open in Browser** still in the header as the escape hatch.
