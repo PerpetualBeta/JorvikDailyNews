@@ -910,8 +910,19 @@ private struct PDFReader: View {
         }
     }
 
+    /// A file size the way macOS states one.
+    ///
+    /// `ByteCountFormatter` with `.file` is what Finder uses, so the reader
+    /// and the Finder agree about the same document. Dividing by 1,048,576 and
+    /// printing "MB" did not: Finder calls that 7.44 MB where the app said
+    /// 7.1 MB, because macOS has counted file sizes in decimal since 10.6 and
+    /// only `ls -lh` still reports binary. The formatter also localises the
+    /// unit and the separator, which a `String(format:)` never will.
     private static func mb(_ bytes: Int64) -> String {
-        String(format: "%.1f MB", Double(bytes) / 1_048_576)
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        return formatter.string(fromByteCount: bytes)
     }
 }
 

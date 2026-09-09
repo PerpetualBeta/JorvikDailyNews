@@ -295,7 +295,15 @@ final class ImageCache: @unchecked Sendable {
     }
 
     private static func mb(_ bytes: Int) -> String {
-        String(format: "%.1f MB", Double(bytes) / 1_048_576)
+        // `.memory`, not `.file`: these are decoded bitmaps against a limit
+        // derived from physical RAM, and memory is the one thing macOS still
+        // counts in binary. A file size in the same app uses `.file`, which
+        // is what Finder shows — the two conventions differ by 5% and the
+        // right one depends on what is being measured.
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .memory
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        return formatter.string(fromByteCount: Int64(bytes))
     }
 
     /// Drop everything at the turn of the day.
