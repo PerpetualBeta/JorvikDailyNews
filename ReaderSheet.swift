@@ -18,6 +18,19 @@ struct ReaderView: View {
     @State private var section: String = ""
     @State private var newSectionPrompt = false
     @State private var newSectionName = ""
+    /// Set once a load has been running long enough that silence reads as a
+    /// hang. Eight seconds: the extractor's own fetch timeout is 10s, so this
+    /// appears before the first thing that could fail does.
+    @State private var slowToLoad = false
+    private static let slowLoadNoticeNanoseconds: UInt64 = 8 * 1_000_000_000
+    /// Whether the live-page fallback has drawn anything yet. Until it has, a
+    /// cover sits over it, because the web view must be mounted to load and a
+    /// mounted empty one looks exactly like the fault.
+    @State private var liveDrew = false
+    /// Whether the extracted article is on screen yet. Same reasoning as
+    /// `liveDrew`: the web view has to be mounted to render, so it is covered
+    /// until it has. There is no state in this reader that shows a blank pane.
+    @State private var articleDrew = false
 
     enum ReaderState {
         case loading
@@ -25,6 +38,23 @@ struct ReaderView: View {
         case pdf(URL)
         case video(VideoTarget)
         case failed(String)
+        /// Nothing could be shown: not the reader, not the original page.
+        /// Carries what to tell the reader, because the alternative is the
+        /// blank sheet this state exists to replace.
+        case unavailable(Problem)
+    }
+
+    /// What went wrong, in the reader's language and in mine.
+    ///
+    /// `headline` and `advice` are for the person looking at it. `technical`
+    /// is the line that makes a bug report useful, shown small rather than
+    /// hidden, because somebody who wants to report this should not have to
+    /// turn on diagnostics first.
+    struct Problem {
+        let headline: String
+        let advice: String
+        let technical: String
+        var canRetry = true
     }
 
     /// How a video link is played in-app: a YouTube/Vimeo player embedded
@@ -160,24 +190,51 @@ struct ReaderView: View {
     private var content: some View {
         switch state {
         case .loading:
+            // "Turning to the article…" on its own is indistinguishable from a
+            // hang after a few seconds. Saying so is not a fix, but it is the
+            // difference between waiting and wondering.
             VStack(spacing: 14) {
                 ProgressView()
                 Text("Turning to the article\u{2026}")
                     .font(.custom("Charter", size: 12))
                     .foregroundStyle(.secondary)
+                if slowToLoad {
+                    Text("This one is taking longer than usual.")
+                        .font(.custom("Charter", size: 12))
+                        .foregroundStyle(.tertiary)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: "loading-\(item.itemId)") {
+                slowToLoad = false
+                try? await Task.sleep(nanoseconds: Self.slowLoadNoticeNanoseconds)
+                if !Task.isCancelled { slowToLoad = true }
+            }
 
         case .ready(let article):
-            ReaderWebView(html: renderHTML(article), baseURL: item.link) {
+          ZStack {
+            ReaderWebView(html: renderHTML(article), baseURL: item.link, onBlank: { detail in
                 // Neither route rendered the extracted article. Rather than
                 // leave a blank sheet, fall through to the same live page every
                 // other failure falls through to, so this release cannot be
                 // worse than the one before it.
                 guard case .ready = state else { return }
                 jdnLog("reader: nothing rendered the article — live page fallback")
-                state = .failed("The reader could not display this article")
+                state = .failed(detail)
+            }, onDrew: { articleDrew = true })
+
+            if !articleDrew {
+                VStack(spacing: 14) {
+                    ProgressView()
+                    Text("Turning to the article\u{2026}")
+                        .font(.custom("Charter", size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .textBackgroundColor))
             }
+          }
+          .task(id: "drew-\(item.itemId)") { articleDrew = false }
 
         case .pdf(let url):
             PDFReader(url: url)
@@ -196,12 +253,68 @@ struct ReaderView: View {
                 NativeVideoView(url: mediaURL)
             }
 
-        case .failed:
+        case .failed(let reason):
             // No clean reader view (link lists like HN, paywalls, SPA-rendered
             // pages). Rather than dead-ending the user out to a browser, render
             // the real page inline in a full web view. The header's "Open in
             // Browser" stays as the escape hatch for anyone who wants it.
-            LiveWebView(url: item.link)
+            //
+            // The live page used to be the end of the line, and it renders
+            // through the same WebKit as everything else. When WebKit is not
+            // rendering, this showed a blank sheet with no explanation, which
+            // is the worst outcome the app can produce: the reader cannot tell
+            // a broken article from a slow one from a broken app.
+            // The live page has to be in the hierarchy to load at all, and an
+            // empty web view IS the blank pane this whole chain exists to
+            // prevent. So it loads underneath a cover that says what is
+            // happening, and the cover lifts the moment it has drawn
+            // something. Before this the reader showed white for up to 8.4
+            // seconds, which is long enough for anyone to give up and click
+            // away — as happened the first time it was tried.
+            ZStack {
+              LiveWebView(url: item.link, onBlank: {
+                guard case .failed = state else { return }
+                jdnLog("reader: the live page did not render either — giving up with an explanation")
+                // The advice used to end "quitting and reopening Jorvik Daily
+                // News clears it". It was written from the assumption that a
+                // restart clears it, and on 2026-09-09 it did not: the app was
+                // relaunched twice during a 21-minute spell and every article
+                // still failed, in the installed release as well as the
+                // development build. It cleared itself, roughly twenty minutes
+                // later, with no restart involved. Telling somebody to do a
+                // thing that will not work is worse than telling them nothing,
+                // because they will conclude the app is lying to them.
+                state = .unavailable(Problem(
+                    headline: "This article would not open",
+                    advice: "Neither the reader nor the original page could be "
+                          + "displayed. That points at the part of macOS that "
+                          + "draws web pages, rather than at anything being "
+                          + "wrong with the article. Opening it in your browser "
+                          + "will work. If every article does this, it usually "
+                          + "comes right on its own after a few minutes. A "
+                          + "restart is worth trying but may not help.",
+                    technical: reason))
+              }, onDrew: { liveDrew = true })
+
+              if !liveDrew {
+                  VStack(spacing: 14) {
+                      ProgressView()
+                      Text("The reader could not lay this one out.")
+                          .font(.custom("Charter", size: 14))
+                      Text("Fetching the original page\u{2026}")
+                          .font(.custom("Charter", size: 12))
+                          .foregroundStyle(.secondary)
+                  }
+                  .frame(maxWidth: .infinity, maxHeight: .infinity)
+                  .background(Color(nsColor: .textBackgroundColor))
+              }
+            }
+            .task(id: "live-\(item.itemId)") { liveDrew = false }
+
+        case .unavailable(let problem):
+            ReaderNotice(problem: problem,
+                         link: item.link,
+                         retry: { state = .loading; Task { await extract() } })
         }
     }
 
@@ -395,7 +508,14 @@ struct ReaderWebView: NSViewRepresentable {
     let baseURL: URL?
     /// Called when neither route produced a document, so the sheet can show the
     /// live page instead of nothing.
-    let onBlank: () -> Void
+    /// Reports the measurements, not just the fact. "WebKit rendered nothing:
+    /// the reader could not display this article" said the same thing twice and
+    /// carried no numbers, which is no use in a bug report.
+    let onBlank: (String) -> Void
+    /// Called as soon as the article is actually on screen, so the caller can
+    /// lift its cover. Without this the reader shows white for the whole grace
+    /// period even when the document renders in 150 ms.
+    var onDrew: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -427,7 +547,8 @@ struct ReaderWebView: NSViewRepresentable {
         // passed it.
         guard context.coordinator.shown != html else { return }
         context.coordinator.shown = html
-        context.coordinator.show(html, baseURL: baseURL, in: web, onBlank: onBlank)
+        context.coordinator.show(html, baseURL: baseURL, in: web,
+                                 onBlank: onBlank, onDrew: onDrew)
     }
 
     /// Renders the reader document, and notices if WebKit quietly declines to.
@@ -459,9 +580,10 @@ struct ReaderWebView: NSViewRepresentable {
         /// Measured on macOS 26, a reader document commits and parses in about
         /// 150 ms, so this is eight times the observed cost.
         private static let grace: TimeInterval = 1.2
+        private static let pollInterval: UInt64 = 100_000_000
 
         func show(_ html: String, baseURL: URL?, in web: WKWebView,
-                  onBlank: @escaping () -> Void) {
+                  onBlank: @escaping (String) -> Void, onDrew: @escaping () -> Void) {
             check?.cancel()
             // The same bytes either way, so the two routes cannot render
             // differently. The `<base href>` matters only to the fallback,
@@ -471,15 +593,25 @@ struct ReaderWebView: NSViewRepresentable {
             handler.document = document
             web.loadHTMLString(html, baseURL: baseURL)
             check = Task { @MainActor [weak web] in
-                try? await Task.sleep(nanoseconds: UInt64(Self.grace * 1_000_000_000))
-                guard !Task.isCancelled, let web else { return }
                 let probe = "document.documentElement.outerHTML.length"
-                let chars = (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
                 // A `WKWebView` starts out holding about 39 characters of empty
                 // skeleton, and that skeleton reports `readyState` as
                 // `complete`, so length is the only honest test.
                 let floor = max(200, html.count / 10)
-                guard chars < floor else { return }
+                var chars = 0
+                let started = Date()
+                // Poll rather than sleep the whole grace and ask once. A
+                // document renders in about 150 ms, so asking once at 1.2s
+                // held the reader on a blank pane eight times longer than it
+                // needed to be.
+                while Date().timeIntervalSince(started) < Self.grace {
+                    try? await Task.sleep(nanoseconds: Self.pollInterval)
+                    guard !Task.isCancelled, let web else { return }
+                    chars = ReaderFailureSimulation.isOn ? 39
+                        : (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
+                    if chars >= floor { onDrew(); return }
+                }
+                guard !Task.isCancelled, let web else { return }
                 jdnLog("reader: loadHTMLString produced only \(chars) chars of"
                        + " \(html.count) after \(Self.grace)s — re-serving over"
                        + " \(ReaderBytesHandler.scheme):")
@@ -488,13 +620,23 @@ struct ReaderWebView: NSViewRepresentable {
                 // only a second way to show a blank sheet.
                 try? await Task.sleep(nanoseconds: UInt64(Self.grace * 1_000_000_000))
                 guard !Task.isCancelled else { return }
-                let after = (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
-                guard after < floor else {
-                    jdnLog("reader: \(ReaderBytesHandler.scheme): rendered it — \(after) chars")
-                    return
+                var after = 0
+                let retried = Date()
+                while Date().timeIntervalSince(retried) < Self.grace {
+                    try? await Task.sleep(nanoseconds: Self.pollInterval)
+                    guard !Task.isCancelled else { return }
+                    after = ReaderFailureSimulation.isOn ? 39
+                        : (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
+                    if after >= floor {
+                        jdnLog("reader: \(ReaderBytesHandler.scheme): rendered it — \(after) chars")
+                        onDrew()
+                        return
+                    }
                 }
+                guard !Task.isCancelled else { return }
                 jdnLog("reader: \(ReaderBytesHandler.scheme): produced only \(after) chars too")
-                onBlank()
+                onBlank("article \(html.count) chars; loadHTMLString drew \(chars), "
+                        + "\(ReaderBytesHandler.scheme) drew \(after), floor \(floor)")
             }
         }
     }
@@ -547,6 +689,16 @@ final class ReaderBytesHandler: NSObject, WKURLSchemeHandler {
 /// sessions; back/forward swipe gestures are enabled for normal browsing.
 struct LiveWebView: NSViewRepresentable {
     let url: URL
+    /// Called when the live page rendered nothing at all. This view is the end
+    /// of every fallback chain in the reader, and it draws through the same
+    /// WebKit as the routes that already failed, so it is the one place a
+    /// blank sheet could still reach the reader with no explanation.
+    var onBlank: () -> Void = {}
+    /// Called once the live page has actually drawn something. The caller keeps
+    /// a cover over this view until then, because the page has to be in the
+    /// hierarchy to load at all and an empty web view is exactly the blank
+    /// pane the whole chain exists to prevent.
+    var onDrew: () -> Void = {}
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -560,7 +712,58 @@ struct LiveWebView: NSViewRepresentable {
         // Load once — don't reload on every SwiftUI update pass.
         if web.url == nil {
             web.load(URLRequest(url: url))
+            context.coordinator.watch(web, onBlank: onBlank, onDrew: onDrew)
         }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    @MainActor
+    final class Coordinator {
+        private var check: Task<Void, Never>?
+
+        /// A real page over the network needs far longer than the reader's own
+        /// document does. This is generous on purpose: reporting "it did not
+        /// render" about a page that was merely slow would be worse than the
+        /// blank sheet, because it would send the reader away from a page that
+        /// was about to appear.
+        private static let grace: TimeInterval = 6
+
+        func watch(_ web: WKWebView, onBlank: @escaping () -> Void,
+                   onDrew: @escaping () -> Void) {
+            check?.cancel()
+            // Poll rather than wait out the whole grace period. A page that
+            // draws in 300 ms should be revealed in 300 ms; only a page that
+            // draws nothing should cost the full wait. Sleeping first and
+            // asking once meant every fallback took the worst case, and the
+            // reader saw a blank pane for all of it.
+            check = Task { @MainActor [weak web] in
+                let started = Date()
+                let probe = "document.documentElement.outerHTML.length"
+                while Date().timeIntervalSince(started) < Self.grace {
+                    try? await Task.sleep(nanoseconds: Self.pollInterval)
+                    guard !Task.isCancelled, let web else { return }
+                    let chars = ReaderFailureSimulation.isOn ? Self.emptyDocumentChars
+                        : (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
+                    // 39 characters is the empty skeleton a web view starts
+                    // with, and it reports `readyState` as `complete`, so
+                    // length is the only honest test. A real page is thousands.
+                    if chars > Self.emptyDocumentChars {
+                        jdnLog("reader: live page rendered \(chars) chars")
+                        onDrew()
+                        return
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                jdnLog("reader: live page produced nothing after \(Int(Self.grace))s")
+                onBlank()
+            }
+        }
+
+        private static let pollInterval: UInt64 = 200_000_000
+
+        private static let emptyDocumentChars =
+            "<html><head></head><body></body></html>".count
     }
 }
 
@@ -687,5 +890,121 @@ private struct NativeVideoView: View {
                 p.play()
             }
             .onDisappear { player?.pause() }
+    }
+}
+
+// MARK: - When nothing can be shown
+
+/// The reader's last resort, and the one it never had.
+///
+/// Every other state in `ReaderState` draws something. This one exists for the
+/// case where none of them can: extraction produced nothing, the reader's own
+/// document did not render, the private-scheme copy did not render, and the
+/// live page did not render either. Before this, that combination showed an
+/// empty white pane and said nothing, which cannot be told apart from a slow
+/// load, a broken article, or a broken app.
+///
+/// It says three things, in the order a person needs them: that it failed,
+/// what to do instead, and what actually happened. The last of those is small
+/// and selectable rather than hidden behind a diagnostics switch, because the
+/// people most likely to report a fault are the ones least likely to have
+/// turned logging on first.
+struct ReaderNotice: View {
+    let problem: ReaderView.Problem
+    let link: URL
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "text.page.slash")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(.tertiary)
+
+            Text(problem.headline)
+                .font(.custom("Charter", size: 20))
+
+            Text(problem.advice.noOrphan)
+                .font(.custom("Charter", size: 14))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+                .frame(maxWidth: Self.proseWidth)
+
+            HStack(spacing: 10) {
+                Button {
+                    NSWorkspace.shared.open(link)
+                } label: {
+                    Label("Open in Browser", systemImage: "safari")
+                }
+                .keyboardShortcut(.defaultAction)
+
+                if problem.canRetry {
+                    Button("Try Again", action: retry)
+                }
+            }
+            .padding(.top, 2)
+
+            Text(problem.technical)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
+                .frame(maxWidth: Self.technicalWidth)
+                .padding(.top, 6)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The reader's own column is 680 points. This is narrower, because a
+    /// centred paragraph of apology reads worse the wider it gets.
+    private static let proseWidth: CGFloat = 420
+    /// The measurements are monospaced and comma-separated, so they need more
+    /// room than the prose does. At this width the usual line fits whole
+    /// instead of dropping a two-word tail onto a second line.
+    private static let technicalWidth: CGFloat = 520
+}
+
+extension String {
+    /// Ties the last two words together so a paragraph cannot end with a
+    /// single word on its own line.
+    ///
+    /// Rewording to fit is not a fix: the orphan comes back at the next window
+    /// width, the next font size, or the next edit to the sentence.
+    ///
+    /// The obvious tool is U+00A0, and in Charter it is wrong. Measured at
+    /// 14pt: Charter's normal space advances **3.89pt** and its no-break space
+    /// advances **7.79pt**, exactly double, so the guard put a visible double
+    /// space in the middle of the sentence. Helvetica has them equal, which is
+    /// why this is easy to ship without noticing.
+    ///
+    /// So the space stays a normal space and the *break* is suppressed instead,
+    /// with a WORD JOINER either side of it. UAX #14 rule LB11 prohibits a
+    /// break before or after U+2060, which removes the opportunity at that
+    /// space without touching the glyph. Both joiners are needed: one before
+    /// the space alone changes nothing, measured.
+    var noOrphan: String {
+        guard let gap = range(of: " ", options: .backwards) else { return self }
+        return replacingCharacters(in: gap, with: "\u{2060} \u{2060}")
+    }
+}
+
+/// Forces every render route in the reader to report that it drew nothing.
+///
+/// The notice this reveals exists for a state that cannot be summoned: WebKit
+/// stops rendering, for reasons still unknown, and recovers on its own. It did
+/// exactly that on 2026-09-09, twenty minutes after the fault appeared and
+/// before the fix for it could be tried, which is how an error screen ships
+/// having never once been looked at.
+///
+///     defaults write cc.jorviksoftware.JorvikDailyNews simulateBlankReader -bool YES
+///
+/// `defaults delete` the key to put it back. Off unless explicitly set to
+/// true, which is why this reads the object rather than calling `bool(forKey:)`
+/// — that answers false for a key that was never set, and would ship the
+/// feature on for nobody and off for everybody if the sense were reversed.
+enum ReaderFailureSimulation {
+    static var isOn: Bool {
+        UserDefaults.standard.object(forKey: "simulateBlankReader") as? Bool ?? false
     }
 }
