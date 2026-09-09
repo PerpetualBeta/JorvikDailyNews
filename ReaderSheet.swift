@@ -907,6 +907,20 @@ struct PDFKitView: NSViewRepresentable {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
             forHTTPHeaderField: "User-Agent"
         )
+        // Ask for the bytes uncompressed, which is how the size comes back.
+        //
+        // `URLSession` sends `Accept-Encoding: gzip, deflate, br` by default.
+        // Offered that, `metr.org` returns `content-encoding: br` and **no
+        // Content-Length at all**, so `expectedContentLength` is -1 and a
+        // 7.4 MB report downloaded for 163 seconds with no size to show.
+        // The same URL declares `content-length: 7443085` when no encoding is
+        // offered — measured both ways.
+        //
+        // Identity is the right ask regardless of the size: a PDF is already
+        // a compressed container, so Brotli-ing it spends CPU at both ends to
+        // save very little. A server free to ignore this leaves us in the
+        // spinner-with-a-byte-count state, which is why that state exists.
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         let url = self.url
         let onProgress = self.onProgress
         let onReady = self.onReady
