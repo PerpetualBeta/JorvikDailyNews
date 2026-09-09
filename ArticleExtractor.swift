@@ -711,11 +711,26 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// host page is 511 characters, so whether video works on an affected Mac
     /// depends entirely on which side of the limit that falls.
     private func sizeBisect() async {
-        var low = Self.selfTestHTML.count      // known good, just measured above
+        var low = Self.selfTestHTML.count
         var high = Self.bisectCeiling
 
         guard await !substituteDataLoads(chars: high) else {
             jdnLog("selftest: bisect — \(high) chars loaded, so there is no limit below that here")
+            return
+        }
+
+        // The lower bound has to be MEASURED, not assumed.
+        //
+        // The first version of this took `low` on faith because the probes
+        // above had just loaded that size. On 2026-09-09 every WebKit load in
+        // the process was failing, and this reported "substitute data works to
+        // 75 chars and fails by 330" — a threshold it had never tested in that
+        // pass — and then concluded from it that video would not play. Both
+        // statements were fabricated from an assumption. When nothing works,
+        // the honest answer is that nothing works.
+        guard await substituteDataLoads(chars: low) else {
+            jdnLog("selftest: bisect — even \(low) chars did not load, so WebKit is "
+                   + "rendering nothing at all here and there is no size limit to find")
             return
         }
         for _ in 0..<Self.bisectSteps where high - low > Self.bisectPrecision {

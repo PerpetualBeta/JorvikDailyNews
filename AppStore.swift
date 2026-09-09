@@ -17,12 +17,44 @@ final class AppStore {
     /// `og:image` is not fetched again every time the paper reflows.
     private var enrichmentAttempted: Set<String> = []
     private var isToppingUp = false
+    /// When the in-flight refresh began, so it can report its own duration.
+    /// The watchdog's margin is only trustworthy while somebody can see it.
+    private var refreshStarted = Date()
 
     /// How many of the newest items in a section the REFRESH enriches. This is
     /// only a primer, so the paper opens with pictures before anyone has
     /// scrolled; the target below is what actually decides how far enrichment
     /// goes.
     private static let enrichCapPerSection = 24
+    /// Only for the log line that names the edition being dropped at midnight.
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = .current
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+    /// How many failing feeds to name before summarising the rest.
+    ///
+    /// Twenty, sized from a measurement rather than a guess: every one of the
+    /// 254 subscriptions was fetched on 2026-09-09 and nineteen failed. Three
+    /// was the first guess, then eight, both set while assuming a few dozen
+    /// feeds. Now that each failure gets its own line the only thing this
+    /// bounds is a runaway, so it can afford to sit above the real figure.
+    private static let loggedFetchErrors = 20
+    /// How many feeds to fetch at once.
+    ///
+    /// Sixteen, and the number that matters is the one it replaces: with 254
+    /// subscriptions the old code put 254 requests in flight simultaneously,
+    /// while `launchctl limit maxfiles` gives a GUI app a soft ceiling of
+    /// **256** descriptors and the app already holds about 94 of them. That is
+    /// over the line before the enrichment pass adds anything.
+    ///
+    /// Each fetch is mostly waiting on a remote server, so a window of sixteen
+    /// still keeps the pipe full. Measured before the cap: 254 feeds in 21.3s.
+    /// The refresh reports its own elapsed time against a 300s budget, so the
+    /// cost of this is visible in every log rather than assumed here.
+    private static let concurrentFeedFetches = 16
 
     /// The share of a page's articles that should carry a picture.
     ///
@@ -180,26 +212,98 @@ final class AppStore {
         hourlyTimer = timer
     }
 
+    /// Runs a refresh, and makes sure a refresh cannot wedge the app.
+    ///
+    /// `isRefreshing` is what stops two refreshes overlapping, and it used to
+    /// be cleared by a `defer` inside the work itself. That is only sound if
+    /// the work always finishes. One `await` that never returns, and this one
+    /// warms a lead image over the network, leaves the flag set for the life of
+    /// the process. After that every refresh returns immediately and silently,
+    /// the hourly timer and the reader's own button alike, and the paper simply
+    /// stops changing. Nothing reported it, because none of this was logged.
+    ///
+    /// So the work races a clock, and the flag is cleared out here rather than
+    /// in there. Abandoning a refresh does not stop it, so it is also
+    /// cancelled, and it checks for that before it publishes: that is what
+    /// stops a late arrival overwriting an edition built after it.
     func refreshAndPublish() async {
-        guard !isRefreshing else { return }
+        guard !isRefreshing else {
+            jdnLog("refresh: SKIPPED — one is already in flight")
+            return
+        }
         isRefreshing = true
         lastRefreshError = nil
-        defer { isRefreshing = false }
+        refreshStarted = Date()
 
+        let work = Task { @MainActor [weak self] in await self?.performRefresh() }
+        let finished = await withTaskGroup(of: Bool.self) { group in
+            group.addTask { _ = await work.value; return true }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: Self.refreshTimeoutNanoseconds)
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        isRefreshing = false
+        if !finished {
+            work.cancel()
+            jdnLog("refresh: ABANDONED after \(Int(Self.refreshTimeout))s — it will not publish")
+        }
+    }
+
+    /// How long a refresh is given before it is abandoned.
+    ///
+    /// Sized from the parts rather than picked. A refresh fetches every feed
+    /// concurrently at a 20s per-feed timeout, and `fetchSelfHealing` can go
+    /// round twice, so the fetch alone is worth 40s. Enrichment then fetches
+    /// article pages at 10s each, and `validatedLeadEdition` will warm up to
+    /// eight candidate lead images. That derives to roughly 90s of worst case.
+    ///
+    /// Measured against a real run on 2026-09-09: **254 feeds, 7,227 items,
+    /// 415 enrichment candidates, 33.8 seconds end to end.** So this is about
+    /// nine times the observed cost and three times the derived worst case.
+    ///
+    /// The first draft of this was 120s, chosen while assuming forty feeds. At
+    /// 254 it would have left barely any headroom, and the cost of abandoning
+    /// a refresh that was merely slow is losing an hour's news, which is the
+    /// very fault this instrumentation exists to catch. The elapsed time is
+    /// logged on every refresh so the margin can be checked rather than
+    /// assumed a second time.
+    private static let refreshTimeout: TimeInterval = 300
+    private static let refreshTimeoutNanoseconds =
+        UInt64(refreshTimeout * Double(NSEC_PER_SEC))
+
+    private func performRefresh() async {
         // Paused feeds are held back from fetch; their cached items will be
         // stripped from the rebuilt edition via `applyPauseFilter` paths.
         let feeds = feedStore.feeds.filter { !$0.isPaused }
         let fetcher = self.fetcher
         let discovery = self.discovery
 
+        // A sliding window, not one task per feed. 254 subscriptions meant 254
+        // concurrent fetches at every refresh and at every launch, which is a
+        // burst no desktop reader needs and the soft descriptor limit for a
+        // GUI app on this machine is 256. See `concurrentFeedFetches`.
         let results = await withTaskGroup(of: (Feed, Result<FetchOutcome, Error>).self) { group in
-            for feed in feeds {
+            var next = feeds.makeIterator()
+            var started = 0
+            while started < Self.concurrentFeedFetches, let feed = next.next() {
                 group.addTask {
                     await Self.fetchSelfHealing(feed, fetcher: fetcher, discovery: discovery)
                 }
+                started += 1
             }
             var acc: [(Feed, Result<FetchOutcome, Error>)] = []
-            for await pair in group { acc.append(pair) }
+            while let pair = await group.next() {
+                acc.append(pair)
+                if let feed = next.next() {
+                    group.addTask {
+                        await Self.fetchSelfHealing(feed, fetcher: fetcher, discovery: discovery)
+                    }
+                }
+            }
             return acc
         }
 
@@ -223,6 +327,29 @@ final class AppStore {
             }
         }
 
+        // Partial failure used to be invisible. `lastRefreshError` is only set
+        // when *every* feed fails, so ten dead feeds out of forty looked
+        // exactly like a healthy refresh, and a morning of them looked like a
+        // quiet news day.
+        let failed = errors.count
+        jdnLog("refresh: \(feeds.count) feeds, \(feeds.count - failed) ok, "
+               + "\(failed) failed, \(allItems.count) items")
+        // One line each, not eight names crammed into the summary.
+        //
+        // The first version put them in the summary line and capped it at
+        // eight. With 254 subscriptions and nineteen failures that hid eleven
+        // of them, and answering "which ones?" meant fetching all 254 feeds by
+        // hand outside the app. A log should not need a second tool.
+        //
+        // Sorted, because the fetches finish in whatever order the network
+        // gives them and an unstable list cannot be compared with last hour's.
+        for message in errors.sorted().prefix(Self.loggedFetchErrors) {
+            jdnLog("refresh: feed failed — \(message)")
+        }
+        if failed > Self.loggedFetchErrors {
+            jdnLog("refresh: feed failed — and \(failed - Self.loggedFetchErrors) more not listed")
+        }
+
         // Carry over the previously-saved today edition so items accumulate
         // through the day. Feeds expose a rolling window of recent items; an
         // article published at 9am can rotate out of the feed's response by
@@ -242,7 +369,19 @@ final class AppStore {
             priorItems.append(contentsOf: existing.secondaries)
             priorItems.append(contentsOf: existing.briefs)
             priorItems.append(contentsOf: existing.sections.flatMap { $0.items })
-            allItems.append(contentsOf: priorItems.filter { activeFeedIds.contains($0.feedId) })
+            let carried = priorItems.filter { activeFeedIds.contains($0.feedId) }
+            allItems.append(contentsOf: carried)
+            jdnLog("refresh: carried over \(carried.count) from the existing edition")
+        } else if let existing = editionStore.today {
+            // A process left running across midnight reaches here once. The
+            // enrichment memo is a record of which of *today's* items have
+            // already been asked for a picture, so it is meaningless against a
+            // new day's items and would otherwise grow for as long as the app
+            // stays open.
+            enrichmentAttempted.removeAll()
+            jdnLog("refresh: new day — dropped the edition dated "
+                   + "\(Self.dayFormatter.string(from: existing.date)) "
+                   + "and cleared the enrichment memo")
         }
 
         // Enrich image-less candidates with og:image / twitter:image extracted
@@ -281,6 +420,8 @@ final class AppStore {
                 tail.append(item)
             }
         }
+        jdnLog("refresh: enriching \(topSlice.count) of \(sortedByDate.count) "
+               + "across \(takenPerSection.count) sections")
         enrichmentAttempted.formUnion(topSlice.map(\.itemId))
         let enrichedSlice = await enricher.enrich(topSlice)
         // Order doesn't matter here — `builder.build` re-sorts by date.
@@ -293,9 +434,37 @@ final class AppStore {
         // Don't blow away a populated cached edition when a refresh yields
         // nothing — the user is probably offline, or every feed 404'd. Keep
         // showing whatever we last had.
+        let eligible = allItems.filter {
+            EditionBuilder.dayRange(for: Date()).contains($0.publishedAt)
+        }.count
         if edition.isEmpty, let existing = editionStore.today, !existing.isEmpty {
+            // Naming the date matters more than the count. Keeping today's
+            // edition when a refresh comes back empty is the intended
+            // behaviour and usually means the network is down. Keeping
+            // YESTERDAY's is a different thing entirely: just after midnight
+            // nothing has been published yet, the rebuild is legitimately
+            // empty, and this guard then holds yesterday's paper on screen,
+            // which the app otherwise promises never to show. One line tells
+            // the two apart.
+            let kept = Self.dayFormatter.string(from: existing.date)
+            let stale = !Calendar.current.isDateInToday(existing.date)
+            jdnLog("refresh: rebuild was EMPTY of \(eligible) eligible — KEPT the "
+                   + "\(stale ? "STALE " : "")edition dated \(kept), "
+                   + "\(existing.itemCount) items")
             return
         }
+        // An abandoned refresh must not publish. Without this, a slow one that
+        // the watchdog gave up on could return minutes later and overwrite an
+        // edition built after it, putting the paper backwards.
+        if Task.isCancelled {
+            jdnLog("refresh: abandoned before publishing — "
+                   + "\(edition.itemCount) items discarded")
+            return
+        }
+        let elapsed = String(format: "%.1f", Date().timeIntervalSince(refreshStarted))
+        jdnLog("refresh: published \(edition.itemCount) items "
+               + "of \(eligible) eligible from \(allItems.count) fetched "
+               + "in \(elapsed)s of \(Int(Self.refreshTimeout))s allowed")
         editionStore.save(edition)
         // Reflow the visible edition from the new base so hide-read and
         // paused filters apply to the freshly-built edition too.
