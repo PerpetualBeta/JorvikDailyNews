@@ -38,6 +38,13 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         let siteName: String?
         let length: Int?
         let dir: String?
+        /// The article as drawable blocks, from `ReaderBlocks.js`. Optional
+        /// because the WebKit rungs produce an article without them, and
+        /// because a walker failure must not lose the article itself.
+        var blocks: [ReaderBlock]?
+        /// What the walker refused, for the log: `["svg": 10]`.
+        var droppedElements: [String: Int]?
+        var blockError: String?
     }
 
     enum ExtractionError: Error, LocalizedError {
@@ -643,6 +650,22 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             return .documentButNoArticle(ExtractionError.tooShort(len))
         }
         jdnLog("readability: article of \(len) chars — rendering reader view")
+        // Say what the block walker made of it, so the native renderer is
+        // observable from its first run rather than judged by eye alone.
+        if let blocks = article.blocks {
+            var kinds: [String: Int] = [:]
+            for block in blocks { kinds[block.kind.rawValue, default: 0] += 1 }
+            let kept = kinds.sorted { $0.value > $1.value }
+                .map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+            let dropped = (article.droppedElements ?? [:]).sorted { $0.value > $1.value }
+                .map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+            jdnLog("blocks: \(blocks.count) — \(kept)"
+                   + (dropped.isEmpty ? "" : "; dropped \(dropped)"))
+        } else if let why = article.blockError {
+            jdnLog("blocks: the walker failed — \(why)")
+        } else {
+            jdnLog("blocks: none produced (a WebKit rung, or the walker is missing)")
+        }
         return .article(article)
     }
 
@@ -1311,6 +1334,9 @@ final class NativeReader: @unchecked Sendable {
         let started = Date()
         context.evaluateScript(dom, withSourceURL: URL(string: "jdn:LinkeDOM.js"))
         context.evaluateScript(readability, withSourceURL: URL(string: "jdn:Readability.js"))
+        if let walker = Self.bundledScript("ReaderBlocks") {
+            context.evaluateScript(walker, withSourceURL: URL(string: "jdn:ReaderBlocks.js"))
+        }
         context.evaluateScript(Self.glue, withSourceURL: URL(string: "jdn:glue.js"))
         if let first = thrown.first {
             jdnLog("nativereader: setup failed — \(first)")
@@ -1320,7 +1346,7 @@ final class NativeReader: @unchecked Sendable {
         guard let function = context.objectForKeyedSubscript("__jdnExtract"), !function.isUndefined else {
             return .failure("the reader function was not defined")
         }
-        let value = function.call(withArguments: [html, url])
+        let value = function.call(withArguments: [html, url, Self.minimumInlineSVGSide])
         if let first = thrown.first { return .failure(first) }
         guard let json = value?.toString(), json != "undefined" else {
             return .failure("the reader returned nothing")
@@ -1340,6 +1366,31 @@ final class NativeReader: @unchecked Sendable {
         }
         return js
     }()
+
+    /// A bundled JavaScript resource, or nil with a line in the log.
+    ///
+    /// `ReaderBlocks.js` is optional by design: without it an article still
+    /// extracts and the WebKit rungs still draw it, so a missing walker
+    /// degrades the reader rather than breaking it.
+    private static func bundledScript(_ name: String) -> String? {
+        guard let path = Bundle.main.path(forResource: name, ofType: "js"),
+              let js = try? String(contentsOfFile: path, encoding: .utf8) else {
+            jdnLog("nativereader: \(name).js missing from the bundle")
+            return nil
+        }
+        return js
+    }
+
+    /// Below this, on its longer side, an inline `<svg>` is furniture rather
+    /// than artwork and is dropped.
+    ///
+    /// Sized from a measurement: of 135 inline SVGs on one real page, 96 were
+    /// 40x40 or 80x80 icons and **not one of the 135 carried an `aria-label`
+    /// or a `<title>`** to say what it was, so size is the only honest
+    /// discriminator available. 64 keeps the two large ones — a masthead at
+    /// 436x144 — and drops the icons. Same principle as the 48-pixel floor on
+    /// pictures, which exists so a tracking pixel cannot blot the page.
+    static let minimumInlineSVGSide: Double = 64
 
     /// The three globals a bare `JSContext` does not have and this rung needs.
     ///
@@ -1417,12 +1468,24 @@ final class NativeReader: @unchecked Sendable {
     /// them alone, which is what a real browser does and what the WebKit rungs
     /// produce.
     private static let glue = """
-    globalThis.__jdnExtract = function (html, url) {
+    globalThis.__jdnExtract = function (html, url, minSvgSide) {
       var doc = linkedom.parseHTML(html).document;
       try { Object.defineProperty(doc, 'baseURI', { value: url, configurable: true }); } catch (e) {}
       try { Object.defineProperty(doc, 'documentURI', { value: url, configurable: true }); } catch (e) {}
       var article = new Readability(doc).parse();
-      return article ? JSON.stringify(article) : null;
+      if (!article) return null;
+      // Blocks are produced in the same pass, from the same DOM, so the
+      // native renderer and the WebKit fallback can never disagree about
+      // what the article said.
+      try {
+        var walked = JSON.parse(__jdnBlocks(article.content, minSvgSide));
+        article.blocks = walked.blocks;
+        article.droppedElements = walked.dropped;
+      } catch (e) {
+        article.blocks = null;
+        article.blockError = String(e);
+      }
+      return JSON.stringify(article);
     };
     """
 }

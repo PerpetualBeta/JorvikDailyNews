@@ -34,6 +34,12 @@ struct ReaderView: View {
     /// Whether the video player reported that it never rendered.
     @State private var videoFailed = false
 
+    /// Which renderer to use, so the two can be compared on the same article
+    /// without a rebuild. Anything other than "webkit" means native.
+    static var rendererPreference: String {
+        UserDefaults.standard.string(forKey: "readerRenderer") ?? "native"
+    }
+
     enum ReaderState {
         case loading
         case ready(ArticleExtractor.Article)
@@ -258,6 +264,26 @@ struct ReaderView: View {
             }
 
         case .ready(let article):
+          // The native renderer where the blocks exist, WebKit where they do
+          // not — a WebKit rung produces an article without them.
+          //
+          // Native is the default because `loadHTMLString` renders nothing at
+          // all, intermittently and with no error, on both machines this app
+          // has been tested on. `readerRenderer` forces the old path for a
+          // comparison:
+          //
+          //     defaults write cc.jorviksoftware.JorvikDailyNews readerRenderer webkit
+          //
+          if let blocks = article.blocks?.numbered(), !blocks.isEmpty,
+             Self.rendererPreference != "webkit" {
+              NativeReaderView(article: article,
+                               blocks: blocks,
+                               sourceTitle: item.sourceTitle,
+                               baseURL: item.link)
+                  .task(id: "native-\(item.itemId)") {
+                      jdnLog("reader: drawn natively — \(blocks.count) block(s), no web view")
+                  }
+          } else {
           ZStack {
             ReaderWebView(html: renderHTML(article), baseURL: item.link, onBlank: { detail in
                 // Neither route rendered the extracted article. Rather than
@@ -281,6 +307,7 @@ struct ReaderView: View {
             }
           }
           .task(id: "drew-\(item.itemId)") { articleDrew = false }
+          }
 
         case .pdf(let url):
             PDFReader(url: url)
