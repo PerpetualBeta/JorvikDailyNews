@@ -1,0 +1,640 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="https://nedbatchelder.com/rssfull2html.xslt" media="screen" ?>
+
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns="http://purl.org/rss/1.0/">
+	<channel rdf:about="https://nedbatchelder.com/blog">
+		<title>Ned Batchelder's blog</title>
+		<link>https://nedbatchelder.com/blog</link>
+		<description>Ned Batchelder's personal blog.</description>
+		<dc:language>en-US</dc:language>
+		<image rdf:resource="https://nedbatchelder.com/pix/rss-banner.gif"/>
+		<items>
+			<rdf:Seq>
+				<rdf:li resource="https://nedbatchelder.com/blog/202608/micro_language_implementation_calcium"/><rdf:li resource="https://nedbatchelder.com/blog/202608/callerspecific_coverage"/><rdf:li resource="https://nedbatchelder.com/blog/202607/acidica"/><rdf:li resource="https://nedbatchelder.com/blog/202607/a_place_of_certainty"/><rdf:li resource="https://nedbatchelder.com/blog/202606/dodecahedron_with_stars"/><rdf:li resource="https://nedbatchelder.com/blog/202606/cultural_factoids_of_the_day_64"/><rdf:li resource="https://nedbatchelder.com/blog/202606/franklins_parents_grave"/><rdf:li resource="https://nedbatchelder.com/blog/202605/snake_way_for_ducklings"/><rdf:li resource="https://nedbatchelder.com/blog/202605/pycon_us_2026"/><rdf:li resource="https://nedbatchelder.com/blog/202604/school_is_artificial"/>
+			</rdf:Seq>
+		</items>
+	</channel>
+	<image rdf:about="https://nedbatchelder.com/pix/rss-banner.gif">
+		<title>Ned Batchelder's blog</title>
+		<link>https://nedbatchelder.com/blog</link>
+		<url>https://nedbatchelder.com/pix/rss-banner.gif</url>
+	</image>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202608/micro_language_implementation_calcium">
+		<title>Micro language implementation: Calcium</title>
+		<link>https://nedbatchelder.com/blog/202608/micro_language_implementation_calcium</link>
+		
+		<dc:date>2026-08-22T15:53:36-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>I wrote a tiny language implementation: <a rel="external noopener" href="https://github.com/nedbat/calcium">Calcium</a>.
+It&#8217;s meant as a demonstration of how languages like Python are implemented. It
+has a tokenizer, a parser, an AST, a compiler, bytecodes, and an execution
+engine, all in about 300 lines of code.</p><p>I did it because I often see the question: isn&#8217;t Python interpreted? Why do
+people say it&#8217;s compiled? (BTW, I also answered this in an earlier blog post:
+<a href="https://nedbatchelder.com/blog/201803/is_python_interpreted_or_compiled_yes">Is Python interpreted or compiled? Yes.</a>) It can be hard to explain
+that your Python program never becomes an explicit sequence of native CPU
+instructions, which is what people often think &#8220;compiled&#8221; means.</p><p>So I coded up <a rel="external noopener" href="https://github.com/nedbat/calcium">Calcium</a> to have on hand the next time
+it comes up. I think it will help to be able to show the execution engine code
+reading bytecodes and doing what they say.</p><p>It could also be an interesting starting point for people wanting to play
+with a language implementation.  It has almost nothing, so there&#8217;s lots of
+simple things (comments?) to add.</p>
+]]></description>
+	</item>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202608/callerspecific_coverage">
+		<title>Caller-specific coverage</title>
+		<link>https://nedbatchelder.com/blog/202608/callerspecific_coverage</link>
+		
+		<dc:date>2026-08-09T13:56:25-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>I&#8217;ve had an idea rattling around to get more detail from coverage
+measurement.  Can we measure the coverage in a function separately for each
+caller of the function?</p><p>Here&#8217;s why I want it: in <a href="https://nedbatchelder.com/blog/202607/acidica">Acidica</a>, my toy
+BASIC interpreter, I had code to implement the built-in functions that looked
+something like this:</p><blockquote class="code"><div class="source"><pre class="python"><span class="k">match</span>&#xA0;<span class="n">func_name</span><span class="p">:</span>
+<br>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">case</span>&#xA0;<span class="s2">&quot;LEN&quot;</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">if</span>&#xA0;<span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>&#xA0;<span class="o">!=</span>&#xA0;<span class="mi">1</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">raise</span>&#xA0;<span class="ne">TypeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Wrong&#xA0;arguments&#xA0;for&#xA0;LEN,&#xA0;got&#xA0;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">return</span>&#xA0;<span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+<br>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">case</span>&#xA0;<span class="s2">&quot;LEFT$&quot;</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">if</span>&#xA0;<span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>&#xA0;<span class="o">!=</span>&#xA0;<span class="mi">2</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">raise</span>&#xA0;<span class="ne">TypeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Wrong&#xA0;arguments&#xA0;for&#xA0;LEFT$,&#xA0;got&#xA0;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">return</span>&#xA0;<span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">][:</span><span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">]]</span>
+<br>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;<span class="c1">#&#xA0;...&#xA0;19&#xA0;other&#xA0;built-ins&#xA0;...</span>
+<br></pre></div>
+</blockquote><p>I didn&#8217;t like the repeated code here: each different <code>func_name</code> has to
+check that it got its expected number of arguments and perhaps raise an error.
+So I refactored:</p><blockquote class="code"><div class="source"><pre class="python"><span class="k">def</span><span class="w">&#xA0;</span><span class="nf">expects</span><span class="p">(</span><span class="n">nargs</span><span class="p">:</span>&#xA0;<span class="nb">int</span><span class="p">,</span>&#xA0;<span class="n">func_name</span><span class="p">:</span>&#xA0;<span class="nb">str</span><span class="p">,</span>&#xA0;<span class="n">args</span><span class="p">:</span>&#xA0;<span class="nb">tuple</span><span class="p">)</span>&#xA0;<span class="o">-&gt;</span>&#xA0;<span class="kc">None</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">if</span>&#xA0;<span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>&#xA0;<span class="o">!=</span>&#xA0;<span class="n">nargs</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">raise</span>&#xA0;<span class="ne">TypeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Wrong&#xA0;arguments&#xA0;for&#xA0;</span><span class="si">{</span><span class="n">func_name</span><span class="si">}</span><span class="s2">,&#xA0;got&#xA0;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<br>
+<br><span class="k">match</span>&#xA0;<span class="n">func_name</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">case</span>&#xA0;<span class="s2">&quot;LEN&quot;</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">expects</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span>&#xA0;<span class="n">func_name</span><span class="p">,</span>&#xA0;<span class="n">args</span><span class="p">)</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">return</span>&#xA0;<span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+<br>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">case</span>&#xA0;<span class="s2">&quot;LEFT$&quot;</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">expects</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span>&#xA0;<span class="n">func_name</span><span class="p">,</span>&#xA0;<span class="n">args</span><span class="p">)</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">return</span>&#xA0;<span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">][:</span><span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">]]</span>
+<br></pre></div>
+</blockquote><p>Nice. The code is tighter, easier to read, and common behavior is implemented
+in one place.</p><p>But the old code had an advantage: because each error condition had its own
+<code>raise</code> line, coverage measurement could tell me whether I had tested every
+<code>func_name</code> for the wrong number of arguments.  With the error handling
+happening in a helper function, that information is lost. I&#8217;ll know that
+<i>some</i> <code>func_name</code> had a test for the wrong number of arguments, but
+not that all of them did.</p><p>Here&#8217;s where the new idea comes in. What if I could indicate that for the
+<code>expects</code> function, I want separate coverage data for each distinct calling
+site? Then I could see that every <code>func_name</code> had a test for both the wrong
+number of arguments and the right number of arguments.  The simple branch inside
+<code>expects</code> would be measured separately for each caller.</p><p>I have a quick proof-of-concept. A decorator on <code>expects</code> does the work.
+Coverage.py already has dynamic contexts which are used for things like tracking
+which tests called which code. The decorator starts a new context named for the
+calling location, then restores the context when the function returns:</p><blockquote class="code"><div class="source"><pre class="python"><span class="k">def</span><span class="w">&#xA0;</span><span class="nf">coverage_per_caller</span><span class="p">(</span><span class="n">func</span><span class="p">):</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;<span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">def</span><span class="w">&#xA0;</span><span class="nf">_wrapper</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span>&#xA0;<span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">cov</span>&#xA0;<span class="o">=</span>&#xA0;<span class="n">coverage</span><span class="o">.</span><span class="n">Coverage</span><span class="o">.</span><span class="n">current</span><span class="p">()</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">name</span>&#xA0;<span class="o">=</span>&#xA0;<span class="n">func</span><span class="o">.</span><span class="vm">__name__</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">caller</span>&#xA0;<span class="o">=</span>&#xA0;<span class="n">inspect</span><span class="o">.</span><span class="n">currentframe</span><span class="p">()</span><span class="o">.</span><span class="n">f_back</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">file</span>&#xA0;<span class="o">=</span>&#xA0;<span class="n">caller</span><span class="o">.</span><span class="n">f_code</span><span class="o">.</span><span class="n">co_filename</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">lineno</span>&#xA0;<span class="o">=</span>&#xA0;<span class="n">caller</span><span class="o">.</span><span class="n">f_lineno</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">prev_context</span>&#xA0;<span class="o">=</span>&#xA0;<span class="n">cov</span><span class="o">.</span><span class="n">switch_context</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;per_caller:</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">file</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">lineno</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">try</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">ret</span>&#xA0;<span class="o">=</span>&#xA0;<span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span>&#xA0;<span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">finally</span><span class="p">:</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="n">cov</span><span class="o">.</span><span class="n">switch_context</span><span class="p">(</span><span class="n">prev_context</span><span class="p">)</span>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">return</span>&#xA0;<span class="n">ret</span>
+<br>
+<br>&#xA0;&#xA0;&#xA0;&#xA0;<span class="k">return</span>&#xA0;<span class="n">_wrapper</span>
+<br></pre></div>
+</blockquote><p>I had to make one tiny (unreleased) change to coverage.py for this:
+<code>switch_context</code> used to return None, but now it returns the previous
+context so that we can nest them properly.</p><p>To my delight, this works! I can look at the HTML coverage report and see the
+caller contexts for the lines in <code>expects</code>. I can see that 20 callers ran
+the <code>if</code> line, but only 2 ran the <code>raise</code>, and the context names show
+the file and line number of the callers for each:</p><div class="figurep"><a href="https://nedbatchelder.com/pix/per-caller-coverage.png"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/per-caller-coverage.png.webp"><img src="https://nedbatchelder.com/pix/per-caller-coverage.png" alt="HTML report showing the contexts that ran each line of expects()" width="1624" height="555" class="hairline"></picture></figure></a></div><p>This isn&#8217;t the whole solution yet. Things to improve:</p><ul>
+
+<li>I&#8217;d like to post-process these contexts to show which callers were missing
+lines inside <code>expects</code>.  What I&#8217;m looking for is the same kind of &#8220;this
+line is missing&#8221; information that I got from the original inlined logic.</li>
+
+<li>These per-caller contexts overwrite the contexts we were already collecting
+(the test names). Ideally we&#8217;d have some kind of sub-context so that we could
+track both (or many) at once.</li>
+
+<li>It&#8217;s not great that I had to add a decorator to the source code. Driving
+this through the coverage configuration would keep these kinds of details out of
+the source.</li>
+
+</ul><p>But it&#8217;s a start, and gives me other ideas. I could use some aspect of the
+data passed into a function as the context name. In this example, we could have
+used <code>func_name</code> as the context instead of the caller&#8217;s location. Maybe
+you have ideas for other uses.</p>
+]]></description>
+	</item>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202607/acidica">
+		<title>Acidica</title>
+		<link>https://nedbatchelder.com/blog/202607/acidica</link>
+		
+		<dc:date>2026-07-26T10:54:28-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>My latest fun project is a BASIC interpreter called
+<a rel="external noopener" href="https://github.com/nedbat/acidica">Acidica</a>.  Classic <a rel="external noopener" href="https://en.wikipedia.org/wiki/BASIC">BASIC</a> is an
+old-school language first developed in 1964 that saw an explosion of
+implementations on microcomputers in the &#8216;70s and &#8216;80s. It&#8217;s much more primitive
+than the Visual Basic that you might be familiar with.</p><p>A simple BASIC program:</p><blockquote class="code"><div class="source"><pre class="basic"><span class="nl">10</span><span class="w">&#xA0;</span><span class="kr">INPUT</span><span class="w">&#xA0;</span><span class="s2">&quot;What&#xA0;is&#xA0;your&#xA0;name&quot;</span><span class="p">;</span><span class="w">&#xA0;</span><span class="vg">U$</span>
+<br><span class="nl">20</span><span class="w">&#xA0;</span><span class="kr">PRINT</span><span class="w">&#xA0;</span><span class="s2">&quot;Hello&#xA0;&quot;</span><span class="p">;</span><span class="w">&#xA0;</span><span class="vg">U$</span>
+<br><span class="nl">30</span><span class="w">&#xA0;</span><span class="kr">INPUT</span><span class="w">&#xA0;</span><span class="s2">&quot;How&#xA0;many&#xA0;stars&#xA0;do&#xA0;you&#xA0;want&quot;</span><span class="p">;</span><span class="w">&#xA0;</span><span class="vg">N</span>
+<br><span class="nl">40</span><span class="w">&#xA0;</span><span class="vg">S$</span><span class="w">&#xA0;</span><span class="o">=</span><span class="w">&#xA0;</span><span class="s2">&quot;&quot;</span>
+<br><span class="nl">50</span><span class="w">&#xA0;</span><span class="kr">FOR</span><span class="w">&#xA0;</span><span class="vg">I</span><span class="w">&#xA0;</span><span class="o">=</span><span class="w">&#xA0;</span><span class="il">1</span><span class="w">&#xA0;</span><span class="k">TO</span><span class="w">&#xA0;</span><span class="vg">N</span>
+<br><span class="nl">60</span><span class="w">&#xA0;</span><span class="vg">S$</span><span class="w">&#xA0;</span><span class="o">=</span><span class="w">&#xA0;</span><span class="vg">S$</span><span class="w">&#xA0;</span><span class="o">+</span><span class="w">&#xA0;</span><span class="s2">&quot;*&quot;</span>
+<br><span class="nl">70</span><span class="w">&#xA0;</span><span class="kr">NEXT</span><span class="w">&#xA0;</span><span class="vg">I</span>
+<br><span class="nl">80</span><span class="w">&#xA0;</span><span class="kr">PRINT</span><span class="w">&#xA0;</span><span class="vg">S$</span>
+<br><span class="nl">90</span><span class="w">&#xA0;</span><span class="kr">INPUT</span><span class="w">&#xA0;</span><span class="s2">&quot;Do&#xA0;you&#xA0;want&#xA0;more&#xA0;stars&quot;</span><span class="p">;</span><span class="w">&#xA0;</span><span class="vg">A$</span>
+<br><span class="nl">100</span><span class="w">&#xA0;</span><span class="kr">IF</span><span class="w">&#xA0;</span><span class="kr">LEN</span><span class="p">(</span><span class="vg">A$</span><span class="p">)</span><span class="w">&#xA0;</span><span class="o">=</span><span class="w">&#xA0;</span><span class="il">0</span><span class="w">&#xA0;</span><span class="kr">THEN</span><span class="w">&#xA0;</span><span class="il">90</span>
+<br><span class="nl">110</span><span class="w">&#xA0;</span><span class="vg">A$</span><span class="w">&#xA0;</span><span class="o">=</span><span class="w">&#xA0;</span><span class="kr">LEFT$</span><span class="p">(</span><span class="vg">A$</span><span class="p">,</span><span class="w">&#xA0;</span><span class="il">1</span><span class="p">)</span>
+<br><span class="nl">120</span><span class="w">&#xA0;</span><span class="kr">IF</span><span class="w">&#xA0;</span><span class="vg">A$</span><span class="w">&#xA0;</span><span class="o">=</span><span class="w">&#xA0;</span><span class="s2">&quot;Y&quot;</span><span class="w">&#xA0;</span><span class="ow">OR</span><span class="w">&#xA0;</span><span class="vg">A$</span><span class="w">&#xA0;</span><span class="o">=</span><span class="w">&#xA0;</span><span class="s2">&quot;y&quot;</span><span class="w">&#xA0;</span><span class="kr">THEN</span><span class="w">&#xA0;</span><span class="il">30</span>
+<br><span class="nl">130</span><span class="w">&#xA0;</span><span class="kr">PRINT</span><span class="w">&#xA0;</span><span class="s2">&quot;Goodbye&#xA0;&quot;</span><span class="p">;</span><span class="vg">U$</span>
+<br><span class="nl">140</span><span class="w">&#xA0;</span><span class="kr">END</span>
+<br></pre></div>
+</blockquote><p>Run it, and you get this:</p><blockquote class="code"><div class="source"><pre class="text"><span>What&#xA0;is&#xA0;your&#xA0;name?&#xA0;Ned</span>
+<br><span>Hello&#xA0;Ned</span>
+<br><span>How&#xA0;many&#xA0;stars&#xA0;do&#xA0;you&#xA0;want?&#xA0;10</span>
+<br><span>**********</span>
+<br><span>Do&#xA0;you&#xA0;want&#xA0;more&#xA0;stars?&#xA0;y</span>
+<br><span>How&#xA0;many&#xA0;stars&#xA0;do&#xA0;you&#xA0;want?&#xA0;20</span>
+<br><span>********************</span>
+<br><span>Do&#xA0;you&#xA0;want&#xA0;more&#xA0;stars?&#xA0;n</span>
+<br><span>Goodbye&#xA0;Ned</span>
+<br></pre></div>
+</blockquote><p>The wide variety of BASIC flavors meant I first had to decide what to
+implement.  I found <a rel="external noopener" href="http://www.vintage-basic.net">Vintage BASIC</a> and used its spec,
+both because it is concisely described, and because it has an implementation I
+could run to double-check behavior when I had questions. The site also has a
+<a rel="external noopener" href="http://www.vintage-basic.net/games.html">collection of runnable games</a> from
+<a rel="external noopener" href="https://en.wikipedia.org/wiki/Creative_Computing_(magazine)">Creative Computing magazine</a>, which I remember
+fondly.</p><p>This was a perfect vacation-week project. It has no real-world consequences.
+It had some interesting problems to puzzle through. It was testable. It
+satisfied some nostalgia for my earlier computing days. It was bounded enough to
+be &#8220;done&#8221;.</p><p>In those ways, it&#8217;s very similar to a vacation project of mine from four
+years ago: <a href="https://nedbatchelder.com/blog/202208/stilted">Stilted</a>, an implementation of
+PostScript.</p><p>Acidica is not useful for writing new programs, only because BASIC itself is
+so difficult. There is no scoping beyond single-line functions, variables names
+can be as long as you want but only the first two letters and first digit are
+significant. Keywords are recognized anywhere, so FACTOR can&#8217;t be variable name
+because it has TO in the middle.  The only control structures are FOR, IF, and
+GOTO. It&#8217;s something of a testament to human persistence that programs like
+<a rel="external noopener" href="http://www.vintage-basic.net/bcg/qubit.bas">three-dimensional tic-tac-toe</a> can be written in it.</p><p>As a side project, I could choose my development style: no real type
+checking (partly because BASIC&#8217;s values would be awkward to squeeze into static
+typing), and very few docstrings. There are lots of tests, but only integration
+tests: every test is a BASIC program to run, with a check for the correct output
+and/or the expected error.</p><p>To be honest, the &#8220;only integration tests&#8221; approach was kind of a pain, but I
+stuck with it and resisted the temptation to add unit tests along the way.</p><p>Another choice I made: no AI. I like writing programs. I get a deeper sense
+of the thing I am building when I have my fingers in the clay. Since there was
+no deadline, or even any reason to ever finish the project, I could take my time
+and not be rushed.</p><p>But I like the result. I enjoyed the time I spent working on it. I liked
+being able to stop and devote pure thinking time while doing other things when I
+got to the next hurdle. The next steps here might be to use this project as a
+test bed for some development ideas. Or maybe add a BASIC-to-Python transpiler.
+Or maybe it&#8217;s done.</p>
+]]></description>
+	</item>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202607/a_place_of_certainty">
+		<title>A place of certainty</title>
+		<link>https://nedbatchelder.com/blog/202607/a_place_of_certainty</link>
+		
+		<dc:date>2026-07-14T06:21:24-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>My mother is 86, and she is declining. Things that used to be easy for her
+now seem completely foreign. She was a programmer, writing software before I
+could read, so it is very strange to see her like this.</p><p>She no longer uses a computer. If I mention some photos I found online, she
+asks if there&#8217;s any way she can see them, as if she has never used the internet.
+This is a new reality for me, but is easier than a year or two ago when she
+still tried to be constantly online. As things got more confusing for her, she
+struggled and complained &#8220;the computer is haunted.&#8221; Now she doesn&#8217;t have the
+computer as a source of friction, but also not as a center of activity.</p><p>In many ways, she is following a similar path to her own mother, my
+<a href="https://nedbatchelder.com/text/victoria-olds">Grandma O</a>. Like her, my mom is accepting
+the changes in her relationship to the world. She is able to laugh at it a
+bit. But it will still be difficult, especially because we know it is a
+progression that is not going to get better and will very likely get worse.</p><p>The new her is very different from the original her. She was not timid. She
+came out as gay in the mid &#8216;70s and ran <a rel="external noopener" href="https://www.nyclgbtsites.org/site/womanbooks/">a feminist
+bookstore</a>. She worked as a programmer. She got a PhD in computational
+linguistics just because she was interested in the topic. These were the things
+I was used to hearing about from her. She never lacked for enthusiasms, projects
+and accomplishments.</p><p>She was always energetic and feisty, ready to engage in debate. This picture
+does a good job capturing the spirit of many of our interactions in the
+past:</p><div class="figurep"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/nedmom_20191020.jpg.webp"><img src="https://nedbatchelder.com/pix/nedmom_20191020.jpg" alt="My mom and me in a lively but good-spirited debate" width="960" height="720"></picture></figure></div><p>Now she is mild and somewhat resigned. She says things like, &#8220;I don&#8217;t think
+much anymore.&#8221; I know there are other ways this could go. Some people get very
+angry as their abilities fade. In that sense, this is a good trajectory, but I
+am still sad to see her shrink.</p><p>Last week we had a family gathering at my sister&#8217;s house, the usual location
+for these big events.  My mom has been there many times. But now she didn&#8217;t
+recognize it. I sat with my mom and sister over lunch. They were discussing the
+dining room we were in. It wasn&#8217;t familiar to my mom. She wasn&#8217;t upset about it,
+just looked around and said, &#8220;no, I don&#8217;t remember this.&#8221;</p><p>My mom was enjoying her salad, but eating it with her hands.  I pointed to
+the fork on her plate and asked, &#8220;You don&#8217;t like the fork?&#8221; She looked at it as
+if it was some unimportant detail of the tablecloth, and kept eating with her
+hands. She wasn&#8217;t bothered, just calmly proceeded in her way.</p><p>At the end of the party, my mom and her wife Fumiko were getting ready to go.
+Fumiko had scheduled a ride-share car, so we went out to the street to wait for
+it. We brought out a chair for my mom to sit. The time for the car came and
+went, but no car arrived. There were five of us out there: me, my sister and
+brother, my mother and Fumiko. My brother and Fumiko were trying to figure out
+where the car was. They were looking through the app for information.  They
+re-read the email confirming the scheduled ride. Should we keep waiting? We
+could request a new ride. Would we be charged for the missed scheduled ride? It
+was a whole thing, lots of discussion and questions.</p><p>In the middle of this, without warning, my mom tried unsteadily to get up
+from her chair. Two of us quickly intercepted her. The uneven pavement seemed
+particularly treacherous for her. We supported her arms to keep her steady.</p><p>&#8220;Mom, where are you trying to go?&#8221;</p><p>&#8220;I want a place of certainty. This place seems very uncertain.&#8221;</p><p>She was right: out there on the sidewalk we were all uncertain. But I have to
+wonder if she was also talking about her larger experience in a world that is
+less and less understandable for her.</p><div class="figurep"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/nedmom_20260704.jpg.webp"><img src="https://nedbatchelder.com/pix/nedmom_20260704.jpg" alt="My mom sitting on her chair on the sidewalk with her three children standing behind her, waiting for the car" width="1058" height="1411"></picture></figure></div><p>In the back of my mind, I wonder what my own future holds.  But that is
+decades away, and my mother&#8217;s situation is now. I don&#8217;t know what her next
+steps down will be like. She has already changed a great deal in the last
+year.</p><p>I think we would all like a place of certainty. I know I would, but I also
+know I am not going to get it soon.</p>
+]]></description>
+	</item>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202606/dodecahedron_with_stars">
+		<title>Dodecahedron with stars</title>
+		<link>https://nedbatchelder.com/blog/202606/dodecahedron_with_stars</link>
+		
+		<dc:date>2026-06-18T06:15:20-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>I saw this <a rel="external noopener" href="https://mathstodon.xyz/@TajraWD/116539942319775498">dodecahedron with an Islamic-inspired pattern
+designed by Taj Ragoo</a>. As soon as I saw it, I knew I had to make one. I
+studied the pattern, wrote some Python, and made myself a PDF. I cut it out,
+folded it, glued it together, and now I have one of my own:</p><div class="figurep"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/tajra/tajra_desk.jpg.webp"><img src="https://nedbatchelder.com/pix/tajra/tajra_desk.jpg" alt="A paper dodecahedron on a cluttered desk" width="450" height="600"></picture></figure></div><p>I love that this elegantly combines two pure geometric forms: the Platonic
+dodecahedron (12 uniform pentagons), and an Islamic pattern using five-pointed
+stars.</p><p>Looking closely, details emerge:</p><div class="figurep"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/tajra/tajra_highlighted.jpg.webp"><img src="https://nedbatchelder.com/pix/tajra/tajra_highlighted.jpg" alt="The dodecahedron with some regions of the pattern highlighted in colors" width="500" height="500"></picture></figure></div><p>Each face has ten small stars in a ring. I&#8217;ve lightened them a bit in the
+front face here. At the center of each face is a ten-pointed star (highlighted
+in red), made of two overlaid five-pointed stars.</p><p>The real genius of the pattern is at the corners. I&#8217;ve highlighted one in
+blue. It&#8217;s a star made of the same parts as the central ten-pointed star, but
+there are only nine points. It works because three pentagons lying flat touching
+at a point occupy 324 degrees, leaving a 36-degree gap.</p><p>When the dodecahedron is folded together, the gap is closed. 36 degrees is
+exactly one-tenth of a complete 360-degree circle, so exactly one point of the
+ten-pointed star is missing, leaving a perfect nine-pointed star using the same
+shapes, spread over the corners of three pentagons.  Beautiful!</p><p>If this appeals to you, <a rel="external noopener" href="https://www.instagram.com/tajra.wd/p/DMVSwwmoHVJ/">follow Taj on Instagram</a>:
+he&#8217;s got more Platonic/Islamic mashups to enjoy. The paper versions are just
+prototypes of the final versions he makes in wood.</p><p>Of course, you can <a href="https://nedbatchelder.com/files/tajra.pdf">get my PDF</a> and make one
+for yourself:</p><div class="figurep"><a href="https://nedbatchelder.com/files/tajra.pdf"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/tajra/tajra_net.png.webp"><img src="https://nedbatchelder.com/pix/tajra/tajra_net.png" alt="A thumbnail of the PDF" class="hairline" width="400" height="517"></picture></figure></a></div><p>The <a rel="external noopener" href="https://github.com/nedbat/zellij/blob/master/bin/tajra_dodeca.py">Python code to draw the net</a> isn&#8217;t great: it
+has no real parallels to the structure of each face. It&#8217;s a lot of math and
+line drawing to get things in the right places. My ideal would be to have a
+toolset that used a tile-placing abstraction, to be able to do more interesting
+designs. Some day.</p><p>It was a joy to work on this though. It was a slow process of studying the
+original, working out the math, then mulling over coding approaches. The code was developed in small
+steps over weeks. Then printing initial versions, marking them up, working out the tab structure.
+Some copies were colored to understand how the lines flowed across the whole dodecahedron.
+It was good to be working in both the mental and physical worlds:</p><div class="figurep"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/tajra/progress.jpg.webp"><img src="https://nedbatchelder.com/pix/tajra/progress.jpg" alt="Various stages of progress in a messy pile" width="400" height="533"></picture></figure></div><p>Update: it looks like the design was originally by Dana Awartani:
+<a rel="external noopener" href="https://www.sothebys.com/en/buy/auction/2019/20th-century-art-middle-east/dana-awartani-dodecahedron-within-an-icosahedron">Dodecahedron Within an Icosahedron</a>.</p>
+]]></description>
+	</item>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202606/cultural_factoids_of_the_day_64">
+		<title>Cultural factoids of the day: 64</title>
+		<link>https://nedbatchelder.com/blog/202606/cultural_factoids_of_the_day_64</link>
+		
+		<dc:date>2026-06-16T06:16:06-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>Perhaps because 64 is a power of two, and a square and a cube, but also for
+other reasons, it pops up in lots of places. Here are some of the things I&#8217;ve
+associated it with over the years:</p><p>¶ <a href="https://en.wikipedia.org/wiki/History_of_Crayola_crayons#Crayola_No._64" rel="external noopener">Crayola
+64-crayon box</a>: as a kid, this box seemed like the ultimate luxury, the
+Rolls-Royce of crayons. So many colors, and the box had a built-in sharpener.
+Advanced technology!</p><p>¶ A chess board has 64 squares, and is used as the setting for the age-old
+question about doubling: would you rather have one billion dollars, or a penny
+on the first square, then double the number on each next square? It&#8217;s an
+eye-opening demonstration of exponential growth and how big numbers can get.
+Take the chess board: you&#8217;ll have 184 million times more money!</p><p>¶ I grew up in New York City too late to visit the
+<a href="https://en.wikipedia.org/wiki/1964_New_York_World%27s_Fair" rel="external noopener">1964
+World&#8217;s Fair</a>, but its aura hung over the city. I was always fascinated by
+it, and still am. It epitomized the early 60&#8217;s optimism about the future.  This
+<a href="https://www.youtube.com/watch?v=a6bHSF17RWQ" rel="external noopener">Love of Theme Parks
+video</a> does a good job capturing the Fair&#8217;s original spirit and the current
+state of the location, and explains the important part Walt Disney played in the
+whole thing.</p><p>¶ As a power of 2, it appears in many tech things: Nintendo 64, Commodore 64,
+base-64 encoding, 64-bit integers, 64-bit computing in general, and so on and so
+on.</p><p>¶ The number famously appears in the Beatles&#8217; song
+<a href="https://en.wikipedia.org/wiki/When_I%27m_Sixty-Four" rel="external noopener">When I&#8217;m
+Sixty-Four</a>.  A surprising fact about the song is that it&#8217;s one of the first
+Paul McCartney ever wrote, when he was about 14 years old. It&#8217;s an old-fashioned
+tune because he wasn&#8217;t aware of rock and roll yet, or maybe it hadn&#8217;t even
+happened yet. It&#8217;s thought they put the song on Sgt Pepper because Paul&#8217;s
+father was turning 64 that year.</p>
+]]></description>
+	</item>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202606/franklins_parents_grave">
+		<title>Franklin’s parents grave</title>
+		<link>https://nedbatchelder.com/blog/202606/franklins_parents_grave</link>
+		
+		<dc:date>2026-06-02T05:40:22-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>There are many historical artifacts and monuments in Boston. This is one of
+my favorites:
+</p><div class="figurep"><a href="https://nedbatchelder.com/pix/franklin/monument.jpg"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/franklin/monument_thumb.jpg.webp"><img src="https://nedbatchelder.com/pix/franklin/monument_thumb.jpg" alt="A tall featured obelisk in the center of an old cemetery. FRANKLIN is written on it." width="360" height="480"></picture></figure></a></div><p>It&#8217;s in the center of the
+<a href="https://en.wikipedia.org/wiki/Granary_Burying_Ground" rel="external noopener">Granary Burying
+Ground</a>, the third-oldest cemetery in Boston. Casual tourists will assume the
+monument marks Ben Franklin&#8217;s grave, but they are wrong: it is for his
+parents.</p><p>Ben Franklin wrote an inscription for his parents&#8217; grave. The marker
+deteriorated and in 1827 was replaced with this large obelisk and a new
+plaque.</p><p>The plaque is far from the walkway and hard to read even up close:</p><div class="figurep"><a href="https://nedbatchelder.com/pix/franklin/plaque.jpg"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/franklin/plaque_thumb.jpg.webp"><img src="https://nedbatchelder.com/pix/franklin/plaque_thumb.jpg" alt="A bronze plaque set into the obelisk. Many coins are left as tributes." width="480" height="360"></picture></figure></a></div><p>It reads:</p><blockquote><div>
+<p style="text-align: center; margin-bottom: .25em">
+JOSIAH FRANKLIN AND ABIAH HIS WIFE<br>
+lie here interred.</p>
+
+<p style="text-align: center; text-wrap: balance; margin-top: .25em; margin-bottom: .25em">
+They lived lovingly together in wedlock fifty five years. And without an estate,
+or any gainful employment, by constant labor and honest industry, maintained a large
+family comfortably, and brought up thirteen children and seven grandchildren respectably.
+From this instance, reader, be encouraged to diligence in thy calling, and distrust
+not providence. He was a pious and prudent man; she a discreet and virtuous woman.</p>
+<p style="text-align: center; margin-top: .25em">
+THEIR YOUNGEST SON,<br>
+in filial regard to their memory places this stone.<br>
+J.F. Born 1655 __ Died 1744, Æ. 89.<br>
+A.F. ___ 1667 _______ 1752, __ 85.
+</p>
+
+<p style="text-align: center; text-wrap: balance; margin-top: .5em">
+The original inscription having been nearly obliterated<br>
+A number of citizens erected this monument, as a mark of respect for the<br>
+ILLUSTRIOUS AUTHOR,<br>
+MDCCCXXVII
+</p>
+</div></blockquote><p>I love that neither the original inscription nor the re-dedication mentions
+Ben Franklin by name. He wanted the focus to be on his parents, and the citizens
+of 1827 understood and kept their words in his style. He writes lovingly about
+his parents and their lifestyle, and keeps us thinking about them, not him.</p><p>I also like the word &#8220;reader&#8221; in there. Even when writing tombstones, Ben
+couldn&#8217;t resist his Poor Richard&#8217;s Almanac pedagogical style.</p><p>A few blocks from the cemetery is a <a href="https://maps.app.goo.gl/fP1ByuBCcQahLMx19" rel="external noopener">plaque on Court St</a>
+marking the location of James Franklin&#8217;s printing shop where Ben was an apprentice:</p><div class="figurep"><a href="https://nedbatchelder.com/pix/franklin/avenue.jpg"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/franklin/avenue_thumb.jpg.webp"><img src="https://nedbatchelder.com/pix/franklin/avenue_thumb.jpg" alt="A narrow dark alley that no one would ever notice or want to visit." width="480" height="360"></picture></figure></a></div><p>You can see in the picture there&#8217;s a one-block-long narrow dingy alleyway
+typical of downtown areas. It&#8217;s used for vans and dumpsters. I guess because
+it&#8217;s the location of the Franklin printing shop, this unremarkable and
+depressing passage is named &#8220;Franklin Avenue&#8221;. I would have expected something
+grander based on the name.</p><p>Maybe Ben wouldn&#8217;t have wanted something grander?</p>
+]]></description>
+	</item>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202605/snake_way_for_ducklings">
+		<title>Snake way for ducklings</title>
+		<link>https://nedbatchelder.com/blog/202605/snake_way_for_ducklings</link>
+		
+		<dc:date>2026-05-29T07:29:41-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>This is the mascot for <a href="https://about.bostonpython.com" rel="external noopener">Boston Python</a>.
+It&#8217;s called Snake Way for Ducklings:</p><div class="figurep"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/ducks/SnakeWay-1280.png.webp"><img src="https://nedbatchelder.com/pix/ducks/SnakeWay-1280.png" alt="A cute snake with a napkin around its neck, with eight duckling-shaped bumps along its body" width="500" height="500"></picture></figure></div><p>My son Ben drew it, which makes me very happy. He also drew
+<a href="https://nedbatchelder.com/blog/201912/sleepy_snake">Sleepy Snake</a>.  Wearing this image on a
+<a href="https://about.bostonpython.com/merch" rel="external noopener">shirt</a> around PyCon, I had
+to explain it a number of times. People in Boston understand it almost
+immediately, but others need more background.</p><p>In 1941, Robert McCloskey wrote a children&#8217;s book called
+<a href="https://en.wikipedia.org/wiki/Make_Way_for_Ducklings" rel="external noopener">Make Way for
+Ducklings</a>. It&#8217;s a classic, selling millions of copies and never going out
+of print. We read it to our own children growing up many times.</p><p>The book is the story of Mrs. Mallard making her way through Boston guiding
+her eight ducklings (Jack, Kack, Lack, Mack, Nack, Oack, Pack, and Quack) to a
+pond in Boston&#8217;s Public Garden.  It has charming pencil illustrations:</p><div class="figurep"><a href="https://nedbatchelder.com/pix/ducks/Ducklings-OfficerMike.jpg"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/ducks/Ducklings-OfficerMike.jpg.webp"><img src="https://nedbatchelder.com/pix/ducks/Ducklings-OfficerMike.jpg" alt="A page spread from Make Way for Ducklings showing a policeman stopping traffic to let the ducks cross the street" width="500" height="334"></picture></figure></a></div><p>The book led to a
+<a href="https://en.wikipedia.org/wiki/Make_Way_for_Ducklings_%28sculpture%29" rel="external noopener">sculpture</a>
+in the Public Garden near the actual pond:</p><div class="figurep"><a href="https://en.wikipedia.org/wiki/Make_Way_for_Ducklings_%28sculpture%29" rel="external noopener"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/ducks/sculpture.jpg.webp"><img src="https://nedbatchelder.com/pix/ducks/sculpture.jpg" alt="The bronze sculpture of the ducks in the Public Garden" width="500" height="334"></picture></figure></a></div><p>The sculpture is sized and placed for kids to play on, and is widely known
+and beloved in Boston. The ducks
+<a href="https://www.google.com/search?q=make+way+for+ducklings+sculpture+costumes" rel="external noopener">are
+dressed in costumes</a> for all kinds of occasions: holidays, sports events,
+even Star Wars day. On Mother&#8217;s Day, there&#8217;s a duckling parade: families bring
+their children dressed as ducklings. In Boston, the ducklings are a big
+deal.</p><p>And it&#8217;s <a href="https://www.universalhub.com/2026/life-imitates-ducks" rel="external noopener">not just fiction</a>.</p><p>So it seemed natural to Ben to riff on the ducklings for Boston Python. One
+observer thought a snake eating the ducklings seemed kind of dark, but you can
+see the ducklings are still quacking, so they are fine!</p><div class="figurep"><figure><picture><source type="image/webp" srcset="https://nedbatchelder.com/iv/webp/pix/ducks/SnakeWay-1280.png.webp"><img src="https://nedbatchelder.com/pix/ducks/SnakeWay-1280.png" alt="A cute snake with a napkin around its neck, with eight duckling-shaped bumps along its body" width="500" height="500"></picture></figure></div><p>BTW, Boston also has <a href="https://bostonducktours.com" rel="external noopener">Duck Boat
+tours</a>, but that&#8217;s completely different.</p>
+]]></description>
+	</item>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202605/pycon_us_2026">
+		<title>PyCon US 2026</title>
+		<link>https://nedbatchelder.com/blog/202605/pycon_us_2026</link>
+		
+		<dc:date>2026-05-24T07:04:21-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>Last week was PyCon US in Long Beach California. As always, it was a
+jam-packed intense time. I&#8217;ll try to report on my experience. The videos aren&#8217;t
+uploaded yet, but I&#8217;ll link to them later when they are.</p><p>This recap is longer than I&#8217;ve done in the past. I don&#8217;t know why, it&#8217;s just
+how it came out. I want to convey a sense of what I get out of PyCon and what
+you can get out of PyCon.</p><h1 id="h_thursday">Thursday<a class="headerlink" aria-label="Link to this header" href="#h_thursday"></a></h1><h3 id="h_opening_reception">Opening reception<a class="headerlink" aria-label="Link to this header" href="#h_opening_reception"></a></h3><p>I came with five of my colleagues from Netflix. I got to the Thursday night
+reception with Anika (first PyCon) and Josey (first PyCon with me). They said,
+&#8220;we&#8217;re going to count how many people Ned says hi to!&#8221; They were at 16 after
+five minutes and gave up. I don&#8217;t blame them. The reception is a very social
+time, and I have lots of friends I really enjoy seeing there.</p><h3 id="h_new_friends_and_backpacks">New friends and backpacks<a class="headerlink" aria-label="Link to this header" href="#h_new_friends_and_backpacks"></a></h3><p>Besides seeing old friends, one of the great things about unstructured time
+like the opening reception is meeting new people. Tower Research Capital was
+giving away full-size Osprey backpacks at their booth. This was easily the most
+appreciated swag at PyCon. At the booth a clump of us were wondering what was
+required to get one. While there I met
+<a href="https://github.com/antoniamaia" rel="external noopener">Maria</a>,
+<a href="https://camilamaia.com/" rel="external noopener">Camila</a>, and
+<a href="https://github.com/vinigfer" rel="external noopener">Vinícius</a>. They are from Brazil, and
+were very friendly. They will re-appear in this story a few times.</p><p>BTW: nothing was required to get a backpack, just ask and you get one.
+Everyone was very impressed.</p><h3 id="h_volunteering">Volunteering<a class="headerlink" aria-label="Link to this header" href="#h_volunteering"></a></h3><p>A good PyCon life-hack is to do some volunteer jobs. In particular, being a
+session runner is great. Pick a talk you want to go see anyway. Volunteer to be
+the session runner. Your duty is to go to the green room 15 minutes before the
+talk, meet the speaker, and help them get to the room on time and get set up.
+It&#8217;s a good way to make a connection with the speaker and help them at a
+particularly stressful time. It helps PyCon run smoothly. Also: the green room
+has coffee and snacks all day long!</p><p>As it happens Vinícius was doing a talk Friday about t-strings I wanted to
+see, so I signed up to be his session runner.</p><h1 id="h_friday">Friday<a class="headerlink" aria-label="Link to this header" href="#h_friday"></a></h1><h3 id="h_no_breakfast">(No) breakfast<a class="headerlink" aria-label="Link to this header" href="#h_no_breakfast"></a></h3><p>Friday morning, I discovered that PyCon was not providing breakfast. This was
+unfortunate because conference meals are one of those unstructured times you can
+interact with lots of people.  My strategy has usually been to look for a table
+that has people that don&#8217;t seem like me (in whatever ways), and meet people.
+Without a provided breakfast, I was instead eating a muffin in the quiet hotel
+lobby by myself. I understand why we were on our own for breakfast (conference
+food is expensive to provide), but I missed the congregating it encouraged.</p><p>Maybe next year there will be a way to get people to gather over breakfast
+without paying conference-food prices.</p><h3 id="h_fireworks_disaster">Fireworks disaster<a class="headerlink" aria-label="Link to this header" href="#h_fireworks_disaster"></a></h3><p>The opening plenary by Deb Nicholson pumped the room up with excitement. But
+then came the opening &#8220;keynote&#8221; by Fireworks CEO Lin Qiao. I use the term
+sarcastically because it was not a keynote. It was an undisguised sales pitch
+for some kind of AI thing, complete with a QR code for discounts. It was a
+tone-deaf disaster of epic proportions. People (including me) walked out in the
+middle and were not shy about it.</p><p>To make it even worse, Fireworks isn&#8217;t a sponsor of the PSF or of PyCon.
+Before the keynote, a few sponsors were given a chance to say a word. Anthropic
+gave $1.5M and spoke for two minutes about the importance of Python to their
+work. Then Fireworks had 45 minutes to sell products without giving anything!?
+It was extremely distasteful.</p><p>The conference organizers were not at fault. Speaking to them afterwards, it
+was clear they were as blindsided as the rest of us. I don&#8217;t think anyone blamed
+PyCon for it, but it was definitely a missed opportunity. You want an opening
+keynote to lift spirits and launch people into the conference.  Not a good
+start.</p><h3 id="h_brazilian_energy">Brazilian energy<a class="headerlink" aria-label="Link to this header" href="#h_brazilian_energy"></a></h3><p>At Vinícius&#8217; t-strings talk, his <a rel="external noopener" href="https://hachyderm.io/@nedbat/116580278702441945">friends were in the
+front row</a> waving Brazilian flags and occasionally blowing an air horn.  They
+were also audible during large plenaries when Brazil was mentioned. I thought it
+was great and would love to hear more groups making noise when their segments or
+interests are in focus. It helps to give a sense of the breadth and scope of the
+community, and the strong sub-groups you might not have been aware of.</p><h3 id="h_art_open_space">Art open space<a class="headerlink" aria-label="Link to this header" href="#h_art_open_space"></a></h3><p>Mario Munoz ran an open space all Friday afternoon about Python and Art. I
+don&#8217;t consider myself an artist, but I&#8217;ve enjoyed making math-generated image
+projects.  I got in touch beforehand to ask if <a href="https://nedbatchelder.com/blog/tag/genart">my
+generative art projects</a> would be on-topic.  He said they would, so I dropped
+in.</p><p>I showed some things I had made like <a rel="external noopener" href="/blog/202208/truchet_images">truchet-tiled
+images</a> or <a rel="external noopener" href="https://flourish.nedbat.com">harmonic pendulums</a>. The conversation
+quickly turned to, &#8220;is it art?&#8221; and if so, &#8220;who is the artist?&#8221;  I created the
+programs, but then either a random number generator or the user clicking
+squiggles was making the choices. In the resulting image, who is the artist?</p><p>I don&#8217;t have an answer, but it was interesting to hear people&#8217;s perspectives.
+I loved that in the midst of a highly organized conference with lots of
+&#8220;serious&#8221; topics like devops or security or AI, a few of us could sit quietly,
+noodle on a guitar and ponder what makes art.</p><p>PyCon open spaces allow for all kinds of in-depth discussions and
+interactions.  This was a perfect example.</p><h3 id="h_mias_docs_change">Mia&#8217;s docs change<a class="headerlink" aria-label="Link to this header" href="#h_mias_docs_change"></a></h3><p>At last year&#8217;s PyCon, I met Mia, who was very interested to make some
+improvements to the Python docs. She landed one change, but then I didn&#8217;t hear
+from her over the rest of the year.  We ran into each other again in the art
+open space, and we sat down afterwards to talk some more about contribution.</p><p>We settled on a <a rel="external noopener" href="https://github.com/python/cpython/pull/150030">change to the docs home page</a>, and she
+made that happen. Earlier this year I heard Jack Skinner on a podcast describe
+conferences as &#8220;co-working spaces with interruptions called talks.&#8221; Sitting with
+Mia was like a 30-minute sprint to find a change and get started on it enough so
+that the rest of the work could happen afterwards.</p><h3 id="h_lightning_talks">Lightning talks<a class="headerlink" aria-label="Link to this header" href="#h_lightning_talks"></a></h3><p>Some of my favorite parts of PyCon are the lightning talk sessions. These are
+five-minute talks about anything, proposed and selected the day before. Because
+they are short, people will talk about all kinds of things.  Because they are
+not &#8220;formal&#8221;, the selection process can select for variety rather than
+Importance.</p><p>I keep coming back to the breadth of how Python is used and what it means to
+people. Lightning talks are a concrete way to see that.</p><p>This year, some of the talks included:</p><ul>
+    <li>Adam Silkey&#8217;s rousing oration about running for local political office</li>
+    <li>Choosing the ideal cat emoji</li>
+    <li>Yapping</li>
+    <li>Why you should run Python betas</li>
+    <li><a href="https://cumbuca.dev/" rel="external noopener">Cumbuca.dev</a>, promoting diversity in tech in Brazil, run by my new friends Maria and Camila</li>
+    <li>A PyPI that installs from floppy disks(?)</li>
+</ul><p>Of course this is just a small sampling. I encourage you to find the
+lightning talks and watch them all.</p><h3 id="h_lightning_talk1">Lightning talk?<a class="headerlink" aria-label="Link to this header" href="#h_lightning_talk1"></a></h3><p>At dinner Friday I mentioned an idea I&#8217;d had for a while for a lightning
+talk.  I&#8217;d never given it because I was only excited about it during PyCon, and
+didn&#8217;t feel like I had the time to do the slides well enough. Stay tuned.</p><h1 id="h_saturday">Saturday<a class="headerlink" aria-label="Link to this header" href="#h_saturday"></a></h1><h3 id="h_lightning_talk2">Lightning talk!<a class="headerlink" aria-label="Link to this header" href="#h_lightning_talk2"></a></h3><p>Saturday morning, I thought more about the lightning talk, and how making the
+slides was the blocker.  So I tried using Claude to make the slides. I wrote an
+outline and tried a bit to get the slides built.  When I saw that it seemed
+likely to work out, I submitted the talk for consideration.  By lunch, I got the
+email saying I was on for Saturday night. Fun! I kept tweaking the slides over
+the course of the day.</p><h3 id="h_pablos_keynote">Pablo&#8217;s keynote<a class="headerlink" aria-label="Link to this header" href="#h_pablos_keynote"></a></h3><p>Pablo Galindo Salgado gave the morning keynote. He spoke in Spanish, with
+simultaneous captioning in English. He spoke with heart and passion about the
+collective effort to create Python. In particular he lamented the effects of the
+AI onslaught on the Python core team and on open source projects in general.</p><p>Comparing open source work to building a cathedral, he took a long view on
+the skill- and community-building that are natural by-products of open source
+work. AI threatens to wash that all away, and maintainers aren&#8217;t sure what to do
+about it.  We want to maintain the interpersonal dynamics that underpin
+everything we do, but AI makes it too easy to make all the wrong kinds of
+contributions and interactions.</p><p>Pablo was emotional, personal, relevant, and inspirational. He connected with
+everyone in the room.  On Friday I was joking that everyone agreed on two
+things: the backpack swag was great, and the Fireworks keynote was awful.  Now
+everyone agreed on three things, because Pablo&#8217;s keynote was a keeper, one for
+the ages.</p><h3 id="h_psf_members_lunch">PSF Members lunch<a class="headerlink" aria-label="Link to this header" href="#h_psf_members_lunch"></a></h3><p>The PSF Members lunch is a place to have a lunch in a smallish room, with
+time for questions of the PSF. Two themes emerged from the questions: the first
+is that running a conference is very expensive and getting worse. 2027 will be
+in Long Beach again, but there&#8217;s no location chosen yet for 2028.  I got the
+sense that the PSF is re-thinking the conference to maybe reshape the costs.</p><p>The second theme was about non-US attendance. Many people chose not to travel
+to the US because of the current political situation, and I don&#8217;t blame them.
+When asked why we don&#8217;t do the main PyCon outside the US, Deb Nicholson pointed
+out that some US people would not be comfortable leaving the US and then
+trying to get back in. This is on top of the logistical problems of trying to
+run a conference outside your own country.</p><h3 id="h_juggling">Juggling<a class="headerlink" aria-label="Link to this header" href="#h_juggling"></a></h3><p>Saturday afternoon, I continued a PyCon tradition: running a juggling open
+space. My strategy is to bring a couple dozen beanbags, camp out in a highly
+trafficked hallway, and teach anyone who&#8217;s interested. This year I had beanbags
+shipped to the hotel, and then gave most of those away at the end of the
+session. We had a lot of fun, some people learned some basics, and some were
+genuinely surprised to be gifted beanbags to take home.</p><h3 id="h_long_walk">Long walk<a class="headerlink" aria-label="Link to this header" href="#h_long_walk"></a></h3><p>It took longer than I thought to wrap up the juggling open space, so I had to
+hurry to the big stage for my lightning talk. But for some reason, we weren&#8217;t
+allowed to walk through the venue as we had that morning. We had to go outside
+and around a long block to walk back in a different entrance. That was bad
+enough, but I was given the wrong directions, so walked about twice that
+distance. I was very stressed and very thirsty, but did manage to get to the
+stage in time to get ready.</p><h3 id="h_silence_is_golden">Silence is Golden<a class="headerlink" aria-label="Link to this header" href="#h_silence_is_golden"></a></h3><p>My lightning talk was &#8220;Silence is Golden&#8221;. It was about leaving quiet time
+during discussions so that reluctant speakers can find a place to insert
+themselves.  What made the talk fun to do was riffing on PyCon&#8217;s usual Pac-Man
+rule, which says to leave a wedge open when standing in a circle so that new
+people can join you. The riff is to make a similar rule for time: if you draw a
+clock with a hand sweeping out the time that people are speaking, you can get a
+Pac-Man shape, with an open mouth for the time to be quiet so that someone new
+can speak.</p><p>Making the clock animation was the thing I didn&#8217;t know how to do myself but
+Claude did for me. That let me focus on how to get the message across and not
+get lost in the mechanics of SVG details.</p><p>I followed Simon Willison&#8217;s extremely energetic, fast-paced, loud lightning
+talk summarizing a year of LLM progress in five minutes (pelicans on bicycles),
+so it was an interesting contrast.</p><p>Afterward people told me they really liked the talk, including Eric Holscher
+who had first formulated the Pac-Man rule. Nice. One of the Sunday morning
+lightning talks mentioned &#8220;Silence is Golden&#8221;! That&#8217;s one of the great things
+about lightning talks: they can be inspired, created, proposed, selected, and
+presented all during the weekend.</p><h1 id="h_sunday">Sunday<a class="headerlink" aria-label="Link to this header" href="#h_sunday"></a></h1><p>Sunday was low-key for me compared to the first days. Maybe I was really low
+on sleep.  No, I definitely was. I tend to sleep at most four hours a night at
+PyCon.</p><p>We had more lightning talks. amanda casari did another good keynote tapping
+into concern about AI and how it would affect our work. Rachell Calhoun and Tim
+Schilling did a keynote about how they run Djangonauts, an upskilling program
+for new contributors. All of the big-audience events helped to reinforce the
+overarching themes that bind us together: working with each other, for each
+other.</p><p>In the final closing session, I was really pleased to see my Boston
+co-organizer Fay Shaw be awarded a PyLadies Award! She&#8217;s very energetic and
+richly deserved it.</p><h1 id="h_reflections">Reflections<a class="headerlink" aria-label="Link to this header" href="#h_reflections"></a></h1><h3 id="h_what_i_didnt_do">What I didn&#8217;t do<a class="headerlink" aria-label="Link to this header" href="#h_what_i_didnt_do"></a></h3><p>There are always far too many things happening at once to do everything I&#8217;d
+like.  I didn&#8217;t attend any of the Security track, the Packaging Summit, the
+Maintainers&#8217; Summit, the organizers&#8217; open space, the PyLadies auction, and so on
+and so on. I didn&#8217;t do anything outside the conference center other than
+dinners. Maybe next year I&#8217;ll walk over to take a look at the Queen Mary.</p><h3 id="h_people_there_and_people_not">People there and people not<a class="headerlink" aria-label="Link to this header" href="#h_people_there_and_people_not"></a></h3><p>I can think of a number of people I didn&#8217;t see at PyCon that I expected to.
+I know there were many from outside the US who stayed away. I think back to
+PyCons of the last decade, and the visible people who seemed central to Python
+and PyCon then, but who now no longer are and no longer attend.  That&#8217;s OK, the
+individuals change over time, but the community retains its essential nature.
+Some of the visible faces now are actually quite new to PyCon. Someone who
+attended for the first time this year might be one of the driving forces next
+year.</p><p>We live and breathe, we grow and evolve. We remain the same.</p>
+]]></description>
+	</item>
+	
+	<item rdf:about="https://nedbatchelder.com/blog/202604/school_is_artificial">
+		<title>School is artificial</title>
+		<link>https://nedbatchelder.com/blog/202604/school_is_artificial</link>
+		
+		<dc:date>2026-04-25T17:21:00-04:00</dc:date>
+		<dc:creator>Ned Batchelder</dc:creator>
+		<description><![CDATA[<p>One of the hard parts of moving from school to &#8220;the real world&#8221; is adjusting
+to all the ways that school is artificial. It&#8217;s different from the real
+world.</p><p>I&#8217;ve been thinking about this because of questions I see young learners
+commonly asking. Too often the questions are meaningless in the real world, and
+even if you could get answers, the answers would use useless.</p><p><b>How long does it take to learn Python?</b> In school, learning is divided
+into discrete labelled chunks. A class called &#8220;Beginning Python&#8221; might last four
+months. Everyone in the class will be taught the same things at the same pace.
+The objectives are laid out by the teacher, and at the end you will get a
+grade.</p><p>Outside of school, learning happens as needed, at your own pace, guided by
+your own goals. Only you will know if you have learned enough, deeply enough,
+for what you want to do.</p><p>An answer will be useless to you anyway: will you feel bad if it&#8217;s taking you
+longer than them?  Maybe they started from a different point than you did.
+Maybe they are learning different material, or to a finer degree of detail.
+Comparison is the thief of joy: learn what you need, the way you need to.</p><p>What does &#8220;learn Python&#8221; even mean? There&#8217;s no end to what might be included
+in a broad term like &#8220;Python&#8221;: there&#8217;s the language itself, the standard
+library, and the enormous ecosystem of third-party packages. Add to that the
+culture and conventions, and maybe even the community.  Nobody knows all of it.
+It doesn&#8217;t stay still, Python keeps changing, growing, and expanding. You have
+to decide for yourself what&#8217;s important for you to learn. The point isn&#8217;t to
+finish it. Classes in school can be finished; topics in the real world
+cannot.</p><p>School gives you neatly labelled units with clear-cut criteria at the end.
+The real world doesn&#8217;t work that way.</p><p><b>No, but how long did it take you?</b> It doesn&#8217;t matter. Everyone&#8217;s
+situation is different.  In school, your classmates are very similar to you:
+you&#8217;ve been taking roughly the same classes with the same material all your
+life. Outside of school, everyone is much more different. My pace, my learning
+style, my needs are all different than yours. Comparing won&#8217;t help you
+learn.</p><p><b>How will I know when I am not a beginner?</b> In school, classes have
+labels like beginner and advanced, or remedial and gifted.  Outside of school,
+these labels are meaningless. Knowledge isn&#8217;t laid out conveniently in a
+straight line.  For example: I&#8217;ve been using Python for 25 years, and know more
+about one particular dark corner of Python
+(<a rel="external noopener" href="https://www.google.com/search?q=site%3Anedbatchelder.com+settrace&amp;udm=14">sys.settrace</a>) than almost anyone.  At the same time,
+I know literally nothing about <a rel="external noopener" href="https://docs.python.org/3/library/tkinter.html">tkinter</a>. Am I an expert
+or a beginner?</p><p>If someone could tell you whether you were a beginner or not, what would you
+do with the answer?  In school, it tells you that you are ready to take the next
+course. But in the real world, no one needs the answer. What&#8217;s important is
+whether you understand the next concept, tool, or technique to make progress in
+whatever you&#8217;re building. Focus on your own goals and path, and keep
+moving forward.  Labels are fake.</p><p><b>Why do I need to learn topic XYZ?</b> School curricula don&#8217;t always match
+what you need to know. Your software engineering course may include theoretical
+math that computer scientists want to teach you, but that math may be very hard
+to use directly in the real world. Some of those concepts are good to know, some
+might be artifacts of mismatched goals.</p><p>Schools need to deliver their packaged pathways to many students. You only
+need to learn the things you need for your path. You won&#8217;t always know ahead of
+time what you&#8217;ll need. School can be a good way to learn things that many people
+like you learn.  Once you are on your own, you get to (and have to) choose the
+topics yourself.</p><p><b>Is it still worthwhile to learn programming?</b> Technology is moving very
+fast these days, especially because of the rise of AI in programming. Schools
+are much slower to adjust. A school&#8217;s course now may not match what employers
+want to see in four years.  At today&#8217;s pace of change, it&#8217;s impossible to guess
+what employers will want to see in four years.</p><p>Learn how to learn, and stay flexible.  Communication will always be key, so
+keep talking to people.</p><p>Choose a goal. Move toward it. Do what you need to do.</p><p>BTW, I see now that this post is very similar to a post from six years ago:
+<a href="https://nedbatchelder.com/blog/202003/how_long_did_it_take_you_to_learn_python">How long did it take you to learn Python?</a> I guess people
+are still asking, and I feel strongly about it!</p>
+]]></description>
+	</item>
+	
+</rdf:RDF>

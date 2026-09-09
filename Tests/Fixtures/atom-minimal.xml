@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Minimal Atom 1.0</title>
+  <entry>
+    <title>An Atom entry</title>
+    <link rel="alternate" href="https://example.com/atom-one"/>
+    <summary>Summary text.</summary>
+    <updated>2026-09-09T09:00:00Z</updated>
+  </entry>
+  <entry>
+    <title>A second entry</title>
+    <link href="https://example.com/atom-two"/>
+    <published>2026-09-09T08:00:00Z</published>
+  </entry>
+</feed>

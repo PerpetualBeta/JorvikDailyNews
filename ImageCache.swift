@@ -44,8 +44,66 @@ private final class EvictionWatcher: NSObject, NSCacheDelegate {
     }
 }
 
+/// Reports whether a response came off the disk or off the network.
+///
+/// `URLSessionTaskMetrics.resourceFetchType` is the only honest answer.
+/// Checking `URLCache.cachedResponse(for:)` before the request looks
+/// equivalent and is not: it cannot tell a served entry from one that had to
+/// be revalidated, and the point of measuring is to know the real hit rate
+/// rather than a number that flatters the change.
+private final class FetchSource: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    var fromDisk = false
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didFinishCollecting metrics: URLSessionTaskMetrics) {
+        guard let last = metrics.transactionMetrics.last else { return }
+        fromDisk = last.resourceFetchType == .localCache
+    }
+}
+
 final class ImageCache: @unchecked Sendable {
     static let shared = ImageCache()
+
+    /// Pictures are fetched on their own session so they can have a disk
+    /// cache, which `URLSession.shared` was not giving them.
+    ///
+    /// Measured before this existed: the app's URL cache held **one** entry,
+    /// so every launch re-downloaded every picture — around 350 requests for
+    /// a full edition, every time, from sites that are mostly small and
+    /// independent. The decoded bitmaps were already cached in memory, but
+    /// memory does not survive a quit.
+    ///
+    /// `memoryCapacity: 0` deliberately. `images` already holds the decoded
+    /// bitmap, and a second in-memory copy of the compressed bytes buys
+    /// nothing but pressure on the very thing it is meant to protect.
+    ///
+    /// `.useProtocolCachePolicy` means the CDN decides. A host sending
+    /// `immutable` (GitHub's opengraph service says
+    /// `public, max-age=21600, immutable`) will hit almost every time; a host
+    /// sending `no-store` will never be cached, and that is its right. So the
+    /// hit rate is not predictable in advance, which is why it is logged.
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("JorvikDailyNews/Images", isDirectory: true)
+        config.urlCache = URLCache(memoryCapacity: 0,
+                                   diskCapacity: diskCacheBytes,
+                                   directory: dir)
+        config.requestCachePolicy = .useProtocolCachePolicy
+        return URLSession(configuration: config)
+    }()
+
+    /// 256 MB of compressed pictures on disk. A full edition's images run to
+    /// tens of megabytes, so this holds several days and evicts by itself.
+    /// Independent of the in-memory ceiling, which is sized from RAM.
+    private static let diskCacheBytes = 256 * 1024 * 1024
+
+    /// Hits and misses, so the benefit is measured rather than assumed.
+    private var servedFromDisk = 0
+    private var servedFromNetwork = 0
+    /// Report the running rate every this many pictures. Often enough to see
+    /// it on a single launch, rarely enough not to drown the log.
+    private static let hitRateEvery = 50
 
     private let images = NSCache<NSURL, NSImage>()
     private let lock = NSLock()
@@ -160,6 +218,9 @@ final class ImageCache: @unchecked Sendable {
         /// the evidence for both was a log line derived from the rep alone.
         let cgWidth: Int
         let cgHeight: Int
+        /// Whether the compressed bytes came off the disk cache rather than
+        /// the network. Reported so the disk cache's worth is a measurement.
+        var fromDisk = false
         /// What the decoder was asked for, and how many times.
         let target: Int
         let requested: Int
@@ -281,7 +342,14 @@ final class ImageCache: @unchecked Sendable {
             let scaled = (decoded.cgWidth != decoded.sourceWidth || decoded.cgHeight != decoded.sourceHeight)
             jdnLog("image: \(decoded.sourceWidth)x\(decoded.sourceHeight) -> \(decoded.cgWidth)x\(decoded.cgHeight)"
                    + "\(scaled ? " SCALED" : "") \(Self.mb(cost)) — holding \(Self.mb(held))"
-                   + " of \(Self.mb(Self.cacheByteLimit)) across \(count) — \(url.host ?? "?")")
+                   + " of \(Self.mb(Self.cacheByteLimit)) across \(count) — \(url.host ?? "?")"
+                   + (decoded.fromDisk ? " [disk]" : ""))
+            if decoded.fromDisk { servedFromDisk += 1 } else { servedFromNetwork += 1 }
+            let total = servedFromDisk + servedFromNetwork
+            if total % Self.hitRateEvery == 0 {
+                jdnLog("image: \(servedFromDisk) of \(total) came from the disk cache "
+                       + "(\(100 * servedFromDisk / total)%)")
+            }
             // The rep's dimensions are deliberately not used or reported. They
             // are scaled by the backing store and disagree with the bitmap on
             // every picture, which is expected; see `byteCost`.
@@ -312,8 +380,9 @@ final class ImageCache: @unchecked Sendable {
         )
         let data: Data
         let response: URLResponse
+        let source = FetchSource()
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await Self.session.data(for: request, delegate: source)
         } catch {
             // A timeout, a dropped connection, a DNS hiccup. Nothing here says
             // the picture is bad.
@@ -338,7 +407,9 @@ final class ImageCache: @unchecked Sendable {
         guard w >= Self.minimumPixels, h >= Self.minimumPixels else {
             return .permanent("\(w)x\(h) is below the \(Self.minimumPixels)px floor")
         }
-        return .image(decoded)
+        var stamped = decoded
+        stamped.fromDisk = source.fromDisk
+        return .image(stamped)
     }
 
     /// Decode a picture at no more than `maxPixelSize` on its long edge.

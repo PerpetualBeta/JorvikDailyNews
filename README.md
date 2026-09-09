@@ -195,6 +195,10 @@ Everything under `~/Library/Application Support/JorvikDailyNews/`:
 - `editions/YYYY-MM-DD.json` — one file per published day; kept forever
 - `read.json` — opened article IDs, persistent across sessions
 
+**Pictures are cached on disk, and that is the one thing here that persists.** Before this the decoded bitmaps lived in memory only, so every launch re-downloaded every picture: around 350 requests for a full edition, every time, from sites that are mostly small and independent. Measured before the change, the app's URL cache held exactly **one** entry. Pictures now use their own `URLSession` with a 256 MB disk cache, and the log reports the hit rate every fifty pictures so the benefit is a measurement rather than a claim. Its memory capacity is deliberately zero, because the decoded bitmaps are already cached in RAM and a second copy of the compressed bytes would only add pressure to the thing it is meant to protect. Caching follows the CDN's own headers, so a host sending `immutable` will hit almost every time and one sending `no-store` will never be cached, which is its right.
+
+Being straight about it: this means images from sites whose stories you have opened sit in `~/Library/Caches/JorvikDailyNews/Images` until they age out. That is pictures, not cookies, local storage or history, and the WebKit stores stay non-persistent as before. It is what every feed reader does, and it is a deliberate exception to "nothing persists" rather than an oversight.
+
 No database. No telemetry. No cloud. No cookies — the reader pane uses ephemeral WebKit data stores that don't persist anything to disk or keychain. Reading an article fetches the article and nothing else. On the default path nothing but `URLSession` touches the network at all, because the HTML is parsed in `JavaScriptCore` with no web view involved; on the WebKit rungs the extractor refuses every subresource the page asks for. Either way its images, fonts, analytics beacons and tracking pixels are never requested.
 
 ## Updates
