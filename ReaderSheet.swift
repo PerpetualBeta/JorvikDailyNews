@@ -31,6 +31,8 @@ struct ReaderView: View {
     /// `liveDrew`: the web view has to be mounted to render, so it is covered
     /// until it has. There is no state in this reader that shows a blank pane.
     @State private var articleDrew = false
+    /// Whether the video player reported that it never rendered.
+    @State private var videoFailed = false
 
     enum ReaderState {
         case loading
@@ -198,6 +200,38 @@ struct ReaderView: View {
         store.moveArticle(item, to: newSection)
     }
 
+    /// A player, and the notice if it does not load.
+    ///
+    /// The failure state was first built in AppKit inside `VideoEmbedView`,
+    /// on the reasoning that the view is a leaf in this `switch` and does not
+    /// own the reader's state. That was true and it was still the wrong call:
+    /// a hand-rolled `NSStackView` clipped its own label on both sides and
+    /// lost its button, because an `NSTextField` with `maximumNumberOfLines`
+    /// set and no `preferredMaxLayoutWidth` lays out as one long line. The
+    /// reader already knows how to show a notice, and the pattern for a leaf
+    /// reporting upward already exists: `LiveWebView.onBlank`.
+    @ViewBuilder
+    private func player(_ html: String, base: String, what: String) -> some View {
+        ZStack {
+            Color.black
+            if videoFailed {
+                ReaderNotice(problem: Problem(
+                    headline: "This video would not play",
+                    advice: "The player did not load. That is usually the part "
+                          + "of macOS that draws web pages rather than the video "
+                          + "itself, so opening it in your browser will work.",
+                    technical: what), link: item.link,
+                    retry: { videoFailed = false })
+            } else {
+                VideoEmbedView(html: html,
+                               baseURL: URL(string: base),
+                               what: what,
+                               onFailure: { videoFailed = true })
+            }
+        }
+        .task(id: "video-\(item.itemId)") { videoFailed = false }
+    }
+
     @ViewBuilder
     private var content: some View {
         switch state {
@@ -254,17 +288,13 @@ struct ReaderView: View {
         case .video(let target):
             switch target {
             case .youTube(let id):
-                VideoEmbedView(html: Self.youTubeEmbedHTML(id),
-                               baseURL: URL(string: "https://jorviksoftware.cc"),
-                               what: "YouTube \(id)",
-                               link: item.link)
-                    .background(Color.black)
+                player(Self.youTubeEmbedHTML(id),
+                       base: "https://jorviksoftware.cc",
+                       what: "YouTube \(id)")
             case .vimeo(let id):
-                VideoEmbedView(html: Self.vimeoEmbedHTML(id),
-                               baseURL: URL(string: "https://player.vimeo.com"),
-                               what: "Vimeo \(id)",
-                               link: item.link)
-                    .background(Color.black)
+                player(Self.vimeoEmbedHTML(id),
+                       base: "https://player.vimeo.com",
+                       what: "Vimeo \(id)")
             case .native(let mediaURL):
                 NativeVideoView(url: mediaURL)
             }
@@ -1016,10 +1046,11 @@ struct VideoEmbedView: NSViewRepresentable {
     /// same black rectangle as a working one, so the id has to be recorded or
     /// a detection bug is indistinguishable from a player failure.
     var what: String = "video"
-    /// The original link, so a failure can offer the way through.
-    var link: URL?
+    /// Called when the host page never rendered. The reader owns the notice;
+    /// this view only reports.
+    var onFailure: () -> Void = {}
 
-    func makeNSView(context: Context) -> NSView {
+    func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.mediaTypesRequiringUserActionForPlayback = []   // allow autoplay
@@ -1029,62 +1060,45 @@ struct VideoEmbedView: NSViewRepresentable {
         // would otherwise swallow. Route it into the same view so the full
         // watch page loads in-app and plays, instead of doing nothing.
         web.uiDelegate = context.coordinator
-        context.coordinator.web = web
-        return context.coordinator.host(web)
+        return web
     }
 
-    func updateNSView(_ view: NSView, context: Context) {
-        guard !context.coordinator.loaded, context.coordinator.web != nil else { return }
+    func updateNSView(_ web: WKWebView, context: Context) {
+        guard !context.coordinator.loaded else { return }
         context.coordinator.loaded = true
         jdnLog("video: loading \(what) — \(html.count) char host page")
-        context.coordinator.show(html, baseURL: baseURL, what: what, link: link)
+        context.coordinator.show(html, baseURL: baseURL, in: web,
+                                 what: what, onFailure: onFailure)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     /// Watches for the failure this path could not previously report.
     ///
-    /// The host page is a 511-character `<iframe>` wrapper handed to
-    /// `loadHTMLString`, which is the API measured dead on one reporter's
-    /// macOS 27 beta above about 8 KB — and this path had no blank detection,
-    /// no logging and no failure state, so a video that would not play was a
-    /// white rectangle and complete silence. That is the fourth place in this
-    /// app where a `defer` or a missing check turned a failure into a blank
-    /// pane; the reader, the live page and the PDF view were the others.
+    /// The host page is a short `<iframe>` wrapper handed to `loadHTMLString`,
+    /// which is the API that fails on both machines this app has been tested
+    /// on, and this path had no blank detection, no logging and no failure
+    /// state — so a video that would not play was a black rectangle and
+    /// silence. That was the fourth place in this app where a missing check
+    /// turned a failure into a blank pane.
     @MainActor
     final class Coordinator: NSObject, WKUIDelegate {
         var loaded = false
-        weak var web: WKWebView?
-        private var container: NSView?
         private var check: Task<Void, Never>?
 
-        /// A player needs longer than a document: the host page has to load,
-        /// then the iframe, then the player's own scripts.
+        /// A player needs longer than a document: the host page loads, then
+        /// the iframe, then the player's own scripts.
         private static let grace: TimeInterval = 8
         private static let emptyDocumentChars =
             "<html><head></head><body></body></html>".count
 
-        func host(_ web: WKWebView) -> NSView {
-            let container = NSView()
-            web.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(web)
-            NSLayoutConstraint.activate([
-                web.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                web.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                web.topAnchor.constraint(equalTo: container.topAnchor),
-                web.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            ])
-            self.container = container
-            return container
-        }
-
-        func show(_ html: String, baseURL: URL?, what: String, link: URL?) {
-            guard let web else { return }
+        func show(_ html: String, baseURL: URL?, in web: WKWebView,
+                  what: String, onFailure: @escaping () -> Void) {
             web.loadHTMLString(html, baseURL: baseURL)
             check?.cancel()
-            check = Task { @MainActor [weak self, weak web] in
+            check = Task { @MainActor [weak web] in
                 try? await Task.sleep(nanoseconds: UInt64(Self.grace * Double(NSEC_PER_SEC)))
-                guard !Task.isCancelled, let self, let web else { return }
+                guard !Task.isCancelled, let web else { return }
                 let probe = "document.documentElement.outerHTML.length"
                 let chars = (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
                 guard chars <= Self.emptyDocumentChars else {
@@ -1093,48 +1107,8 @@ struct VideoEmbedView: NSViewRepresentable {
                 }
                 jdnLog("video: \(what) drew nothing after \(Int(Self.grace))s — "
                        + "the host page never rendered")
-                self.showFailure(link: link)
+                onFailure()
             }
-        }
-
-        /// Replace the empty web view with something that explains itself.
-        /// Done in AppKit rather than by pushing a new SwiftUI state, because
-        /// this view is a leaf in the reader's `switch` and does not own it.
-        private func showFailure(link: URL?) {
-            guard let container else { return }
-            web?.removeFromSuperview()
-            let label = NSTextField(labelWithString:
-                "This video would not play.\n\nThe player did not load. "
-                + "Opening it in your browser will work.")
-            label.alignment = .center
-            label.maximumNumberOfLines = 0
-            label.font = NSFont(name: "Charter", size: 14) ?? .systemFont(ofSize: 14)
-            label.textColor = .white
-            label.translatesAutoresizingMaskIntoConstraints = false
-
-            let button = NSButton(title: "Open in Browser", target: self,
-                                  action: #selector(openInBrowser))
-            button.translatesAutoresizingMaskIntoConstraints = false
-            self.failureLink = link
-
-            let stack = NSStackView(views: [label, button])
-            stack.orientation = .vertical
-            stack.spacing = 18
-            stack.alignment = .centerX
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(stack)
-            NSLayoutConstraint.activate([
-                stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-                stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-                label.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
-            ])
-        }
-
-        private var failureLink: URL?
-
-        @objc private func openInBrowser() {
-            guard let failureLink else { return }
-            NSWorkspace.shared.open(failureLink)
         }
 
         func webView(_ webView: WKWebView,
