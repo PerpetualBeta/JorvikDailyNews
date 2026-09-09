@@ -168,10 +168,13 @@ final class ImageCache: @unchecked Sendable {
 
     private enum Outcome {
         case image(Decoded)
-        /// The URL is bad and will stay bad.
-        case permanent
-        /// The request failed; the URL may be fine.
-        case transient
+        /// The URL is bad and will stay bad. Carries why, because "no picture"
+        /// and "picture rejected" were indistinguishable in the log: every one
+        /// of this file's log lines was a success path, so a front page of
+        /// text-only cards could not be told from a front page of failures.
+        case permanent(String)
+        /// The request failed; the URL may be fine. Carries why.
+        case transient(String)
     }
 
     init() {
@@ -288,11 +291,15 @@ final class ImageCache: @unchecked Sendable {
             }
             failed.remove(url)
             retryAfter[url] = nil
-        case .permanent:
+        case .permanent(let why):
             failed.insert(url)
             retryAfter[url] = nil
-        case .transient:
+            jdnLog("image: REJECTED \(url.host ?? "?") — \(why); "
+                   + "not asked again this session")
+        case .transient(let why):
             retryAfter[url] = Date().addingTimeInterval(Self.transientCooloff)
+            jdnLog("image: FAILED \(url.host ?? "?") — \(why); retrying after "
+                   + "\(Int(Self.transientCooloff))s")
         }
     }
 
@@ -310,7 +317,7 @@ final class ImageCache: @unchecked Sendable {
         } catch {
             // A timeout, a dropped connection, a DNS hiccup. Nothing here says
             // the picture is bad.
-            return .transient
+            return .transient(error.localizedDescription)
         }
 
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -318,14 +325,18 @@ final class ImageCache: @unchecked Sendable {
             // 408 is a timeout by another name. All three are worth retrying.
             // Everything else — 404, 410, 403 — is an answer, not an accident.
             let retryable = http.statusCode >= 500 || http.statusCode == 429 || http.statusCode == 408
-            return retryable ? .transient : .permanent
+            let why = "HTTP \(http.statusCode)"
+            return retryable ? .transient(why) : .permanent(why)
         }
 
         // Reject 1×1 trackers and icon-sized placeholders. Undecodable bytes and
         // a tracking pixel are both settled facts about the URL.
-        guard let decoded = decode(data),
-              decoded.image.size.width >= 48, decoded.image.size.height >= 48 else {
-            return .permanent
+        guard let decoded = decode(data) else {
+            return .permanent("undecodable, \(data.count) bytes")
+        }
+        let w = Int(decoded.image.size.width), h = Int(decoded.image.size.height)
+        guard w >= Self.minimumPixels, h >= Self.minimumPixels else {
+            return .permanent("\(w)x\(h) is below the \(Self.minimumPixels)px floor")
         }
         return .image(decoded)
     }
@@ -351,6 +362,11 @@ final class ImageCache: @unchecked Sendable {
     /// Two is enough for a decoder that scales the request by a constant, which
     /// is what macOS 27 does. Three leaves one spare.
     private static let maxDecodeAttempts = 3
+
+    /// Smaller than this on either side and it is furniture, not a picture:
+    /// a 1x1 tracker, a favicon, a broken-CDN placeholder. Drawing one blots
+    /// the page with an empty rectangle.
+    private static let minimumPixels = 48
 
     private static func thumbnail(from source: CGImageSource, longEdge: Int) -> CGImage? {
         // `kCGImageSourceCreateThumbnailWithTransform` applies the EXIF
