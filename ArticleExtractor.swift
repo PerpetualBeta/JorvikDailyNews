@@ -45,6 +45,9 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         /// What the walker refused, for the log: `["svg": 10]`.
         var droppedElements: [String: Int]?
         var blockError: String?
+        /// How many nodes had to be moved out of `<head>` because the page
+        /// never closed it. Zero on a well-formed page.
+        var repairedNodes: Int?
     }
 
     enum ExtractionError: Error, LocalizedError {
@@ -668,17 +671,59 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// Turn Readability's JSON into an outcome. Shared by every rung so the
     /// WebKit path and the JavaScriptCore path cannot judge an article
     /// differently.
+    /// A decoding error in the terms that identify it: which key, what type.
+    /// `localizedDescription` on a `DecodingError` is famously useless — it
+    /// says "The data couldn't be read because it isn't in the correct
+    /// format" and names nothing.
+    private static func describe(_ error: Error) -> String {
+        guard let decoding = error as? DecodingError else { return "\(error)" }
+        func path(_ context: DecodingError.Context) -> String {
+            let keys = context.codingPath.map(\.stringValue).filter { !$0.isEmpty }
+            return keys.isEmpty ? "the top level" : keys.joined(separator: ".")
+        }
+        switch decoding {
+        case .keyNotFound(let key, let context):
+            return "missing key '\(key.stringValue)' at \(path(context))"
+        case .typeMismatch(let type, let context):
+            return "expected \(type) at \(path(context))"
+        case .valueNotFound(let type, let context):
+            return "null where \(type) was required at \(path(context))"
+        case .dataCorrupted(let context):
+            return "corrupt at \(path(context)): \(context.debugDescription)"
+        @unknown default:
+            return "\(decoding)"
+        }
+    }
+
     private func interpret(_ json: String?, label: String, minimumLength: Int) -> RungOutcome {
+        // Three different outcomes, and `try?` reported all of them as the
+        // first one. A page that extracted perfectly could be announced as
+        // having no article because a field this app added did not decode,
+        // and the log said nothing that would let anybody tell the difference.
         guard let json, json != "null", json != "undefined",
-              let data = json.data(using: .utf8),
-              let article = try? JSONDecoder().decode(Article.self, from: data) else {
+              let data = json.data(using: .utf8) else {
             jdnLog("readability: no article in this page — live page fallback")
+            return .documentButNoArticle(ExtractionError.noArticle)
+        }
+        let article: Article
+        do {
+            article = try JSONDecoder().decode(Article.self, from: data)
+        } catch {
+            // Readability found something and we could not read it. That is a
+            // fault in this app, not in the page, and it must not be dressed
+            // up as an empty page.
+            jdnLog("readability: extracted \(data.count) bytes but the reader could not "
+                   + "decode them — \(Self.describe(error))")
             return .documentButNoArticle(ExtractionError.noArticle)
         }
         let len = article.length ?? article.textContent?.count ?? 0
         guard len >= minimumLength else {
             jdnLog("readability: only \(len) chars — too thin, live page fallback")
             return .documentButNoArticle(ExtractionError.tooShort(len))
+        }
+        if let repaired = article.repairedNodes, repaired > 0 {
+            jdnLog("readability: the page never closed <head> — moved \(repaired) node(s) "
+                   + "into <body> first, as a browser would")
         }
         jdnLog("readability: article of \(len) chars — rendering reader view")
         // Say what the block walker made of it, so the native renderer is
@@ -1503,8 +1548,13 @@ final class NativeReader: @unchecked Sendable {
       var doc = linkedom.parseHTML(html).document;
       try { Object.defineProperty(doc, 'baseURI', { value: url, configurable: true }); } catch (e) {}
       try { Object.defineProperty(doc, 'documentURI', { value: url, configurable: true }); } catch (e) {}
+      // Before Readability sees it: put back the <body> a spec parser would
+      // have opened. See `repairHeadBody`.
+      var repaired = 0;
+      try { if (globalThis.__jdnRepairTree) repaired = __jdnRepairTree(doc); } catch (e) {}
       var article = new Readability(doc).parse();
       if (!article) return null;
+      article.repairedNodes = repaired;
       // Blocks are produced in the same pass, from the same DOM, so the
       // native renderer and the WebKit fallback can never disagree about
       // what the article said.

@@ -111,6 +111,53 @@
              caption: null, alt: node.getAttribute('alt') || null };
   }
 
+  // Elements that may legitimately sit in <head>. Everything else ends it.
+  var HEAD_ONLY = {
+    BASE: 1, BASEFONT: 1, BGSOUND: 1, LINK: 1, META: 1,
+    NOSCRIPT: 1, SCRIPT: 1, STYLE: 1, TEMPLATE: 1, TITLE: 1
+  };
+
+  // Put back the <body> a spec parser would have opened.
+  //
+  // LinkeDOM parses with htmlparser2, which is not an HTML tree builder: it
+  // nests what it is given. The spec says the "in head" insertion mode ends
+  // the moment a token appears that cannot be in <head>, at which point the
+  // parser pops <head>, moves to "in body", and everything after belongs to
+  // the body. htmlparser2 keeps nesting inside <head> instead.
+  //
+  // qip.dev serves `<!doctype html><html><head>` with **no </head> and no
+  // <body> anywhere**, which is legal HTML. So its <main> landed inside
+  // <head>, the ancestor chain from any paragraph read
+  // P -> MAIN -> HEAD -> HTML -> #document and never met BODY, and
+  // Readability's `while (parentOfTopCandidate.tagName !== "BODY")` walked
+  // off the top of the tree and threw on null. The whole article was lost to
+  // a missing closing tag.
+  //
+  // Returns how many nodes it moved, so the log can say when it acted.
+  function repairHeadBody(doc) {
+    var head = doc.head, body = doc.body;
+    if (!head || !body) return 0;
+
+    var first = null;
+    for (var n = head.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 1 && !HEAD_ONLY[n.tagName.toUpperCase()]) { first = n; break; }
+    }
+    if (!first) return 0;
+
+    // Collect before moving: `insertBefore` detaches, which would break a
+    // walk that reads `nextSibling` as it goes.
+    var moving = [], node = first;
+    while (node) { moving.push(node); node = node.nextSibling; }
+
+    // Prepended in order, so anything the parser did manage to put in the
+    // body still follows the content that preceded it in the source.
+    var anchor = body.firstChild;
+    for (var i = 0; i < moving.length; i++) body.insertBefore(moving[i], anchor);
+    return moving.length;
+  }
+
+  globalThis.__jdnRepairTree = repairHeadBody;
+
   globalThis.__jdnBlocks = function (contentHTML, minSvgSide) {
     var doc = linkedom.parseHTML('<div id="jdn-root">' + contentHTML + '</div>').document;
     var root = doc.getElementById('jdn-root');
