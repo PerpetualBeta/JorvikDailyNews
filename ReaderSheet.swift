@@ -772,31 +772,84 @@ struct LiveWebView: NSViewRepresentable {
 /// the (possibly large) file downloads.
 private struct PDFReader: View {
     let url: URL
-    @State private var loading = true
+    @State private var state: Load = .starting
+
+    /// A 7.4 MB report at 176 KB/s is forty-two seconds of waiting, and
+    /// "Loading PDF…" for forty-two seconds is indistinguishable from a hang.
+    /// The reader asked "how big is this PDF, it's taking ages?" — a question
+    /// the app was holding the answer to and not saying.
+    enum Load {
+        case starting
+        case downloading(received: Int64, total: Int64)
+        case ready
+        case failed(String)
+    }
 
     var body: some View {
         ZStack {
-            PDFKitView(url: url) { loading = false }
-            if loading {
+            PDFKitView(url: url,
+                       onProgress: { received, total in
+                           if case .ready = state { return }
+                           state = .downloading(received: received, total: total)
+                       },
+                       onReady: { state = .ready },
+                       onFailure: { state = .failed($0) })
+
+            switch state {
+            case .ready:
+                EmptyView()
+
+            case .failed(let why):
+                // Previously this was a white page: `defer { onLoaded() }`
+                // lifted the cover whether or not a document had arrived, so a
+                // failure revealed an empty PDFView and said nothing.
+                ReaderNotice(problem: ReaderView.Problem(
+                    headline: "This PDF would not open",
+                    advice: "The file could not be downloaded or could not be "
+                          + "read as a PDF. Opening it in your browser is the "
+                          + "quickest way to see it, and will also show you "
+                          + "whether the file itself is the problem.",
+                    technical: why), link: url, retry: { state = .starting })
+
+            case .starting, .downloading:
                 VStack(spacing: 14) {
-                    ProgressView()
-                    Text("Loading PDF\u{2026}")
-                        .font(.custom("Charter", size: 12))
-                        .foregroundStyle(.secondary)
+                    if case .downloading(let got, let total) = state, total > 0 {
+                        ProgressView(value: Double(got), total: Double(total))
+                            .frame(width: 220)
+                        Text("\(Self.mb(got)) of \(Self.mb(total))")
+                            .font(.custom("Charter", size: 12))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    } else {
+                        ProgressView()
+                        Text("Loading PDF\u{2026}")
+                            .font(.custom("Charter", size: 12))
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(nsColor: .textBackgroundColor))
             }
         }
     }
+
+    private static func mb(_ bytes: Int64) -> String {
+        String(format: "%.1f MB", Double(bytes) / 1_048_576)
+    }
 }
 
-/// Bytes are fetched with a Safari user agent (some hosts gate on it) and
-/// handed to `PDFDocument(data:)`. `onLoaded` fires once the attempt finishes
-/// — success or failure — so the wrapper can dismiss its spinner either way.
 struct PDFKitView: NSViewRepresentable {
     let url: URL
-    var onLoaded: () -> Void = {}
+    var onProgress: (Int64, Int64) -> Void = { _, _ in }
+    var onReady: () -> Void = {}
+    var onFailure: (String) -> Void = { _ in }
+
+    /// Long enough for a large report on a slow line — the one that prompted
+    /// this took 42 seconds for 7.4 MB — and short enough that a dead host
+    /// does not hold the reader indefinitely. The request carried no timeout
+    /// at all before, so it inherited URLSession's 60-second default and gave
+    /// no sign of which it was doing.
+    private static let timeout: TimeInterval = 120
 
     func makeNSView(context: Context) -> PDFView {
         let view = PDFView()
@@ -804,22 +857,85 @@ struct PDFKitView: NSViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.backgroundColor = .textBackgroundColor
-
-        Task { @MainActor in
-            defer { onLoaded() }
-            var request = URLRequest(url: url)
-            request.setValue(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
-                forHTTPHeaderField: "User-Agent"
-            )
-            guard let (data, _) = try? await URLSession.shared.data(for: request),
-                  let document = PDFDocument(data: data) else { return }
-            view.document = document
-        }
+        load(into: view)
         return view
     }
 
     func updateNSView(_ view: PDFView, context: Context) {}
+
+    private func load(into view: PDFView) {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = Self.timeout
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        let url = self.url
+        let onProgress = self.onProgress
+        let onReady = self.onReady
+        let onFailure = self.onFailure
+
+        // Downloaded OFF the main actor, with only the progress reports and the
+        // finished document hopping onto it.
+        //
+        // The first version ran the whole `for try await byte in stream` loop
+        // on the main actor. Appending 7.4 million bytes measures at 0.21s, so
+        // the append is not the problem, but seven million suspension points
+        // interleaved with the interface is not something to ship on the
+        // strength of one benchmark that did not include them.
+        Task.detached {
+            let started = Date()
+            do {
+                // Streamed rather than fetched whole, so the size can be shown
+                // and the wait stops looking like a hang. `data(for:)` reports
+                // nothing until it has everything.
+                let (stream, response) = try await URLSession.shared.bytes(for: request)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    jdnLog("pdf: \(url.host ?? "?") returned HTTP \(http.statusCode)")
+                    await MainActor.run { onFailure("HTTP \(http.statusCode)") }
+                    return
+                }
+                let total = response.expectedContentLength
+                jdnLog("pdf: downloading \(url.lastPathComponent) — "
+                       + (total > 0 ? "\(total) bytes" : "size not declared"))
+
+                var data = Data()
+                if total > 0 { data.reserveCapacity(Int(total)) }
+                var lastReport = Date()
+                for try await byte in stream {
+                    data.append(byte)
+                    // Report on a timer, not per byte: a 7.4 MB file is 7.4
+                    // million iterations and a state write on each would cost
+                    // far more than the download.
+                    if Date().timeIntervalSince(lastReport) > 0.2 {
+                        lastReport = Date()
+                        let got = Int64(data.count)
+                        await MainActor.run { onProgress(got, total) }
+                    }
+                }
+
+                let elapsed = String(format: "%.1f", Date().timeIntervalSince(started))
+                guard let document = PDFDocument(data: data) else {
+                    jdnLog("pdf: \(data.count) bytes arrived in \(elapsed)s but PDFKit "
+                           + "would not read them as a PDF")
+                    let n = data.count
+                    await MainActor.run { onFailure("\(n) bytes downloaded, not readable as a PDF") }
+                    return
+                }
+                let bytes = data.count
+                await MainActor.run {
+                    view.document = document
+                    jdnLog("pdf: \(document.pageCount) page(s), \(bytes) bytes in \(elapsed)s")
+                    onReady()
+                }
+            } catch {
+                let elapsed = String(format: "%.1f", Date().timeIntervalSince(started))
+                jdnLog("pdf: FAILED after \(elapsed)s — \(error.localizedDescription)")
+                let why = error.localizedDescription
+                await MainActor.run { onFailure(why) }
+            }
+        }
+    }
 }
 
 // MARK: - Embedded video (YouTube / Vimeo)

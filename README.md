@@ -179,6 +179,8 @@ Most video feeds label their items `[video]` already, but some submitters don't 
 
 A link to a PDF — by extension, or detected by content-type when the URL doesn't end in `.pdf` — opens in a native `PDFKit` view inside the reader, scrollable and zoomable, instead of downloading or bouncing to a browser.
 
+**It reports the size and it can fail out loud.** A 7.4 MB report at 176 KB/s is forty-two seconds of waiting, and "Loading PDF…" for forty-two seconds cannot be told apart from a hang. The download is streamed rather than fetched whole, so the view shows a real progress bar and `2.1 MB of 7.4 MB`, updated five times a second rather than per byte. Before this, a failure was a **white page**: the cover over the PDF view was lifted by a `defer`, whether or not a document had arrived, so a failed download revealed an empty view and said nothing at all. Now a failure shows the same notice the reader uses, with the byte count and the reason, and **Open in Browser** as the way through. The request also has a timeout of its own; it previously had none and inherited `URLSession`'s default with no sign of which it was doing.
+
 ### Live page fallback
 
 When Readability can't extract a clean article (paywalls, JavaScript-rendered SPAs, link-list pages), the reader doesn't dead-end you out to a browser: it renders the real page inline in a full web view. **Open in Browser** stays in the header as the escape hatch for anyone who wants it.
