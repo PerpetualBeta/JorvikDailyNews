@@ -223,6 +223,10 @@ final class ImageCache: @unchecked Sendable {
     /// whether the scaling actually did anything for this one.
     private struct Decoded {
         let image: NSImage
+        /// What the picture looks like, taken from the bitmap that was just
+        /// decoded for display. Computed here because the `CGImage` is already
+        /// in hand, so it costs one resample to 9x8 and no second decode.
+        let signature: PictureSignature?
         let sourceWidth: Int
         let sourceHeight: Int
         /// The decoded bitmap's own dimensions, straight from the `CGImage`.
@@ -397,6 +401,9 @@ final class ImageCache: @unchecked Sendable {
         inFlight[url] = nil
         switch outcome {
         case .image(let decoded):
+            if let signature = decoded.signature {
+                PictureSignatureStore.shared.record(signature, for: url)
+            }
             let cost = Self.byteCost(of: decoded.image)
             bytesLock.lock()
             heldBytes += cost
@@ -592,6 +599,7 @@ final class ImageCache: @unchecked Sendable {
         // tracker threshold above is a pixel test in intent, and this is what
         // makes it one.
         return Decoded(image: NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)),
+                       signature: PictureSignature.of(cg),
                        sourceWidth: srcW, sourceHeight: srcH,
                        cgWidth: cg.width, cgHeight: cg.height,
                        target: target, requested: request, attempts: usedAttempts)

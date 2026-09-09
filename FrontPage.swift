@@ -6,6 +6,10 @@ struct FrontPage: View {
     /// Height of the visible page, for sizing the lead picture.
     let pageHeight: CGFloat
 
+    /// Cards whose picture is already on this page. Decided when the edition
+    /// was built, not here, so it cannot change while the reader is looking.
+    private var repeated: Set<String> { edition.repeatedPictures }
+
     // All post-lead items flow through one masonry — secondaries first
     // (they carry images and summaries more often so anchor the top of
     // each column), briefs behind them. Shortest-column-wins distribution
@@ -55,9 +59,13 @@ struct FrontPage: View {
                     items: masonryItems,
                     columns: 3,
                     spacing: 28,
-                    estimateHeight: StoryCard.estimateHeight(_:columnWidth:)
+                    estimateHeight: { item, width in
+                        StoryCard.estimateHeight(item, columnWidth: width,
+                                                 showsPicture: !repeated.contains(item.itemId))
+                    }
                 ) { item, width in
-                    StoryCard(item: item, columnWidth: width)
+                    StoryCard(item: item, columnWidth: width,
+                              showsPicture: !repeated.contains(item.itemId))
                 }
             }
         }

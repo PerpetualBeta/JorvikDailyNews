@@ -7,6 +7,10 @@ struct SectionPageView: View {
     let pageNumber: Int
     let totalPages: Int
 
+    /// Cards whose picture is already on this page. Decided when the edition
+    /// was built, not here, so it cannot change while the reader is looking.
+    private var repeated: Set<String> { page.repeatedPictures }
+
     private var dateline: String {
         let f = DateFormatter()
         f.dateStyle = .full
@@ -38,9 +42,13 @@ struct SectionPageView: View {
                 items: page.items,
                 columns: 3,
                 spacing: 28,
-                estimateHeight: StoryCard.estimateHeight(_:columnWidth:)
+                estimateHeight: { item, width in
+                    StoryCard.estimateHeight(item, columnWidth: width,
+                                             showsPicture: !repeated.contains(item.itemId))
+                }
             ) { item, width in
-                StoryCard(item: item, columnWidth: width)
+                StoryCard(item: item, columnWidth: width,
+                          showsPicture: !repeated.contains(item.itemId))
             }
         }
     }

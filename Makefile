@@ -23,6 +23,9 @@ SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                     StoryCard.swift \
                     OptionalImage.swift \
                     ImageCache.swift \
+                    PictureSignature.swift \
+                    PictureSignatureStore.swift \
+                    PagePictures.swift \
                     AddFeedSheet.swift \
                     ManageFeedsSheet.swift \
                     ReaderSheet.swift \
@@ -70,6 +73,9 @@ include ../jorvik-release/release.mk
 # here is Foundation-only apart from ImageCache, which EditionBuilder consults
 # to ask whether a picture is known to have failed.
 TEST_SOURCES := VideoLink.swift \
+                PictureSignature.swift \
+                PictureSignatureStore.swift \
+                PagePictures.swift \
                 Feed.swift \
                 FeedFetcher.swift \
                 Standfirst.swift \
@@ -83,6 +89,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/FeedFetcherTests.swift \
                 Tests/StandfirstTests.swift \
                 Tests/EditionBuilderTests.swift \
+                Tests/PagePicturesTests.swift \
                 Tests/main.swift
 
 TEST_BIN := .build/tests

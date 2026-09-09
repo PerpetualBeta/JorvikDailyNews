@@ -124,9 +124,16 @@ struct EditionBuilder {
             .flatMap { section -> [SectionPage] in
                 stride(from: 0, to: section.items.count, by: Self.sectionPageCap).map { start in
                     let end = min(start + Self.sectionPageCap, section.items.count)
-                    return SectionPage(name: section.name, items: Array(section.items[start..<end]))
+                    let page = Array(section.items[start..<end])
+                    return SectionPage(name: section.name, items: page,
+                                       repeatedPictures: PagePictures.repeats(in: page,
+                                                                              signature: Self.signature))
                 }
             }
+
+        // The front page is one page for this purpose: the lead and the cards
+        // under it are all in view together.
+        let front = (lead.map { [$0] } ?? []) + secondaries + briefs
 
         return Edition(
             date: Calendar.current.startOfDay(for: date),
@@ -134,7 +141,8 @@ struct EditionBuilder {
             lead: lead,
             secondaries: secondaries,
             briefs: briefs,
-            sections: sections
+            sections: sections,
+            repeatedPictures: PagePictures.repeats(in: front, signature: Self.signature)
         )
     }
 
@@ -146,6 +154,15 @@ struct EditionBuilder {
     /// under the headline.
     static func canAnchorLead(_ item: FeedItem) -> Bool {
         hasUsableImage(item) && !item.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Where a picture's fingerprint comes from, as one named seam.
+    ///
+    /// A `var` so a test can replace it. `PagePictures` takes the lookup as an
+    /// argument for the same reason, and this is the only place that reaches
+    /// for the real store.
+    nonisolated(unsafe) static var signature: (URL) -> PictureSignature? = {
+        PictureSignatureStore.shared.signature(for: $0)
     }
 
     static func hasUsableImage(_ item: FeedItem) -> Bool {

@@ -529,6 +529,17 @@ final class AppStore {
         jdnLog("refresh: published \(edition.itemCount) items "
                + "of \(eligible) eligible from \(allItems.count) fetched "
                + "in \(elapsed)s of \(Int(Self.refreshTimeout))s allowed")
+        let suppressed = edition.repeatedPictures.count
+            + edition.sections.reduce(0) { $0 + $1.repeatedPictures.count }
+        let withPictures = edition.sections.reduce(edition.secondaries.filter { $0.imageURL != nil }.count
+            + edition.briefs.filter { $0.imageURL != nil }.count) {
+                $0 + $1.items.filter { $0.imageURL != nil }.count
+            }
+        jdnLog("pictures: \(suppressed) of \(withPictures) suppressed as a repeat of one already "
+               + "on the same page — \(PictureSignatureStore.shared.count) fingerprint(s) known")
+        // Written once a refresh rather than on every decode: a full edition
+        // decodes several hundred pictures and each write is the whole file.
+        PictureSignatureStore.shared.flush()
         editionStore.save(edition)
         // Reflow the visible edition from the new base so hide-read and
         // paused filters apply to the freshly-built edition too.

@@ -12,6 +12,9 @@ struct StoryCard: View {
     /// The masonry column this card landed in. Needed before the first frame,
     /// because the standfirst is measured to fit it.
     let columnWidth: CGFloat
+    /// False when this picture is already somewhere else on this page, so the
+    /// card runs as text. Decided when the page was built, by `PagePictures`.
+    var showsPicture = true
 
     /// Live knob. `defaults write cc.jorviksoftware.JorvikDailyNews
     /// cardImageMaxHeight -float 300` retunes every card picture on a running
@@ -38,7 +41,7 @@ struct StoryCard: View {
             store.openArticle(item)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
-                if let img = item.imageURL {
+                if showsPicture, let img = item.imageURL {
                     OptionalImage(url: img, maxHeight: ImageCap.resolve(imageMaxHeight))
                         .padding(.bottom, 2)
                 }
@@ -71,8 +74,14 @@ struct StoryCard: View {
     /// Height estimate used by the masonry distributor to choose which column
     /// an item joins. It reserves no space, so a poor estimate only makes the
     /// columns uneven — it never leaves a gap.
-    static func estimateHeight(_ item: FeedItem, columnWidth: CGFloat) -> CGFloat {
-        var h = imageHeight(item, columnWidth: columnWidth)
+    ///
+    /// `showsPicture` has to be here as well as on the card. The estimate is
+    /// what the distributor balances the columns with, so an estimate that
+    /// counts a picture the card will not draw makes the column it lands in
+    /// short by the height of that picture.
+    static func estimateHeight(_ item: FeedItem, columnWidth: CGFloat,
+                               showsPicture: Bool = true) -> CGFloat {
+        var h = showsPicture ? imageHeight(item, columnWidth: columnWidth) : 0
         h += 14
         h += min(CGFloat(item.title.count), 120) * 0.85
         h += 18
