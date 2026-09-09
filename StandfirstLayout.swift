@@ -109,7 +109,9 @@ extension Standfirst {
         let capacity = maxLines * count
         let fitted = join(pieces, upTo: longestPrefix(of: pieces, within: capacity, width: columnWidth, metrics: metrics))
         guard count > 1 else {
-            let plan = Plan(columns: [fitted], gutter: gutter)
+                let plan = Plan(columns: [unorphaned(fitted, width: columnWidth,
+                                                  metrics: metrics, maxLines: maxLines)],
+                            gutter: gutter)
             cache.store(plan, for: key)
             return plan
         }
@@ -143,9 +145,48 @@ extension Standfirst {
             drawn = split(fitted, starts: starts, into: used, of: count, width: columnWidth, metrics: metrics)
         }
 
-        let plan = Plan(columns: drawn, gutter: gutter)
+        let plan = Plan(columns: drawn.map {
+            unorphaned($0, width: columnWidth, metrics: metrics, maxLines: maxLines)
+        }, gutter: gutter)
         cache.store(plan, for: key)
         return plan
+    }
+
+    /// Stops a column ending on a single word, but only when it still fits.
+    ///
+    /// The obvious fix is to tie the last two words together and be done, and
+    /// that is not safe here: this text has already been cut to `maxLines`, so
+    /// suppressing a break can push the final words onto a line that does not
+    /// exist and the reader loses them altogether. **Losing the last words is
+    /// worse than an orphan**, which is why the guard is applied here — where
+    /// the line budget is known — rather than at the `Text` that draws it.
+    ///
+    /// So it is measured, not assumed: join, re-count the lines, and keep the
+    /// joined version only if the column is still within budget.
+    ///
+    /// The join is a WORD JOINER either side of the space, not a no-break
+    /// space. Charter's U+00A0 advances 7.79pt against a 3.89pt normal space,
+    /// exactly double, so a no-break space puts a visible gap mid-sentence.
+    /// UAX 14 rule LB11 prohibits a break around U+2060 without touching the
+    /// glyph, which is the same fix the reader's failure notice uses.
+    private static func unorphaned(_ column: String, width: CGFloat,
+                                   metrics: Metrics, maxLines: Int) -> String {
+        guard !column.isEmpty, width > 0 else { return column }
+        guard lastLineIsOneWord(column, width: width, metrics: metrics) else { return column }
+        guard let gap = column.range(of: " ", options: .backwards) else { return column }
+        let joined = column.replacingCharacters(in: gap, with: "\u{2060} \u{2060}")
+        guard lineCount(joined, width: width, metrics: metrics) <= maxLines else { return column }
+        return joined
+    }
+
+    /// Whether the last line of a wrapped column holds a single word.
+    private static func lastLineIsOneWord(_ text: String, width: CGFloat,
+                                          metrics: Metrics) -> Bool {
+        let starts = lineStarts(of: text, width: width, metrics: metrics)
+        guard let last = starts.last, starts.count > 1 else { return false }
+        let tail = text[last...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tail.isEmpty else { return false }
+        return tail.split(whereSeparator: \.isWhitespace).count == 1
     }
 
     /// Divides `fitted` into `used` columns, padded out to `total` slots, and
