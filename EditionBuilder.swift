@@ -48,12 +48,21 @@ struct EditionBuilder {
         // today-items as they publish.
         let today = Self.dayRange(for: date)
         let todayOnly = items.filter { today.contains($0.publishedAt) }
-        // Dedupe by canonical link (multiple feeds often carry the same
-        // article, e.g. Guardian main + Guardian football), then by itemId
-        // as a fallback for feeds that share guids but not URLs.
-        let deduped = dedupeByLink(todayOnly)
-        let sorted = deduped.sorted { $0.publishedAt > $1.publishedAt }
-        let interleaved = roundRobinByFeed(sorted)
+        // Sort BEFORE deduping, not after. `dedupeByLink` keeps whichever
+        // copy it meets first, so the order it is handed decides which of two
+        // syndicated copies reaches the page — and un-sorted, that order is
+        // the completion order of 16 concurrent fetches, which is a race.
+        // Two feeds carrying one article (Guardian main + Guardian football)
+        // could therefore yield a different paper on each refresh, and the
+        // copies are not interchangeable: one may have been enriched with a
+        // picture and a standfirst and the other not.
+        //
+        // Sorted first, "first seen" means "newest", every time.
+        let sorted = todayOnly.sorted { $0.publishedAt > $1.publishedAt }
+        // Dedupe by canonical link, then by itemId as a fallback for feeds
+        // that share guids but not URLs.
+        let deduped = dedupeByLink(sorted)
+        let interleaved = roundRobinByFeed(deduped)
 
         // The lead *must* display an image — a text-only hero looks like a
         // mistake at full-width span. An item qualifies only if it has an
@@ -145,7 +154,10 @@ struct EditionBuilder {
     }
 
     /// Remove items that share a canonical link or itemId with an earlier
-    /// item. First-seen wins, preserving date ordering.
+    /// item, preserving the order given.
+    ///
+    /// First seen wins, so the caller's ordering IS the tie-break rule. It is
+    /// handed a date-sorted list for exactly that reason.
     private func dedupeByLink(_ items: [FeedItem]) -> [FeedItem] {
         var seenLinks = Set<String>()
         var seenIds = Set<String>()

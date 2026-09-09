@@ -54,3 +54,46 @@ EMBEDDED_FRAMEWORKS := Sparkle
 ENTITLEMENTS     := JorvikDailyNews.entitlements
 
 include ../jorvik-release/release.mk
+
+# ---------------------------------------------------------------------------
+# Tests
+#
+# Not XCTest and not `swift test`: this app is a single `swiftc` binary with
+# no Xcode project and no Package.swift, and QuitProtect's `swift test` only
+# works because release.mk hands it framework flags. `Tests/` is an ordinary
+# executable that asserts and exits non-zero, which is all a human or a CI
+# runner needs from it.
+#
+# TEST_SOURCES is the model layer, deliberately a subset of SWIFT_SOURCES: the
+# views are excluded because nothing in them is testable without a screen, and
+# pulling them in would drag `@main` into a second binary. Everything listed
+# here is Foundation-only apart from ImageCache, which EditionBuilder consults
+# to ask whether a picture is known to have failed.
+TEST_SOURCES := VideoLink.swift \
+                Feed.swift \
+                FeedFetcher.swift \
+                Standfirst.swift \
+                EditionBuilder.swift \
+                Edition.swift \
+                Log.swift \
+                ImageCache.swift
+
+TEST_HARNESS := Tests/TestRunner.swift \
+                Tests/VideoLinkTests.swift \
+                Tests/FeedFetcherTests.swift \
+                Tests/StandfirstTests.swift \
+                Tests/EditionBuilderTests.swift \
+                Tests/main.swift
+
+TEST_BIN := .build/tests
+
+.PHONY: test
+test: $(TEST_BIN)
+	@$(TEST_BIN)
+
+$(TEST_BIN): $(TEST_SOURCES) $(TEST_HARNESS) | .build
+	@echo "→ build $(TEST_BIN) (swiftc)"
+	@xcrun swiftc -o $(TEST_BIN) $(TEST_SOURCES) $(TEST_HARNESS)
+
+.build:
+	@mkdir -p .build

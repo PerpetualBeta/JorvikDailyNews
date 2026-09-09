@@ -485,7 +485,10 @@ final class AppStore {
         // asked for ever either.
         allowRetry(of: enrichment.retryable)
         let enrichedSlice = enrichment.items
-        // Order doesn't matter here — `builder.build` re-sorts by date.
+        // `builder.build` sorts by date before it dedupes, so this order no
+        // longer decides which copy of a syndicated story survives. It did
+        // once, silently: dedupe used to run first and keep whichever copy it
+        // met, which put the choice at the mercy of fetch-completion order.
         let merged = enrichedSlice + tail
 
         var edition = builder.build(from: merged, date: Date())
