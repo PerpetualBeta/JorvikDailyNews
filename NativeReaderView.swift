@@ -467,6 +467,11 @@ private struct InlineSVG<Caption: View>: View {
     @State private var image: NSImage?
     @State private var refused = false
 
+    /// Where the SVG parse is allowed to block. Serial, because a page has
+    /// few diagrams and one thread cannot starve anything.
+    private static let parseQueue = DispatchQueue(label: "cc.jorviksoftware.jdn.svg",
+                                                  qos: .userInitiated)
+
     /// The same ceiling the walker applies, restated because this is the far
     /// side of a stored boundary.
     private static var maxSource: Int { 64 * 1024 }
@@ -495,12 +500,28 @@ private struct InlineSVG<Caption: View>: View {
                        + " — over the \(Self.maxSource) allowed")
                 return
             }
-            // Off the main actor. A drawing instruction set that takes half a
-            // minute must not take the window with it, and a diagram nobody
-            // scrolls to should cost nothing.
-            let parsed = await Task.detached(priority: .userInitiated) {
-                source.data(using: .utf8).flatMap(NSImage.init(data:))
-            }.value
+            // Off the main actor, and off the cooperative pool.
+            //
+            // `Task.detached` was the first version of this and it is the same
+            // bug that `SaliencyCache.span` had: the detached task runs on
+            // Swift Concurrency's cooperative pool, which is exactly as wide
+            // as the core count, and `NSImage(data:)` on SVG source is a
+            // synchronous parse that occupies its thread rather than yielding.
+            // Measured on a hostile SVG this pipeline actually produced, that
+            // parse-and-draw took **31 seconds**. Fourteen of those and the
+            // app cannot schedule any async work at all — which is exactly
+            // how a full edition of pictures wedged the whole app through
+            // Vision.
+            //
+            // The source is capped at 64 KB in two places, so the realistic
+            // cost is small. The queue is not about the cost; it is about
+            // where a blocking call is allowed to block.
+            let parsed = await withCheckedContinuation { continuation in
+                Self.parseQueue.async {
+                    continuation.resume(returning: source.data(using: .utf8)
+                        .flatMap(NSImage.init(data:)))
+                }
+            }
             guard !Task.isCancelled else { return }
             image = parsed
         }

@@ -754,13 +754,41 @@ final class SaliencyCache: @unchecked Sendable {
     /// worth and exists to stop unbounded growth rather than to be reached.
     private static let spanCountLimit = 4000
 
+    /// Vision runs here, and nowhere else.
+    ///
+    /// A dedicated queue rather than `Task.detached`, and that is the whole
+    /// point of it. `Task.detached` runs on Swift Concurrency's **cooperative
+    /// pool**, which is exactly as wide as the machine's core count, and
+    /// blocking one of its threads is forbidden: the thread is occupied, not
+    /// yielded. Vision's `performRequests` is synchronous and blocks on a
+    /// semaphore inside `VNControlledCapacityTasksQueue` whenever it is at
+    /// capacity, so a full edition of pictures consumed the pool and **no
+    /// async work in the app could be scheduled again**.
+    ///
+    /// Measured on a 14-core machine with a refresh in flight: 15 threads
+    /// parked in `SaliencyCache.span` -> Vision -> `_dispatch_semaphore_wait_slow`
+    /// against 14 cooperative threads, unchanged across two samples three
+    /// seconds apart. The main thread was idle the whole time, waiting for
+    /// work that could never be scheduled — which is why the symptom was "the
+    /// OPML export hangs" and had nothing whatever to do with OPML.
+    ///
+    /// Serial on purpose. Vision limits its own concurrency anyway, so width
+    /// above a small number buys nothing, and one thread cannot starve
+    /// anything. The result is cached per URL, so the cost is paid once per
+    /// picture per day.
+    private static let visionQueue = DispatchQueue(label: "cc.jorviksoftware.jdn.vision",
+                                                   qos: .utility)
+
     /// The subject's span. Runs Vision at most once per URL.
     func span(for url: URL, image: NSImage) async -> Span? {
         if let hit = cached(url) { return hit }
         let allowance = Self.crownAllowance
-        let span = await Task.detached(priority: .utility) {
-            Self.subjectSpan(of: image, crownAllowance: allowance)
-        }.value
+        let span: Span? = await withCheckedContinuation { continuation in
+            Self.visionQueue.async {
+                continuation.resume(returning: Self.subjectSpan(of: image,
+                                                                crownAllowance: allowance))
+            }
+        }
         store(span, for: url)
         return span
     }
