@@ -277,45 +277,35 @@ enum Standfirst {
         return out
     }
 
-    /// A title, with a double-encoded source decoded the rest of the way.
+    /// A title from the extractor, with its character references decoded.
     ///
-    /// Some sites encode twice. Tom's Hardware puts `&amp;mdash;` in its
-    /// `<title>`, so one honest decode leaves the literal text `&mdash;` —
-    /// which is what the reader saw, and what Safari's tab shows for the same
-    /// page.
+    /// Needed because **LinkeDOM does not decode references inside
+    /// `<title>`**, and nothing else in the reader did either. Measured on the
+    /// real page that reported this:
     ///
-    /// One extra pass, and it runs ONLY when a reference is still there after
-    /// the first. That condition is the whole safeguard: a correctly encoded
-    /// title leaves no residue, so it is never touched. A residue means the
-    /// source encoded it twice, which is a fault in the publisher's pipeline
-    /// rather than an intention.
+    ///     page <title>       …drivers &mdash; 'agent-first'…
+    ///     Readability gives  …drivers &mdash; 'agent-first'…   undecoded
+    ///     this gives         …drivers — 'agent-first'…
     ///
-    /// **Two earlier versions of this were wrong, in opposite directions.**
-    /// The first decoded the residue but refused anything producing `<`, `>`,
-    /// `&`, `"` or `'` — a denylist of characters, which has to be complete to
-    /// be correct and never will be. The second marked the residue with U+FFFD
-    /// instead of decoding it, which fixed the denylist but claimed the text
-    /// was unreadable when `&lt;` is perfectly readable and unambiguous.
+    /// `<title>` is RCDATA and the specification says references ARE decoded
+    /// in it; `htmlparser2`, which LinkeDOM parses with, treats it as raw
+    /// text. That is the same class of divergence as the missing `</head>`
+    /// this file's siblings already work around, and the reason rung 1 keeps
+    /// a WebKit second opinion behind it.
     ///
-    /// Both were guarding against markup that cannot happen here. A title
-    /// reaches a SwiftUI `Text`, which never interprets markup, and the one
-    /// HTML path escapes it at the point of use (`ReaderSheet`'s
-    /// `<h1>\(escape(title))</h1>`). There is nowhere for a decoded `<` to
-    /// become a tag.
+    /// One pass, deliberately. **Three earlier versions of this were wrong,
+    /// all from the same mistake: I diagnosed the site instead of measuring
+    /// the pipeline.** I decided Tom's Hardware double-encoded its title, and
+    /// built a second decode pass behind a character denylist, then replaced
+    /// that with U+FFFD marking, then with a conditional second pass. The site
+    /// encodes correctly. There was never any double-encoding, and none of the
+    /// three was needed.
     ///
-    /// Exactly one extra pass, not repeated to a fixed point: it fixes the
-    /// double-encoding that occurs in practice, and a triple-encoded source is
-    /// a fault nobody has produced.
-    ///
-    /// Titles only. Body text keeps the single pass, where the sequencing rule
-    /// in `decodeEntities` still matters.
+    /// The feed's own title needs none of this: `FeedFetcher.finalise` already
+    /// decodes it, which is why cards were right while the reader header was
+    /// wrong.
     static func decodeTitle(_ s: String) -> String {
-        let once = decodeEntities(s)
-        guard once.contains("&"),
-              Patterns.residualReference.firstMatch(
-                  in: once, range: NSRange(once.startIndex..., in: once)) != nil
-        else { return once }
-        return decodeEntities(once)
+        decodeEntities(s)
     }
 
     /// The longest reference worth looking for. Long enough for the longest
@@ -431,17 +421,6 @@ enum Standfirst {
         )
         static let tag = regex("<[^>]+>")
 
-        /// A character reference still present AFTER one honest decode, which
-        /// means the source encoded it twice.
-        ///
-        /// No whitespace can appear inside it, because the character classes
-        /// forbid it — so `Marks & Spencer; Ltd` is untouched, on the strength
-        /// of the space after the ampersand. Named references need at least
-        /// two letters, which every real one has (`lt`, `gt`, `amp`) and which
-        /// keeps `AT&T;` out of it.
-        static let residualReference = regex(
-            "&(?:[A-Za-z][A-Za-z0-9]{1,30}|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});"
-        )
         static let whitespace = regex("\\s+")
 
         private static func regex(_ pattern: String, dotMatchesLineSeparators: Bool = false) -> NSRegularExpression {
