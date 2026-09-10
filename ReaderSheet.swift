@@ -400,6 +400,14 @@ struct ReaderView: View {
                               + "may not help.",
                         technical: failure.detail))
               }, onDrew: { liveDrew = true })
+              // The web view had no frame of its own, so as a ZStack child it
+              // took its intrinsic size while the cover filled the pane. A
+              // WKWebView has almost no intrinsic size, and a collapsed one
+              // lays out almost nothing: measured against the same page at
+              // 1100x800, a 0x0 view reported 272 characters of laid-out text
+              // instead of 2,873, and nothing at all for the first few
+              // seconds. It would also have been useless once revealed.
+              .frame(maxWidth: .infinity, maxHeight: .infinity)
 
               if !liveDrew {
                   LivePageCover(host: item.link.host ?? "the original page",
@@ -904,8 +912,9 @@ struct LiveWebView: NSViewRepresentable {
                 return
             }
             jdnLog("reader: live page never reported any laid-out content after "
-                   + "\(waited)s (it \(why)), but holds \(drawn.markup) chars of "
-                   + "document — showing it rather than claiming it failed")
+                   + "\(waited)s (it \(why)) — text \(drawn.text), media \(drawn.media), "
+                   + "document \(drawn.markup) chars; showing it rather than claiming "
+                   + "it failed")
             onDrew()
         }
 
