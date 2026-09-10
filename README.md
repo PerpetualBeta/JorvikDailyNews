@@ -314,7 +314,13 @@ Off by default. To turn it on:
 defaults write cc.jorviksoftware.JorvikDailyNews debugLogging -bool YES
 ```
 
-Lines are appended to `~/Library/Logs/Jorvik Daily News/jorvikdailynews.log`, in a directory only you can read. Each run starts with a header recording the app and macOS versions, so the log identifies itself without anyone having to ask. To turn it off again:
+Lines are appended to
+
+```
+~/Library/Containers/cc.jorviksoftware.JorvikDailyNews/Data/Library/Logs/Jorvik Daily News/jorvikdailynews.log
+```
+
+in a directory only you can read. It is inside the container because the app is sandboxed; before 1.4.9 it was at `~/Library/Logs/Jorvik Daily News/`, and a log from an older build will still be there. Each run starts with a header recording the app and macOS versions, so the log identifies itself without anyone having to ask. To turn it off again:
 
 ```
 defaults delete cc.jorviksoftware.JorvikDailyNews debugLogging

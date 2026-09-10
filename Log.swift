@@ -6,7 +6,11 @@ import Foundation
 //   defaults delete cc.jorviksoftware.JorvikDailyNews debugLogging   # turn off
 //
 // When on, timestamped lines are appended to
-//   ~/Library/Logs/Jorvik Daily News/jorvikdailynews.log
+//   ~/Library/Containers/cc.jorviksoftware.JorvikDailyNews/Data/
+//     Library/Logs/Jorvik Daily News/jorvikdailynews.log
+//
+// Inside the container, because `.libraryDirectory` is container-relative in a
+// sandboxed app. It was ~/Library/Logs/Jorvik Daily News/ before 1.4.9.
 // (per-user, owner-only directory — not /private/tmp, where a predictable
 // filename invites a symlink-target-overwrite by any same-user process.) The
 // flag is read once per call, so toggling it takes effect on the next line
