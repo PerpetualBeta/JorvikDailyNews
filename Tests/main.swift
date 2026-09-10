@@ -9,5 +9,6 @@ StandfirstTests.run()
 EditionBuilderTests.run()
 PagePicturesTests.run()
 DayRolloverTests.run()
+ReaderLinkTests.run()
 
 exit(T.report())

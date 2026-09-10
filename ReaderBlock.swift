@@ -23,6 +23,29 @@ struct ReaderBlock: Codable, Sendable, Identifiable {
         let italic: Bool
         let code: Bool
         let href: String?
+
+        /// Where this run leads, or nil if it leads nowhere.
+        ///
+        /// Resolved against the article's own address, because feeds hand us
+        /// plenty of `/news/story` and `../images/x`. A bare fragment resolves
+        /// to the article's page with the fragment on it: there are no anchors
+        /// in the rendered blocks to jump to, so sending the reader to that
+        /// spot on the real page is the honest answer rather than doing
+        /// nothing.
+        ///
+        /// Here rather than in the view so it can be tested. A run that
+        /// returns nil is drawn as ordinary text — never underlined, because
+        /// something that looks like a link and does nothing is the exact bug
+        /// this was written to fix.
+        func destination(relativeTo base: URL) -> URL? {
+            guard let href else { return nil }
+            let trimmed = href.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            // `javascript:` cannot do anything here and must not open a
+            // browser window showing its source.
+            guard !trimmed.lowercased().hasPrefix("javascript:") else { return nil }
+            return URL(string: trimmed, relativeTo: base)?.absoluteURL
+        }
     }
 
     let kind: Kind

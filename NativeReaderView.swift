@@ -119,6 +119,16 @@ struct NativeReaderView: View {
         }
         .background(Palette.background(dark))
         .textSelection(.enabled)
+        // Stated rather than inherited. The default action already opens the
+        // browser, but leaving it implicit means a dead click has nothing to
+        // look at: with this, the log says whether the click was received at
+        // all, which separates "the link is not live" from "the browser did
+        // not come forward".
+        .environment(\.openURL, OpenURLAction { url in
+            jdnLog("reader: following a link to \(url.absoluteString)")
+            NSWorkspace.shared.open(url)
+            return .handled
+        })
     }
 
     // MARK: Header
@@ -241,22 +251,44 @@ struct NativeReaderView: View {
     /// emphasis boundary exactly as it would in prose. Building a run per
     /// `Text` in an `HStack` looks equivalent and is not: each becomes an
     /// unbreakable box and a long sentence stops wrapping.
+    /// One paragraph as a single `Text`, so it wraps as prose.
+    ///
+    /// Built as an `AttributedString` rather than by adding `Text` values
+    /// together, and that is not a tidying-up. A `Text` has no way to carry a
+    /// link: `Text(run.text).foregroundColor(...).underline()` produces
+    /// something that looks exactly like a link and does nothing at all when
+    /// clicked, which is what the reader shipped with. The `.link` attribute
+    /// exists only on `AttributedString`, and `Text` renders one as live.
+    ///
+    /// Still one `Text` at the end. An `HStack` of them would stop wrapping.
     private func styled(_ runs: [ReaderBlock.Run], size: CGFloat,
                         display: Bool = false, italic: Bool = false) -> Text {
-        runs.reduce(Text("")) { partial, run in
-            var piece = Text(run.text)
+        var out = AttributedString()
+        for run in runs {
+            var piece = AttributedString(run.text)
             let family = run.code ? Style.mono : (display ? Style.display : Style.serif)
             let pointSize = run.code ? size * Style.smallerScale : size
-            piece = piece.font(.custom(family, size: pointSize))
-            if run.bold || display { piece = piece.bold() }
-            if run.italic || italic { piece = piece.italic() }
-            piece = piece.foregroundColor(run.href == nil
-                                          ? Palette.text(dark)
-                                          : Palette.link(dark))
-            if run.href != nil { piece = piece.underline() }
-            return partial + piece
+            var font = Font.custom(family, size: pointSize)
+            if run.bold || display { font = font.bold() }
+            if run.italic || italic { font = font.italic() }
+            piece.font = font
+
+            if let destination = run.destination(relativeTo: baseURL) {
+                piece.link = destination
+                piece.foregroundColor = Palette.link(dark)
+                piece.underlineStyle = .single
+            } else {
+                piece.foregroundColor = Palette.text(dark)
+                // A link the article gave us that will not resolve is drawn as
+                // ordinary text. Underlining something inert is the bug this
+                // whole change is about, and a broken href must not reproduce
+                // it in miniature.
+            }
+            out.append(piece)
         }
+        return Text(out)
     }
+
 
     // MARK: Media
 

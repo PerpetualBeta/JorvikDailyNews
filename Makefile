@@ -78,6 +78,7 @@ TEST_SOURCES := VideoLink.swift \
                 PictureSignatureStore.swift \
                 PagePictures.swift \
                 DayRollover.swift \
+                ReaderBlock.swift \
                 Feed.swift \
                 FeedFetcher.swift \
                 Standfirst.swift \
@@ -93,6 +94,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/EditionBuilderTests.swift \
                 Tests/PagePicturesTests.swift \
                 Tests/DayRolloverTests.swift \
+                Tests/ReaderLinkTests.swift \
                 Tests/main.swift
 
 TEST_BIN := .build/tests
