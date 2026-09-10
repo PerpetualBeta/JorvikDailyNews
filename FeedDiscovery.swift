@@ -126,7 +126,13 @@ final class FeedDiscovery: Sendable {
             guard lower.contains("application/rss+xml") || lower.contains("application/atom+xml") else { continue }
 
             guard let href = extractAttr("href", from: attrs),
-                  let resolved = URL(string: href, relativeTo: baseURL)?.absoluteURL,
+                  // http(s) and not the local network. The review dismissed
+                  // this as low because discovery is normally a manual step
+                  // with no read-back channel, and it is one line, and
+                  // `fetchSelfHealing` calls it automatically on any feed that
+                  // stops parsing — so an attacker-served page reaches it
+                  // without the user doing anything at all.
+                  let resolved = WebURL.resolve(href, against: baseURL),
                   !seen.contains(resolved) else { continue }
 
             seen.insert(resolved)

@@ -180,7 +180,20 @@ struct ProseText: NSViewRepresentable {
         func textView(_ view: NSTextView, clickedOnLink link: Any,
                       at charIndex: Int) -> Bool {
             let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
-            guard let url else { return false }
+            guard let url else {
+                // Handled either way, deliberately.
+                //
+                // Returning false hands the link back to AppKit, which opens
+                // it with LaunchServices and no scheme check — the exact
+                // bypass the allow-list in `open(_:)` exists to prevent. This
+                // is unreachable today, because `appKitStyled` only ever puts
+                // a URL in the attribute, but it is the one line in this file
+                // where a later change could reach the system without passing
+                // through that check, and "unreachable" is not a property
+                // worth relying on for that.
+                jdnLog("prosetext: a link attribute that is not a URL — ignored")
+                return true
+            }
             onOpen(url)
             return true
         }
