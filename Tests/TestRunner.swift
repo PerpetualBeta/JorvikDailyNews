@@ -11,9 +11,11 @@ enum T {
     nonisolated(unsafe) private static var checks = 0
     nonisolated(unsafe) private static var failures: [String] = []
     nonisolated(unsafe) private static var currentSuite = ""
+    nonisolated(unsafe) private static var suites = 0
 
     static func suite(_ name: String, _ body: () throws -> Void) {
         currentSuite = name
+        suites += 1
         let before = failures.count
         do {
             try body()
@@ -51,14 +53,50 @@ enum T {
         return data
     }
 
+    /// The build page quotes the size of this suite. A number written by hand in
+    /// prose goes stale the moment anyone adds a test, and nothing would say so,
+    /// so the suite checks its own documentation instead of anyone remembering to.
+    ///
+    /// Silent when the page is absent — a copy of the binary without the repo
+    /// around it is not a failure.
+    private static func documentedSizeMismatch(file: String = #filePath) -> String? {
+        let root = URL(fileURLWithPath: file)
+            .deletingLastPathComponent()   // Tests/
+            .deletingLastPathComponent()   // the repository
+        let page = root.appendingPathComponent("Documentation/building.md")
+        guard let text = try? String(contentsOf: page, encoding: .utf8) else { return nil }
+
+        let pattern = #"\*\*(\d+) checks across (\d+) suites\*\*"#
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let c = Range(m.range(at: 1), in: text).flatMap({ Int(text[$0]) }),
+              let u = Range(m.range(at: 2), in: text).flatMap({ Int(text[$0]) })
+        else {
+            return "Documentation/building.md no longer states the suite size in the form "
+                 + "**N checks across M suites**, so it cannot be kept honest. Restore that "
+                 + "phrase, or delete this check along with it."
+        }
+
+        guard c != checks || u != suites else { return nil }
+        return "Documentation/building.md says \(c) checks across \(u) suites; this run was "
+             + "\(checks) across \(suites). Correct the page."
+    }
+
     static func report() -> Int32 {
         print("")
-        if failures.isEmpty {
-            print("\(checks) checks passed")
+        let drift = documentedSizeMismatch()
+        if failures.isEmpty && drift == nil {
+            print("\(checks) checks across \(suites) suites passed")
             return 0
         }
-        print("\(failures.count) failure(s) of \(checks) checks:")
-        for f in failures { print("  - \(f)") }
+        if let drift {
+            print("documentation out of date:")
+            print("  - \(drift)")
+        }
+        if !failures.isEmpty {
+            print("\(failures.count) failure(s) of \(checks) checks:")
+            for f in failures { print("  - \(f)") }
+        }
         return 1
     }
 }

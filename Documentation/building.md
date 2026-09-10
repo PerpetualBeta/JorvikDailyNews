@@ -11,7 +11,7 @@ git clone https://github.com/PerpetualBeta/JorvikDailyNews.git
 cd JorvikDailyNews
 gmake build
 open .build/JorvikDailyNews.app
-gmake test         # 345 checks, no Xcode project needed
+gmake test         # the suite; size and rationale below
 ```
 
 `gmake build` compiles with `swiftc -O` and ad-hoc-signs for local use. JorvikKit files are compiled in from `JorvikKit/`. Release builds are Developer ID signed and notarized.
