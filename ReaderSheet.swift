@@ -830,6 +830,27 @@ struct LiveWebView: NSViewRepresentable {
         /// spinner for ever.
         private static let hardCap: TimeInterval = 75
 
+        /// How long to wait for the navigation to commit at all.
+        ///
+        /// Separate from everything below it, because a document that has not
+        /// arrived is a different fact from a document that has not painted.
+        ///
+        /// `outerHTML` stuck at 39 characters is the empty skeleton a web view
+        /// starts with, and on this machine it is the signature of the WebKit
+        /// fault: `policy=yes provisional=no commit=no`, the policy delegate
+        /// answering and the provisional load never beginning. When that
+        /// happens `isLoading` stays true for ever, so the wait ran the full
+        /// 75 seconds and the reader sat in front of a counter for a fault the
+        /// app could see in one second.
+        ///
+        /// Twelve seconds because that is `ArticleExtractor.fetchTimeout`, and
+        /// a page whose first byte has not arrived in the time the fetcher
+        /// would have given up is not merely slow. The document arrives early
+        /// even on genuinely slow pages — adam.math.hhu.de had its 1,461
+        /// characters at 0.9s and then spent 45 seconds on subresources — so
+        /// this measures the one thing that is quick on every page that works.
+        private static let commitDeadline: TimeInterval = 12
+
         /// How long to keep asking after the page has stopped loading.
         ///
         /// A JavaScript application paints some time after its last byte
@@ -860,6 +881,16 @@ struct LiveWebView: NSViewRepresentable {
                         jdnLog("reader: live page drew \(drawn.text) char(s) of text and "
                                + "\(drawn.media) media element(s) after \(waited)s")
                         onDrew()
+                        return
+                    }
+                    // Nothing committed. Not slow — not started.
+                    if !drawn.hasDocument,
+                       Date().timeIntervalSince(started) >= Self.commitDeadline {
+                        let waited = String(format: "%.1f", Date().timeIntervalSince(started))
+                        jdnLog("reader: live page never began — still \(drawn.markup) chars "
+                               + "of empty document after \(waited)s, so waiting longer "
+                               + "cannot help; \(ArticleExtractor.webKitVerdict)")
+                        onBlank()
                         return
                     }
                     // Still arriving. Nothing has failed, so nothing is
