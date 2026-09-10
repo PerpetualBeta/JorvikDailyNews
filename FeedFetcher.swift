@@ -53,7 +53,106 @@ final class FeedFetcher: Sendable {
     /// every one is a pure function of these bytes. They went unnoticed
     /// because nothing could call this without a network and a user
     /// interface. See `Tests/FeedFetcherTests.swift`.
+    // MARK: - Entity amplification
+
+    /// An internal entity big enough to be a weapon, described, or nil.
+    ///
+    /// This has to happen BEFORE parsing, and finding that out cost a wrong
+    /// answer. The obvious defence is to cap how much text the parser hands
+    /// back, and it does not work: measured against a 1,548,742-byte document
+    /// declaring a 1 MB entity referenced 100,000 times, an 8 MB ceiling on
+    /// delivered text made **no difference at all** — 61.39 seconds either
+    /// way, with 19 MB of resident memory. The cost is inside libxml2, which
+    /// rescans the entity value at every reference, and it is paid before
+    /// enough callbacks arrive to trip any counter of mine. Nothing downstream
+    /// of the parser can help.
+    ///
+    /// Refusing internal entities outright would work and is too blunt.
+    /// XML predefines only five, so a feed wanting `&nbsp;` must declare it,
+    /// and real feeds do:
+    ///
+    ///     <!DOCTYPE rss [ <!ENTITY nbsp "&#160;"> ]>
+    ///
+    /// The weapon is the entity's SIZE, not its existence. `&nbsp;` is six
+    /// bytes. So a declaration is allowed and a large one is not, which keeps
+    /// every legitimate use and removes the amplification: with values bounded
+    /// at 256 bytes, even a 32 MB document packed edge to edge with
+    /// references expands to under two gigabytes of logical text rather than
+    /// the 98 GB above.
+    /// Ceilings on what one item may carry into the edition.
+    ///
+    /// Nothing truncated these before. `FeedItem.title` and `.summary` are
+    /// plain `String`s that go into the edition JSON, are rewritten on every
+    /// refresh, are laid out by the masonry and are measured by the standfirst
+    /// fitter. A headline is a headline; `leadTargetWords` is 200, so 4,000
+    /// characters of summary is already several times what any card can show.
+    static let maxStoredTitle = 500
+    static let maxStoredSummary = 4000
+    /// Items taken from one feed.
+    static let maxItemsPerFeed = 500
+
+    static let maxEntityValue = 256
+    static let maxEntityDeclarations = 64
+
+    /// Scanned over bytes, and deliberately never reads a whole entity value.
+    ///
+    /// The first version of this decoded a 64 KB prefix and matched
+    /// `<!ENTITY name "value">` with a regex. It made no difference — still
+    /// 61 seconds — and the reason is worth keeping: the bomb's value is
+    /// **1 MB**, so its closing quote lies far outside a 64 KB window and the
+    /// pattern never matched. The guard was blind to precisely the shape it
+    /// exists to catch, and only measuring said so.
+    ///
+    /// So a value that cannot be closed within the limit IS the answer. This
+    /// finds each declaration's opening quote and looks ahead at most
+    /// `maxEntityValue + 1` bytes for its partner. Not finding one means the
+    /// value is longer than that, which is all it needs to know, and the
+    /// scan therefore costs the same on a bomb as on a real feed.
+    private static func entityAmplification(in data: Data) -> String? {
+        let marker = Array("<!ENTITY".utf8)
+        // An internal DTD can only be in the prolog. This is far more than any
+        // legitimate one needs and bounds the scan on a large feed.
+        let window = min(data.count, 256 * 1024)
+        let bytes = [UInt8](data.prefix(window))
+        guard bytes.count > marker.count else { return nil }
+
+        var found = 0
+        var i = 0
+        while i <= bytes.count - marker.count {
+            guard bytes[i] == marker[0],
+                  Array(bytes[i..<(i + marker.count)]).elementsEqual(marker)
+            else { i += 1; continue }
+            found += 1
+            if found > maxEntityDeclarations {
+                return "more than \(maxEntityDeclarations) internal entities"
+            }
+            // The opening quote of the value, if there is one nearby. A name
+            // and whitespace, so this is a short hop.
+            var j = i + marker.count
+            let nameLimit = min(bytes.count, j + 512)
+            while j < nameLimit, bytes[j] != 0x22, bytes[j] != 0x27 { j += 1 }
+            guard j < nameLimit else { i += marker.count; continue }
+            let quote = bytes[j]
+            // Its partner, within the limit or not at all.
+            let valueStart = j + 1
+            let searchEnd = min(bytes.count, valueStart + maxEntityValue + 1)
+            var k = valueStart
+            while k < searchEnd, bytes[k] != quote { k += 1 }
+            if k >= searchEnd {
+                let over = window == data.count ? "\(k - valueStart)" : "at least \(k - valueStart)"
+                return "an internal entity of \(over) bytes, "
+                     + "over the \(maxEntityValue) allowed"
+            }
+            i = k + 1
+        }
+        return nil
+    }
+
     static func parse(_ data: Data, from feed: Feed) throws -> FetchedFeed {
+        if let amplification = entityAmplification(in: data) {
+            jdnLog("fetch: \(feed.url.host ?? "?") declares \(amplification) — refused before parsing")
+            throw FeedFetchError.parseFailureDetail("declares \(amplification)")
+        }
         let parser = RSSAtomParser(data: data, feed: feed)
         guard let result = parser.parse() else {
             // Two different faults, and lumping them together hid one of them
@@ -267,13 +366,59 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         }
     }
 
+    /// Longest run of text this will hold for one element.
+    ///
+    /// `XMLParser` is SAX and accumulates nothing itself, so libxml2's own
+    /// 10 MB text ceiling never applies: a `<channel><title>` of 200 MB of `A`
+    /// parses as a **success** in 0.18 seconds across 203 `foundCharacters`
+    /// callbacks, leaves a 209,715,200-character string, and takes 1.5 GB of
+    /// resident memory with it. That title is then written into `feeds.json`
+    /// and rewritten on every refresh thereafter.
+    ///
+    /// 64 KB is far more than any element in a feed needs — the largest real
+    /// `content:encoded` in the subscribed set is under 5 MB and that is the
+    /// whole document, not one element — and `Standfirst` clamps the body to
+    /// 256 KB downstream regardless.
+    private static let maxElementText = 64 * 1024
+
+    /// Bytes of text accepted across the whole document.
+    ///
+    /// The per-element cap alone does not stop an entity-amplification feed:
+    /// libxml2 rescans an entity value at every reference, so cost tracks the
+    /// product of entity size and reference count regardless of how the text
+    /// is distributed. Measured on this machine: 1 MB expanded 100,000 times,
+    /// from a **1.5 MB** file, cost 59.2 seconds. A response-size limit cannot
+    /// help at that ratio; a limit on how much text is delivered can.
+    private static let maxDocumentText = 8 * 1024 * 1024
+
+    private var textDelivered = 0
+
+    /// Accepts text up to the ceilings, then stops the parse.
+    ///
+    /// Stopping rather than truncating quietly, because a document that has
+    /// tried to deliver eight megabytes of element text is not a feed having a
+    /// verbose day. Whatever parsed before this point is still kept, exactly
+    /// as it is for a malformed feed.
+    private func accept(_ text: String, _ parser: XMLParser) {
+        textDelivered += text.utf8.count
+        if textDelivered > Self.maxDocumentText {
+            jdnLog("fetch: \(feed.url.host ?? "?") delivered more than "
+                   + "\(Self.maxDocumentText / 1024 / 1024) MB of element text — "
+                   + "stopped parsing, keeping the \(items.count) item(s) so far")
+            parser.abortParsing()
+            return
+        }
+        guard buffer.utf8.count < Self.maxElementText else { return }
+        buffer.append(text)
+    }
+
     func parser(_ parser: XMLParser, foundCharacters string: String) {
-        buffer.append(string)
+        accept(string, parser)
     }
 
     func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
         if let s = String(data: CDATABlock, encoding: .utf8) {
-            buffer.append(s)
+            accept(s, parser)
         }
     }
 
@@ -290,7 +435,11 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         if current == nil {
             let inChannel = path.contains("channel") || path.contains("feed")
             if inChannel && name == "title" && channelTitle.isEmpty {
-                channelTitle = text
+                // Capped where it is parsed, not where it is drawn. This one
+                // is written to `feeds.json` and rewritten on every refresh,
+                // so an unbounded value is a permanent cost rather than a
+                // passing one.
+                channelTitle = String(text.prefix(FeedFetcher.maxStoredTitle))
             }
         }
 
@@ -321,6 +470,16 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
                 items.append(built)
             }
             current = nil
+            // A feed offering more than this is not a feed the paper can use.
+            // The largest real one in the subscribed set is a few hundred
+            // items; 40,000 arrives as a few hundred KB of gzip, because
+            // `URLSession` inflates transparently and nothing here asks it not
+            // to, so the wire size says nothing about the work.
+            if items.count >= FeedFetcher.maxItemsPerFeed {
+                jdnLog("fetch: \(feed.url.host ?? "?") offered more than "
+                       + "\(FeedFetcher.maxItemsPerFeed) items — stopped at the cap")
+                parser.abortParsing()
+            }
         default:
             break
         }
@@ -329,7 +488,8 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
     // MARK: - Finalisation
 
     private func finalise(_ b: ItemBuilder) -> FeedItem? {
-        let title = Standfirst.decodeEntities(b.title).trimmed
+        let title = String(Standfirst.decodeEntities(b.title).trimmed
+            .prefix(FeedFetcher.maxStoredTitle))
         guard !title.isEmpty else { return nil }
         guard let originalLink = URL(string: b.link.trimmingCharacters(in: .whitespacesAndNewlines)),
               originalLink.scheme?.hasPrefix("http") == true else { return nil }
@@ -340,7 +500,8 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         // the body HTML for the first external href and use that instead —
         // the target matters more than the meta-commentary.
         let link = resolveTargetURL(originalLink, in: bodyHTML)
-        let summary = cleanSummary(Standfirst.extract(from: bodyHTML))
+        let summary = String(cleanSummary(Standfirst.extract(from: bodyHTML))
+            .prefix(FeedFetcher.maxStoredSummary))
         let imageURL = pickBestImage(candidates: b.imageCandidates, bodyHTML: bodyHTML)
 
         // Undated items rank LAST on the front page rather than masquerading

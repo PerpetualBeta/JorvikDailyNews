@@ -107,11 +107,41 @@ final class ArticleClassifier {
         if let prior = state.corrections[itemId] {
             unapply(prior)
         }
-        let freqs = Self.tokenFrequencies(Self.tokenise(text))
+        // Clamped before tokenising, and the stored map clamped after.
+        //
+        // `classifier.json` is the only permanent state in the app — editions
+        // and picture caches are day-scoped, this is not — and `move` stored
+        // the frequency map of the WHOLE text verbatim with nothing pruning
+        // it. One item whose description is tens of megabytes of distinct
+        // words, moved once with the card's ordinary "Move to…" menu, wrote
+        // that vocabulary into the file for good, and the file is decoded on
+        // the main actor before the window can appear.
+        //
+        // A headline and a standfirst are a few hundred characters. 4,096 is
+        // generous, and the top-N cap keeps one correction's contribution
+        // proportionate to what a correction actually means.
+        let freqs = Self.trim(Self.tokenFrequencies(Self.tokenise(String(text.prefix(Self.maxTrainingText)))))
         apply(tokens: freqs, section: section)
         state.corrections[itemId] = .init(tokens: freqs, section: section)
         state.pins[itemId] = section
         save()
+    }
+
+    /// Characters of an article's text used to train one correction.
+    static let maxTrainingText = 4096
+    /// Distinct tokens kept from one correction, the most frequent first.
+    static let maxTokensPerCorrection = 64
+
+    /// The most frequent tokens, and no more than that.
+    ///
+    /// Ties broken alphabetically so the result does not depend on dictionary
+    /// order, which would make a correction train differently on each launch.
+    private static func trim(_ freqs: [String: Int]) -> [String: Int] {
+        guard freqs.count > maxTokensPerCorrection else { return freqs }
+        let kept = freqs.sorted {
+            $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
+        }.prefix(maxTokensPerCorrection)
+        return Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
     }
 
     // MARK: - Internals

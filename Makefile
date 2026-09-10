@@ -99,6 +99,7 @@ TEST_SOURCES := VideoLink.swift \
 TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/VideoLinkTests.swift \
                 Tests/FeedFetcherTests.swift \
+                Tests/FeedBoundsTests.swift \
                 Tests/StandfirstTests.swift \
                 Tests/EditionBuilderTests.swift \
                 Tests/PagePicturesTests.swift \

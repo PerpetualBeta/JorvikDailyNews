@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Remembers what each picture looks like, across launches.
@@ -42,9 +43,31 @@ final class PictureSignatureStore: @unchecked Sendable {
 
     // MARK: - Reading
 
+    /// The key a URL is filed under.
+    ///
+    /// A hash, not the address. The comment above used to reason that "a
+    /// signature is 116 bytes of payload, so the file stays under a
+    /// megabyte", and that is true of the *value*: the key was
+    /// `absoluteString`, and the cap counts entries rather than bytes.
+    ///
+    /// A URL has no practical length limit here. Confirmed against a server
+    /// accepting long request lines: `URLSession` sent request lines of 8,214,
+    /// 65,558 and 200,022 bytes and every one returned 200, and
+    /// `URL(string:)` accepted all of them. So 6,000 entries whose keys are
+    /// 200 KB of query string is roughly 1.15 GB of JSON, rewritten atomically
+    /// at the end of every refresh.
+    ///
+    /// 32 hex characters bounds the file by construction — 6,000 entries of
+    /// about 180 bytes — and the semantics are unchanged, because the only
+    /// operations here are exact-match get and set.
+    private static func key(for imageURL: URL) -> String {
+        let digest = SHA256.hash(data: Data(imageURL.absoluteString.utf8))
+        return digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
     func signature(for imageURL: URL) -> PictureSignature? {
         lock.lock(); defer { lock.unlock() }
-        return signatures[imageURL.absoluteString]
+        return signatures[Self.key(for: imageURL)]
     }
 
     var count: Int {
@@ -56,7 +79,7 @@ final class PictureSignatureStore: @unchecked Sendable {
 
     func record(_ signature: PictureSignature, for imageURL: URL) {
         lock.lock(); defer { lock.unlock() }
-        let key = imageURL.absoluteString
+        let key = Self.key(for: imageURL)
         if signatures[key] == nil { order.append(key) }
         signatures[key] = signature
         dirty = true
@@ -77,7 +100,14 @@ final class PictureSignatureStore: @unchecked Sendable {
             return
         }
         signatures = stored
-        order = Array(stored.keys)
+        // Sorted, not `Array(stored.keys)`.
+        //
+        // Dictionary order is arbitrary and differs between launches, so the
+        // trim below evicted an arbitrary entry rather than the oldest, and
+        // did it differently every time. A sort is not the true insertion
+        // order — that is not recorded — but it is at least stable, so
+        // eviction is repeatable and a warm store stays warm.
+        order = stored.keys.sorted()
         jdnLog("pictures: \(stored.count) signature(s) loaded")
     }
 
