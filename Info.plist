@@ -31,6 +31,12 @@
     <string>https://jorviksoftware.cc/appcasts/jorvikdailynews.xml</string>
     <key>SUPublicEDKey</key>
     <string>zVc7rs8EiLmlDAYpgaIItjnHtsCkvyVVub+I0/sSb3Q=</string>
+    <!-- Required for a SANDBOXED app: Sparkle installs through its bundled
+         Installer.xpc rather than in-process. Without this an update check
+         succeeds and the install silently does nothing. The matching
+         mach-lookup names are in JorvikDailyNews.entitlements. -->
+    <key>SUEnableInstallerLauncherService</key>
+    <true/>
     <key>SUEnableAutomaticChecks</key>
     <true/>
     <key>SUScheduledCheckInterval</key>

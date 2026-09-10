@@ -3,11 +3,25 @@ import Sparkle
 
 @main
 struct JorvikDailyNewsApp: App {
-    @State private var store = AppStore()
+    /// Assigned in `init()` rather than given a default value here.
+    ///
+    /// Swift assigns default property values BEFORE the body of `init()`
+    /// runs, and `AppStore`'s own properties load `feeds.json`, `read.json`
+    /// and `classifier.json` in their initialisers. A default here would
+    /// therefore read an empty sandbox container before `StoreMigration`
+    /// could put anything in it, and the first launch after sandboxing would
+    /// look — accurately — like every subscription had vanished.
+    @State private var store: AppStore
     private let sparkleUpdater: SPUStandardUpdaterController
     private let sparkleUserDriverDelegate = JorvikDailyNewsUserDriverDelegate()
 
     init() {
+        // BEFORE anything reads a store. See the note on `store` above: the
+        // sandbox moved the app's data into a container, and this copies the
+        // pre-sandbox store across once so nobody loses their subscriptions.
+        StoreMigration.runIfNeeded()
+        _store = State(wrappedValue: AppStore())
+
         // First line of the run, so anyone who has just switched diagnostics on
         // can see that it took effect — and so a log pasted into an issue
         // carries the app and OS versions even if the reader is never opened.

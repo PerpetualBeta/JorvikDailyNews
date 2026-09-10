@@ -38,6 +38,7 @@ SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                 EmbeddedArticle.swift \
                     ArticleClassifier.swift \
                     AppStore.swift \
+                    StoreMigration.swift \
                     Feed.swift \
                     VideoLink.swift \
                     ReaderBlock.swift \

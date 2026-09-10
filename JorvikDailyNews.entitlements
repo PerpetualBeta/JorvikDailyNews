@@ -1,18 +1,75 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Intentionally empty — the hardened runtime keeps Library Validation ON.
-  The release pipeline (jorvik-release/helpers/sign-framework.sh) re-signs the
-  embedded Sparkle.framework and every nested XPC service / helper with the
-  Jorvik Developer ID, leaf-first, so all loaded code shares the app's Team ID
-  and passes Library Validation on its own.
-  `com.apple.security.cs.disable-library-validation` was dropped 2026-08-25
-  (open-follow-ups §15). Citadel is the canary; QuitProtect and Lookout are the
-  accepted followers.
-  Pre-release check, which an ad-hoc local build cannot prove: on a signed and
-  notarised build, launch it and confirm a Sparkle update check runs without a
-  library-validation kill.
+  App Sandbox, added 2026-09-10 after a security review.
+
+  WHY. The app hands fully attacker-controlled bytes to PDFKit and
+  AVFoundation in-process, and a hostile feed chooses which parser gets them
+  purely by naming a URL `.pdf` or `.mp4`. Those are large C/C++ parsers with
+  long CVE histories. No code change in this app removes that exposure; the
+  sandbox bounds what a bug in them could reach. It also bounds the one SSRF
+  gap that remains open by construction — a public hostname whose DNS resolves
+  to a private address, which `WebURL` documents and cannot fix.
+
+  Library Validation stays ON. `com.apple.security.cs.disable-library-validation`
+  was dropped 2026-08-25 and is not coming back: the release pipeline
+  (jorvik-release/helpers/sign-framework.sh) re-signs Sparkle.framework and
+  every nested XPC service with the Jorvik Developer ID, leaf-first, so all
+  loaded code shares the app's Team ID.
+
+  PRE-RELEASE CHECKS, which an ad-hoc local build cannot prove. On a signed,
+  notarised build:
+    1. A Sparkle update check runs and an update INSTALLS. The mach-lookup
+       names below are the part I could not settle by reading: Sparkle's
+       binary yields the suffixes `-spks`, `-spki` and `-spkp`, but not
+       whether the lookup name carries the team prefix, so both forms are
+       listed. Extra entries in this array are harmless; a missing one makes
+       installation fail silently, which for an app whose users update through
+       Sparkle is the worst outcome here.
+    2. The store migration runs once and reports the file count. See
+       StoreMigration.swift.
+    3. OPML import and export both work through the pickers.
 -->
 <plist version="1.0">
-<dict/>
+<dict>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+
+  <!-- Fetching feeds, articles, images, PDFs and the appcast. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+
+  <!-- OPML import and export. Both go through SwiftUI's `.fileImporter` and
+       `.fileExporter`, which hand back security-scoped URLs, and
+       ContentView already starts and stops access around them. -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+
+  <!-- Sparkle's installer helpers. Without these an update check succeeds and
+       the install does nothing. Both naming forms, because only the suffixes
+       are recoverable from the framework. -->
+  <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+  <array>
+    <string>cc.jorviksoftware.JorvikDailyNews-spks</string>
+    <string>cc.jorviksoftware.JorvikDailyNews-spki</string>
+    <string>cc.jorviksoftware.JorvikDailyNews-spkp</string>
+    <string>EG86BCGUE7.cc.jorviksoftware.JorvikDailyNews-spks</string>
+    <string>EG86BCGUE7.cc.jorviksoftware.JorvikDailyNews-spki</string>
+    <string>EG86BCGUE7.cc.jorviksoftware.JorvikDailyNews-spkp</string>
+  </array>
+
+  <!-- Read the pre-sandbox store, once, so nobody loses their subscriptions.
+       Measured on this machine before the change: 247 subscriptions, 3,037
+       read marks and 954,798 bytes of classifier training, all at
+       ~/Library/Application Support/JorvikDailyNews and all unreadable from
+       inside a container without this.
+
+       READ-ONLY, and temporary in the real sense: it exists to move data in
+       one direction and should be deleted a release after everybody has
+       upgraded. StoreMigration writes a marker so the copy happens once. -->
+  <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+  <array>
+    <string>/Library/Application Support/JorvikDailyNews/</string>
+  </array>
+</dict>
 </plist>
