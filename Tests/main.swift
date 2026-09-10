@@ -8,6 +8,7 @@ FeedFetcherTests.run()
 StandfirstTests.run()
 EditionBuilderTests.run()
 PagePicturesTests.run()
+BlankPictureTests.run()
 DayRolloverTests.run()
 ReaderLinkTests.run()
 

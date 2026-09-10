@@ -118,6 +118,41 @@ struct PictureSignature: Codable, Equatable {
         return PictureSignature(edges: edges, colour: colour)
     }
 
+    // MARK: - Blank pictures
+
+    /// Whether this picture has nothing in it.
+    ///
+    /// WordPress serves `https://s0.wp.com/i/blank.jpg` as a site's `og:image`
+    /// when no featured image is set, and the name is not a metaphor: 200x200
+    /// pixels of one flat colour. It arrives as a perfectly valid JPEG, so
+    /// nothing in the fetch or the decode has any reason to complain, and it
+    /// took the lead slot on the front page of 10 September 2026 as a white
+    /// rectangle beside the headline.
+    ///
+    /// Measured against the 47 real hero images from the previous day's paper,
+    /// the separation is not close:
+    ///
+    ///     blank.jpg          0 edge bits,   0 colour spread
+    ///     47 real pictures   min 6 bits,    min 23 spread
+    ///
+    /// So the thresholds sit far below anything a real photograph produces,
+    /// and are deliberately strict: this rejects a picture with essentially
+    /// nothing in it, not a picture that happens to be pale or minimal.
+    static let maxBlankEdgeBits = 2
+    static let maxBlankColourSpread = 8
+
+    var isFeatureless: Bool {
+        edges.nonzeroBitCount <= Self.maxBlankEdgeBits && colourSpread <= Self.maxBlankColourSpread
+    }
+
+    /// How far the most extreme cell of the colour grid sits from the mean.
+    /// Zero for one flat colour.
+    var colourSpread: Int {
+        guard !colour.isEmpty else { return 0 }
+        let mean = colour.reduce(0) { $0 + Int($1) } / colour.count
+        return colour.map { abs(Int($0) - mean) }.max() ?? 0
+    }
+
     // MARK: - Comparing
 
     /// Differing bits between the two edge hashes, 0 to 64.

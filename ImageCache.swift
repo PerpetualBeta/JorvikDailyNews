@@ -403,6 +403,15 @@ final class ImageCache: @unchecked Sendable {
         case .image(let decoded):
             if let signature = decoded.signature {
                 PictureSignatureStore.shared.record(signature, for: url)
+                // A picture with nothing in it is not a picture. It decodes
+                // perfectly, so this is the only place that can tell.
+                if signature.isFeatureless {
+                    failed.insert(url)
+                    jdnLog("image: BLANK \(url.lastPathComponent) from "
+                           + "\(url.host ?? "?") — \(decoded.cgWidth)x\(decoded.cgHeight) "
+                           + "with no detail in it; not used")
+                    return
+                }
             }
             let cost = Self.byteCost(of: decoded.image)
             bytesLock.lock()

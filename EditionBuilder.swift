@@ -167,7 +167,13 @@ struct EditionBuilder {
 
     static func hasUsableImage(_ item: FeedItem) -> Bool {
         guard let url = item.imageURL else { return false }
-        return !ImageCache.shared.isFailed(url)
+        if ImageCache.shared.isFailed(url) { return false }
+        // Known from a previous sighting to have nothing in it. `ImageCache`
+        // catches this the first time a blank is decoded, but only for that
+        // session; the fingerprint outlives the launch, so from the second
+        // sighting on a blank never reaches the lead slot at all.
+        if let signature = Self.signature(url), signature.isFeatureless { return false }
+        return true
     }
 
     /// Remove items that share a canonical link or itemId with an earlier

@@ -133,3 +133,63 @@ enum PagePicturesTests {
                  publishedAt: Date(), section: "News", sourceTitle: "fixture")
     }
 }
+
+/// A picture with nothing in it decodes perfectly, so pixels are the only
+/// thing that can tell. `https://s0.wp.com/i/blank.jpg` is WordPress's
+/// placeholder `og:image` and took the lead slot on 10 September 2026.
+enum BlankPictureTests {
+
+    static func run() {
+        T.suite("Blank: one flat colour has nothing in it") {
+            T.expect(flat(255).isFeatureless, "white")
+            T.expect(flat(0).isFeatureless, "black")
+            T.expect(flat(128).isFeatureless, "mid grey")
+            T.equal(flat(200).colourSpread, 0, "a flat field has no spread")
+        }
+
+        T.suite("Blank: a real picture is not") {
+            // The weakest of the 47 real hero images measured 6 edge bits and
+            // 23 colour spread. Both thresholds sit well below that.
+            let weakest = PictureSignature(
+                edges: 0x0000_0000_0000_003F,        // 6 bits
+                colour: grid(base: 128, extreme: 128 + 23))
+            T.equal(weakest.edges.nonzeroBitCount, 6, "6 edge bits, as measured")
+            T.equal(weakest.colourSpread, 23, "23 spread, as measured")
+            T.expect(!weakest.isFeatureless, "so the weakest real picture survives")
+        }
+
+        T.suite("Blank: structure alone is enough to save it") {
+            // Detail but no colour variation — a line drawing on white.
+            let drawing = PictureSignature(edges: 0x0F0F_0F0F_0F0F_0F0F,
+                                           colour: grid(base: 250, extreme: 250))
+            T.equal(drawing.colourSpread, 0, "no colour variation at all")
+            T.expect(!drawing.isFeatureless, "but it plainly has something drawn on it")
+        }
+
+        T.suite("Blank: colour alone is enough to save it") {
+            // A smooth gradient: no hard edges, but plenty of colour.
+            let gradient = PictureSignature(edges: 0, colour: grid(base: 60, extreme: 200))
+            T.equal(gradient.edges.nonzeroBitCount, 0, "no edges")
+            T.expect(!gradient.isFeatureless, "a gradient is still a picture")
+        }
+
+        T.suite("Blank: the thresholds leave real headroom") {
+            T.expect(PictureSignature.maxBlankEdgeBits < 6,
+                     "below the fewest edge bits any real picture showed")
+            T.expect(PictureSignature.maxBlankColourSpread < 23,
+                     "below the smallest colour spread any real picture showed")
+        }
+    }
+
+    private static func flat(_ v: UInt8) -> PictureSignature {
+        PictureSignature(edges: 0, colour: grid(base: v, extreme: v))
+    }
+
+    /// A colour grid that is `base` everywhere except one cell.
+    private static func grid(base: UInt8, extreme: UInt8) -> [UInt8] {
+        let n = PictureSignature.colourSide * PictureSignature.colourSide * 3
+        var out = [UInt8](repeating: base, count: n)
+        out[0] = extreme
+        return out
+    }
+}
