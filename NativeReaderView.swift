@@ -162,15 +162,16 @@ struct NativeReaderView: View {
     private func view(for block: ReaderBlock) -> some View {
         switch block.kind {
         case .paragraph:
-            styled(block.runs ?? [], size: Style.body)
-                .lineSpacing(Style.body * (Style.lineHeight - 1))
+            prose(block.runs ?? [], size: Style.body,
+                  lineSpacing: Style.body * (Style.lineHeight - 1))
                 .padding(.bottom, Style.body * Style.paragraphGap)
 
         case .heading:
             let level = max(1, min(6, block.level ?? 2))
-            styled(block.runs ?? [], size: headingSize(level), display: true)
+            prose(block.runs ?? [], size: headingSize(level), display: true,
+                  lineSpacing: headingSize(level) * 0.25,
+                  colour: Palette.heading(dark))
                 .foregroundStyle(Palette.heading(dark))
-                .lineSpacing(headingSize(level) * 0.25)
                 .padding(.top, Style.body * Style.headingTopGap)
                 .padding(.bottom, Style.body * Style.headingBottomGap)
 
@@ -192,8 +193,8 @@ struct NativeReaderView: View {
                             .foregroundStyle(Palette.text(dark))
                             .frame(width: Style.listIndent, alignment: .trailing)
                             .padding(.leading, CGFloat(item.depth) * Style.listIndent)
-                        styled(item.runs, size: Style.body)
-                            .lineSpacing(Style.body * (Style.lineHeight - 1))
+                        prose(item.runs, size: Style.body,
+                              lineSpacing: Style.body * (Style.lineHeight - 1))
                     }
                 }
             }
@@ -202,8 +203,8 @@ struct NativeReaderView: View {
         case .quote:
             HStack(alignment: .top, spacing: Style.quoteInset) {
                 Palette.quoteBar(dark).frame(width: Style.quoteBarWidth)
-                styled(block.runs ?? [], size: Style.body, italic: true)
-                    .lineSpacing(Style.body * (Style.lineHeight - 1))
+                prose(block.runs ?? [], size: Style.body, italic: true,
+                      lineSpacing: Style.body * (Style.lineHeight - 1))
             }
             .padding(.vertical, Style.mediaGap)
 
@@ -251,6 +252,81 @@ struct NativeReaderView: View {
     /// emphasis boundary exactly as it would in prose. Building a run per
     /// `Text` in an `HStack` looks equivalent and is not: each becomes an
     /// unbreakable box and a long sentence stops wrapping.
+    /// A run of prose, drawn by whichever renderer suits it.
+    ///
+    /// Text with a link goes through `ProseText`, which lays it out with
+    /// TextKit and therefore knows where the link's glyphs are — that is what
+    /// gives the pointing-hand cursor. Text without one stays on SwiftUI
+    /// `Text`, so the overwhelming majority of an article is drawn exactly as
+    /// it was before this existed.
+    ///
+    /// The two were compared headlessly at 2x and are identical to the pixel:
+    /// same size, same line breaks, same position, differences confined to
+    /// antialiasing edges. The switch is invisible.
+    @ViewBuilder
+    private func prose(_ runs: [ReaderBlock.Run], size: CGFloat,
+                       display: Bool = false, italic: Bool = false,
+                       lineSpacing: CGFloat, colour: Color? = nil,
+                       alignment: NSTextAlignment = .natural) -> some View {
+        if runs.contains(where: { $0.destination(relativeTo: baseURL) != nil }) {
+            ProseText(attributed: appKitStyled(runs, size: size, display: display,
+                                               italic: italic, lineSpacing: lineSpacing,
+                                               colour: colour),
+                      linkColour: NSColor(Palette.link(dark)),
+                      alignment: alignment,
+                      onOpen: { url in
+                          jdnLog("reader: following a link to \(url.absoluteString)")
+                          NSWorkspace.shared.open(url)
+                      })
+        } else {
+            styled(runs, size: size, display: display, italic: italic)
+                .lineSpacing(lineSpacing)
+        }
+    }
+
+    /// The same styling as `styled`, in AppKit attributes.
+    ///
+    /// Written out twice rather than converted, because a SwiftUI
+    /// `AttributedString` carries SwiftUI `Font` and `Color` values and
+    /// `NSAttributedString` cannot read them. The two must be kept in step by
+    /// hand; the pixel comparison above is what catches it if they drift.
+    private func appKitStyled(_ runs: [ReaderBlock.Run], size: CGFloat,
+                              display: Bool, italic: Bool,
+                              lineSpacing: CGFloat, colour: Color?) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        let paragraph = NSMutableParagraphStyle()
+        // SwiftUI's `lineSpacing` is extra space between lines, and so is
+        // NSParagraphStyle's. That equivalence is why the two renderings
+        // measured the same height.
+        paragraph.lineSpacing = lineSpacing
+        let ink = NSColor(colour ?? Palette.text(dark))
+
+        for run in runs {
+            let family = run.code ? Style.mono : (display ? Style.display : Style.serif)
+            let pointSize = run.code ? size * Style.smallerScale : size
+            var font = NSFont(name: family, size: pointSize)
+                ?? .systemFont(ofSize: pointSize)
+            var traits: NSFontTraitMask = []
+            if run.bold || display { traits.insert(.boldFontMask) }
+            if run.italic || italic { traits.insert(.italicFontMask) }
+            if !traits.isEmpty {
+                font = NSFontManager.shared.convert(font, toHaveTrait: traits)
+            }
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .paragraphStyle: paragraph,
+                .foregroundColor: ink
+            ]
+            // The link colour and underline are left to `linkTextAttributes`,
+            // which overrides whatever is set here anyway.
+            if let destination = run.destination(relativeTo: baseURL) {
+                attributes[.link] = destination
+            }
+            out.append(NSAttributedString(string: run.text, attributes: attributes))
+        }
+        return out
+    }
+
     /// One paragraph as a single `Text`, so it wraps as prose.
     ///
     /// Built as an `AttributedString` rather than by adding `Text` values
