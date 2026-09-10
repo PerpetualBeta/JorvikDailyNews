@@ -853,6 +853,34 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// job is to make a web view wait.
     private static var selfTestDone = false
 
+    /// When the self-test last found WebKit rendering nothing at all, or nil
+    /// if it has not.
+    ///
+    /// Recorded because the app knew and could not say. On 10 September 2026
+    /// the bisect reported at **06:59:19** that even 75 characters would not
+    /// load; the three live-page failures that followed at 07:01, 07:04 and
+    /// 07:09 were that, and the same build served a live page perfectly at
+    /// 08:08 once the spell had passed. Without this, a live-page failure has
+    /// nothing to correlate against, and I read those three as a regression in
+    /// a probe I had changed two hours earlier.
+    ///
+    /// Reported, never acted on. This machine's WebKit fault clears on its own
+    /// after roughly twenty minutes, so a verdict from earlier in a session is
+    /// evidence about the past and not a prediction. Anything that skipped
+    /// work on the strength of it would eventually skip a page that was fine.
+    nonisolated(unsafe) static var webKitRenderedNothingAt: Date?
+
+    /// One line naming the last such verdict, for a log written later.
+    static var webKitVerdict: String {
+        guard let at = webKitRenderedNothingAt else {
+            return "the self-test found WebKit rendering normally"
+        }
+        let ago = Int(Date().timeIntervalSince(at))
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+        return "the self-test found WebKit rendering NOTHING at \(f.string(from: at)), "
+            + "\(ago)s ago"
+    }
+
     private func runSelfTestOnce() async {
         guard !Self.selfTestDone else { return }
         Self.selfTestDone = true
@@ -898,6 +926,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         // statements were fabricated from an assumption. When nothing works,
         // the honest answer is that nothing works.
         guard await substituteDataLoads(chars: low) else {
+            Self.webKitRenderedNothingAt = Date()
             jdnLog("selftest: bisect — even \(low) chars did not load, so WebKit is "
                    + "rendering nothing at all here and there is no size limit to find")
             return

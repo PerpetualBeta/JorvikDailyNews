@@ -907,7 +907,8 @@ struct LiveWebView: NSViewRepresentable {
             let waited = String(format: "%.1f", Date().timeIntervalSince(started))
             guard drawn.hasDocument else {
                 jdnLog("reader: live page held nothing at all after \(waited)s "
-                       + "(it \(why)) — reporting a blank page")
+                       + "(it \(why)) — reporting a blank page; "
+                       + ArticleExtractor.webKitVerdict)
                 onBlank()
                 return
             }
