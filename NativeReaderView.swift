@@ -128,6 +128,9 @@ struct NativeReaderView: View {
         // all, which separates "the link is not live" from "the browser did
         // not come forward".
         .environment(\.openURL, OpenURLAction { url in
+            // If this fires for an in-article link, the block was drawn by
+            // SwiftUI `Text` rather than by `ProseText`.
+            jdnLog("prosetext: SwiftUI openURL handled the click, NOT TextKit")
             open(url)
             return .handled
         })
@@ -274,6 +277,11 @@ struct NativeReaderView: View {
                        lineSpacing: CGFloat, colour: Color? = nil,
                        alignment: NSTextAlignment = .natural) -> some View {
         if runs.contains(where: { $0.target(relativeTo: baseURL) != nil }) {
+            // Diagnostic: which renderer a link-bearing block actually got.
+            // A SwiftUI `Text` cannot show a cursor at all, so if these lines
+            // are absent while links still work, the block never reached
+            // TextKit and that is the whole answer.
+            let _ = { jdnLog("prosetext: routing a link block to TextKit") }()
             ProseText(attributed: appKitStyled(runs, size: size, display: display,
                                                italic: italic, lineSpacing: lineSpacing,
                                                colour: colour),

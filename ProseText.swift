@@ -48,6 +48,7 @@ struct ProseText: NSViewRepresentable {
             .underlineStyle: NSUnderlineStyle.single.rawValue,
             .cursor: NSCursor.pointingHand
         ]
+        jdnLog("prosetext: TextKit view created for a block with a link")
         return view
     }
 
@@ -60,9 +61,6 @@ struct ProseText: NSViewRepresentable {
         ]
         if view.textStorage?.isEqual(to: attributed) != true {
             view.textStorage?.setAttributedString(attributed)
-            // The rects are computed from the layout, so they are stale the
-            // moment the text is replaced.
-            view.window?.invalidateCursorRects(for: view)
         }
         view.alignment = alignment
     }
@@ -103,29 +101,74 @@ struct ProseText: NSViewRepresentable {
     /// asks a view for its cursor rects whenever they are invalidated, and a
     /// rect declared here beats anything implicit.
     final class LinkCursorTextView: NSTextView {
-        override func resetCursorRects() {
-            super.resetCursorRects()
-            guard let storage = textStorage,
-                  let manager = layoutManager,
-                  let container = textContainer,
-                  storage.length > 0
-            else { return }
-            let whole = NSRange(location: 0, length: storage.length)
-            storage.enumerateAttribute(.link, in: whole) { value, range, _ in
-                guard value != nil else { return }
-                // A link can wrap, so it may occupy several line fragments and
-                // therefore several rects. One rect per fragment, or the hand
-                // appears over the blank end of a line.
-                let glyphs = manager.glyphRange(forCharacterRange: range,
-                                                actualCharacterRange: nil)
-                manager.enumerateEnclosingRects(forGlyphRange: glyphs,
-                                                withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
-                                                in: container) { rect, _ in
-                    self.addCursorRect(rect.offsetBy(dx: self.textContainerOrigin.x,
-                                                dy: self.textContainerOrigin.y),
-                                  cursor: .pointingHand)
-                }
+
+        /// Two mechanisms, deliberately.
+        ///
+        /// `linkTextAttributes` carries `.cursor` and in a bare text view that
+        /// is enough — measured in isolation, the link attribute is present,
+        /// the cursor is in the attributes, and hit-testing finds the link
+        /// under the point. Inside the reader it was not enough, twice.
+        ///
+        /// Cursor rects are the next mechanism up, and they are awkward here:
+        /// they are declared in view coordinates and recomputed only when
+        /// something invalidates them, so a view SwiftUI has resized or
+        /// repositioned can be carrying rects for a layout it no longer has.
+        ///
+        /// A tracking area asking for `.cursorUpdate` is the mechanism AppKit
+        /// documents for a cursor that depends on what is under the pointer.
+        /// It is resolved per event against the current layout, so it cannot
+        /// go stale, and it needs no `acceptsMouseMovedEvents` on the window —
+        /// which is `false` by default and one of the things I could not rule
+        /// out.
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas where area.owner === self {
+                removeTrackingArea(area)
             }
+            addTrackingArea(NSTrackingArea(
+                rect: bounds,
+                options: [.cursorUpdate, .activeInActiveApp, .mouseEnteredAndExited],
+                owner: self,
+                userInfo: nil))
+        }
+
+        override func cursorUpdate(with event: NSEvent) {
+            if link(under: convert(event.locationInWindow, from: nil)) != nil {
+                NSCursor.pointingHand.set()
+            } else {
+                super.cursorUpdate(with: event)
+            }
+        }
+
+        /// The link at a point in this view's coordinates, if any.
+        ///
+        /// Hit-tested through the layout manager rather than by comparing
+        /// rects, so a link that wraps across several line fragments needs no
+        /// special handling, and the blank end of a line is correctly not a
+        /// link.
+        private func link(under point: NSPoint) -> Any? {
+            guard let manager = layoutManager,
+                  let container = textContainer,
+                  let storage = textStorage,
+                  storage.length > 0
+            else { return nil }
+            let origin = textContainerOrigin
+            let inContainer = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+            // A fraction near 1 means the pointer is past the last glyph on
+            // that line, in the empty run-off, where there is nothing to click.
+            var fraction: CGFloat = 0
+            let glyph = manager.glyphIndex(for: inContainer, in: container,
+                                           fractionOfDistanceThroughGlyph: &fraction)
+            guard fraction < 1 else { return nil }
+            let index = manager.characterIndexForGlyph(at: glyph)
+            guard index < storage.length else { return nil }
+            // And the pointer must actually be inside the glyph's box, not
+            // merely on its line: `glyphIndex(for:)` clamps to the nearest
+            // glyph rather than reporting a miss.
+            let box = manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1),
+                                           in: container)
+            guard box.contains(inContainer) else { return nil }
+            return storage.attribute(.link, at: index, effectiveRange: nil)
         }
     }
 
@@ -135,6 +178,7 @@ struct ProseText: NSViewRepresentable {
 
         func textView(_ view: NSTextView, clickedOnLink link: Any,
                       at charIndex: Int) -> Bool {
+            jdnLog("prosetext: the TextKit view handled the click")
             let url: URL? = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
             guard let url else { return false }
             onOpen(url)
