@@ -24,6 +24,29 @@ struct ReaderBlock: Codable, Sendable, Identifiable {
         let code: Bool
         let href: String?
 
+        /// Where a run leads, and by which route.
+        ///
+        /// Two cases rather than one URL, because they are handled quite
+        /// differently: a web address goes to the browser, and an email
+        /// address goes to a sheet that shows the reader what is in the link
+        /// before Mail is involved at all.
+        enum Target: Equatable {
+            case web(URL)
+            case email(MailtoLink)
+        }
+
+        /// What this run links to, if anything.
+        func target(relativeTo base: URL) -> Target? {
+            if let web = destination(relativeTo: base) { return .web(web) }
+            guard let href else { return nil }
+            let trimmed = href.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  let url = URL(string: trimmed, relativeTo: base)?.absoluteURL,
+                  let mail = MailtoLink(url)
+            else { return nil }
+            return .email(mail)
+        }
+
         /// Where this run leads, or nil if it leads nowhere.
         ///
         /// Resolved against the article's own address, because feeds hand us

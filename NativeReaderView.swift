@@ -19,6 +19,9 @@ struct NativeReaderView: View {
     let sourceTitle: String
     let baseURL: URL
 
+    /// The email link awaiting the reader's decision, if any.
+    @State private var pendingEmail: MailtoLink?
+
     // MARK: Measurements, all from reader.css
 
     private enum Style {
@@ -125,10 +128,12 @@ struct NativeReaderView: View {
         // all, which separates "the link is not live" from "the browser did
         // not come forward".
         .environment(\.openURL, OpenURLAction { url in
-            jdnLog("reader: following a link to \(url.absoluteString)")
-            NSWorkspace.shared.open(url)
+            open(url)
             return .handled
         })
+        .sheet(item: $pendingEmail) { mail in
+            EmailLinkSheet(mail: mail) { pendingEmail = nil }
+        }
     }
 
     // MARK: Header
@@ -268,16 +273,13 @@ struct NativeReaderView: View {
                        display: Bool = false, italic: Bool = false,
                        lineSpacing: CGFloat, colour: Color? = nil,
                        alignment: NSTextAlignment = .natural) -> some View {
-        if runs.contains(where: { $0.destination(relativeTo: baseURL) != nil }) {
+        if runs.contains(where: { $0.target(relativeTo: baseURL) != nil }) {
             ProseText(attributed: appKitStyled(runs, size: size, display: display,
                                                italic: italic, lineSpacing: lineSpacing,
                                                colour: colour),
                       linkColour: NSColor(Palette.link(dark)),
                       alignment: alignment,
-                      onOpen: { url in
-                          jdnLog("reader: following a link to \(url.absoluteString)")
-                          NSWorkspace.shared.open(url)
-                      })
+                      onOpen: open)
         } else {
             styled(runs, size: size, display: display, italic: italic)
                 .lineSpacing(lineSpacing)
@@ -319,8 +321,11 @@ struct NativeReaderView: View {
             ]
             // The link colour and underline are left to `linkTextAttributes`,
             // which overrides whatever is set here anyway.
-            if let destination = run.destination(relativeTo: baseURL) {
-                attributes[.link] = destination
+            if let target = run.target(relativeTo: baseURL) {
+                switch target {
+                case .web(let url): attributes[.link] = url
+                case .email(let mail): attributes[.link] = mail.original
+                }
             }
             out.append(NSAttributedString(string: run.text, attributes: attributes))
         }
@@ -349,8 +354,15 @@ struct NativeReaderView: View {
             if run.italic || italic { font = font.italic() }
             piece.font = font
 
-            if let destination = run.destination(relativeTo: baseURL) {
-                piece.link = destination
+            if let target = run.target(relativeTo: baseURL) {
+                switch target {
+                case .web(let url): piece.link = url
+                // The ORIGINAL mailto, not the rebuilt one. `open(_:)`
+                // intercepts it and re-parses, and the sheet has to be able
+                // to name the fields it is dropping — which `safeURL` has
+                // already removed. Nothing opens this attribute directly.
+                case .email(let mail): piece.link = mail.original
+                }
                 piece.foregroundColor = Palette.link(dark)
                 piece.underlineStyle = .single
             } else {
@@ -365,6 +377,27 @@ struct NativeReaderView: View {
         return Text(out)
     }
 
+
+    /// Where every link in the article ends up.
+    ///
+    /// A web address goes straight to the browser. An email address stops
+    /// here: `mailto:` carries fields the reader cannot see — `bcc` to a
+    /// harvesting address, a prefilled body — and a feed chooses every
+    /// character of it, so it is shown before Mail is involved.
+    private func open(_ url: URL) {
+        if MailtoLink.isMailto(url), let mail = MailtoLink(url) {
+            jdnLog("reader: an article link wants to email \(mail.recipients)"
+                   + (mail.discarded.isEmpty ? "" : " (dropping \(mail.discarded.joined(separator: ", ")))"))
+            pendingEmail = mail
+            return
+        }
+        guard WebURL.isAllowed(url) else {
+            jdnLog("reader: refused a link to \(url.scheme ?? "(no scheme)"): — not a web address")
+            return
+        }
+        jdnLog("reader: following a link to \(url.absoluteString)")
+        NSWorkspace.shared.open(url)
+    }
 
     // MARK: Media
 

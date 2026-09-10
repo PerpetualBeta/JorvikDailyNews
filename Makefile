@@ -32,6 +32,8 @@ SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                     ReaderSheet.swift \
                     ArticleExtractor.swift \
                     WebURL.swift \
+                    MailtoLink.swift \
+                    EmailLinkSheet.swift \
                     BoundedFetch.swift \
                 EmbeddedArticle.swift \
                     ArticleClassifier.swift \
@@ -79,6 +81,7 @@ include ../jorvik-release/release.mk
 # to ask whether a picture is known to have failed.
 TEST_SOURCES := VideoLink.swift \
                 WebURL.swift \
+                MailtoLink.swift \
                 BoundedFetch.swift \
                 EmbeddedArticle.swift \
                 PictureSignature.swift \
@@ -102,6 +105,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/PagePicturesTests.swift \
                 Tests/DayRolloverTests.swift \
                 Tests/ReaderLinkTests.swift \
+                Tests/MailtoLinkTests.swift \
                 Tests/EmbeddedArticleTests.swift \
                 Tests/WalkerTests.swift \
                 Tests/main.swift

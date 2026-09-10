@@ -13,6 +13,7 @@ PagePicturesTests.run()
 BlankPictureTests.run()
 DayRolloverTests.run()
 ReaderLinkTests.run()
+MailtoLinkTests.run()
 EmbeddedArticleTests.run()
 WalkerTests.run()
 

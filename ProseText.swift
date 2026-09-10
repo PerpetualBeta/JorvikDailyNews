@@ -32,7 +32,7 @@ struct ProseText: NSViewRepresentable {
     var onOpen: (URL) -> Void
 
     func makeNSView(context: Context) -> NSTextView {
-        let view = NSTextView()
+        let view = LinkCursorTextView()
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = false
@@ -60,6 +60,9 @@ struct ProseText: NSViewRepresentable {
         ]
         if view.textStorage?.isEqual(to: attributed) != true {
             view.textStorage?.setAttributedString(attributed)
+            // The rects are computed from the layout, so they are stale the
+            // moment the text is replaced.
+            view.window?.invalidateCursorRects(for: view)
         }
         view.alignment = alignment
     }
@@ -85,6 +88,46 @@ struct ProseText: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(onOpen: onOpen) }
+
+    /// An `NSTextView` that says where the pointing hand goes instead of
+    /// hoping AppKit works it out.
+    ///
+    /// `linkTextAttributes` carries `.cursor`, and in a bare text view that is
+    /// enough: measured in isolation, the link attribute is present, the
+    /// cursor is in the attributes, and hit-testing finds the link. Inside the
+    /// reader it was not enough, and the reader has a `.textSelection(.enabled)`
+    /// layer over the whole article, which is the obvious candidate for
+    /// whose tracking wins.
+    ///
+    /// Rather than keep guessing at that, this declares the rects. `AppKit`
+    /// asks a view for its cursor rects whenever they are invalidated, and a
+    /// rect declared here beats anything implicit.
+    final class LinkCursorTextView: NSTextView {
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            guard let storage = textStorage,
+                  let manager = layoutManager,
+                  let container = textContainer,
+                  storage.length > 0
+            else { return }
+            let whole = NSRange(location: 0, length: storage.length)
+            storage.enumerateAttribute(.link, in: whole) { value, range, _ in
+                guard value != nil else { return }
+                // A link can wrap, so it may occupy several line fragments and
+                // therefore several rects. One rect per fragment, or the hand
+                // appears over the blank end of a line.
+                let glyphs = manager.glyphRange(forCharacterRange: range,
+                                                actualCharacterRange: nil)
+                manager.enumerateEnclosingRects(forGlyphRange: glyphs,
+                                                withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                                                in: container) { rect, _ in
+                    self.addCursorRect(rect.offsetBy(dx: self.textContainerOrigin.x,
+                                                dy: self.textContainerOrigin.y),
+                                  cursor: .pointingHand)
+                }
+            }
+        }
+    }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onOpen: (URL) -> Void
