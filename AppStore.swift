@@ -42,6 +42,10 @@ final class AppStore {
     /// scrolled; the target below is what actually decides how far enrichment
     /// goes.
     private static let enrichCapPerSection = 24
+    /// Whether read marks and pins have been carried onto namespaced item
+    /// identities this launch. Once is enough; the operation is idempotent.
+    private var migratedLegacyIDs = false
+
     /// When the day-scoped state was last cleared, so it happens once a day
     /// and not once per refresh. See `DayRollover`.
     private var lastDayRollover: Date?
@@ -718,6 +722,19 @@ final class AppStore {
         all.append(contentsOf: base.secondaries)
         all.append(contentsOf: base.briefs)
         all.append(contentsOf: base.sections.flatMap { $0.items })
+
+        // Before anything reads a read mark or a pin.
+        //
+        // Item identities are namespaced by feed now, so every key in
+        // `read.json` and `classifier.json` changed at once. Both stores
+        // carry theirs forward for the items in hand, which is all that can
+        // be done — an old key cannot be turned back into a feed — and all
+        // that is needed, because the paper is day-scoped.
+        if !migratedLegacyIDs {
+            migratedLegacyIDs = true
+            readStore.migrateLegacyIDs(for: all)
+            classifier.migrateLegacyIDs(for: all)
+        }
 
         let pausedIds = Set(feedStore.feeds.filter { $0.isPaused }.map { $0.id })
         var kept = all.filter { !pausedIds.contains($0.feedId) }

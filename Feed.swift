@@ -93,6 +93,14 @@ struct FeedItem: Codable, Hashable, Identifiable {
     var section: String
     let sourceTitle: String
 
+    /// The identity this item had before identities were namespaced by feed.
+    ///
+    /// Carried only so read marks and pins survive the change. Optional
+    /// because an edition saved by an older build has no such field, and
+    /// nil-safe everywhere it is used. Removable once nobody is upgrading
+    /// across this version.
+    var legacyItemId: String?
+
     /// Title as shown in the paper, with a " [VIDEO]" affordance appended when
     /// the link plays in-app as a video (YouTube / Vimeo / direct media) and
     /// nothing in the title or summary already signals that. Computed at

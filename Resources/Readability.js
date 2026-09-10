@@ -522,7 +522,25 @@ Readability.prototype = {
         media.setAttribute("poster", toAbsoluteURI(poster));
       }
 
-      if (srcset) {
+      // JORVIK PATCH. Skip the rewrite on an absurd srcset.
+      //
+      // REGEXPS.srcsetUrl is `/(\S+)(\s+[\d.]+[xw])?(\s*(?:,|$))/g`, and on a
+      // single long run with no comma it is quadratic: `\S+` takes the whole
+      // run, the optional tail fails, and the match is retried from every
+      // offset. Measured end to end through this bundled pipeline: 8,000
+      // characters = 99 ms, 16,000 = 365, 32,000 = 1,461, 64,000 = 5,863 ms,
+      // from 69,750 bytes of HTML. An article chooses that number.
+      //
+      // Narrowing the class to `([^\s,]+)`, which is the obvious fix, does
+      // NOT help — measured at 8,817 ms against 8,542 ms at n=64,000, because
+      // with no comma in the input the two classes match identically. The
+      // length of the attribute is the only lever.
+      //
+      // A real srcset is a handful of URLs with descriptors: a few hundred
+      // bytes. 4 KB is generous. Past that the attribute is left exactly as
+      // the page wrote it, so a relative URL in a monstrous srcset stays
+      // relative — which costs nothing, because nothing renders it.
+      if (srcset && srcset.length <= 4096) {
         var newSrcset = srcset.replace(
           this.REGEXPS.srcsetUrl,
           function (_, p1, p2, p3) {

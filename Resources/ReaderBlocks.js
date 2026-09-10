@@ -135,6 +135,9 @@
   // available is its size: not one of 135 inline SVGs on a real page carried
   // an aria-label or a <title> to say which it was. The threshold is supplied
   // by the caller so it can be tuned without editing this file.
+  /// Longest SVG source that will be drawn, in characters.
+  var MAX_SVG_SOURCE = 64 * 1024;
+
   function svgBlock(node, minSide) {
     var box = node.getAttribute('viewBox');
     var w = parseFloat(node.getAttribute('width')) || 0;
@@ -145,7 +148,15 @@
     }
     if (!w || !h) return null;
     if (Math.max(w, h) < minSide) return null;
-    return { kind: 'svg', svg: node.outerHTML, width: w, height: h };
+    // An SVG is source code that AppKit will execute as drawing instructions,
+    // and the size of the source is the only cheap proxy for how much work it
+    // asks for. Measured on the exact bytes this pipeline produced: 240.1 KB
+    // carrying a few hundred filter primitives took **31.05 seconds to draw
+    // and 1,680 MB of resident memory**, and painted nothing at all. A real
+    // diagram is a few KB.
+    var source = node.outerHTML;
+    if (source.length > MAX_SVG_SOURCE) { return null; }
+    return { kind: 'svg', svg: source, width: w, height: h };
   }
 
   function imageBlock(node) {

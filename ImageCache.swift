@@ -570,6 +570,11 @@ final class ImageCache: @unchecked Sendable {
     /// cannot reliably obtain, and it self-corrects on whatever a future
     /// decoder does. It costs one extra decode only where the first answer was
     /// wrong, and it says so in the log either way. There is no silent path.
+    /// Largest source a picture may declare on either side.
+    static let maxSourceSide = 40_000
+    /// And in total. The largest real picture the app has decoded is 12.1 MP.
+    static let maxSourcePixels = 80_000_000
+
     private static func decode(_ data: Data) -> Decoded? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         // Source dimensions come from the metadata, so reading them costs no
@@ -577,6 +582,30 @@ final class ImageCache: @unchecked Sendable {
         let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         let srcW = props?[kCGImagePropertyPixelWidth] as? Int ?? 0
         let srcH = props?[kCGImagePropertyPixelHeight] as? Int ?? 0
+
+        // Refuse an absurd canvas before ImageIO is asked to do anything with
+        // it. The dimensions above are metadata, so this costs nothing.
+        //
+        // They were only ever used to LOWER the thumbnail request, never
+        // tested against a ceiling. The classic truncated-header bomb is
+        // already dead — ImageIO reports 0x0 and returns nil for those — but a
+        // COMPLETE 1-bit greyscale PNG declaring 100000x100000 is 1,215,104
+        // bytes on the wire and entirely valid. Measured running this exact
+        // decode: **8.2 GB resident and 13.1 seconds** inside a single
+        // `CGImageSourceCreateThumbnailAtIndex` asking for 2,048 px. 65535²
+        // peaked at 4.0 GB in 5.6 s.
+        //
+        // 80 megapixels with neither side over 40,000 is far past any news
+        // photograph: the largest the app has ever decoded is 4800x2520, which
+        // is 12.1.
+        guard srcW >= 0, srcH >= 0,
+              srcW <= maxSourceSide, srcH <= maxSourceSide,
+              srcW * srcH <= maxSourcePixels
+        else {
+            jdnLog("image: REFUSED a \(srcW)x\(srcH) source — beyond "
+                   + "\(maxSourceSide)px a side or \(maxSourcePixels / 1_000_000) megapixels")
+            return nil
+        }
 
         let sourceLongEdge = max(srcW, srcH)
         let target = sourceLongEdge > 0 ? min(maxPixelSize, sourceLongEdge) : maxPixelSize

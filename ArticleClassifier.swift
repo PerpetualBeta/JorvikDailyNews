@@ -144,6 +144,30 @@ final class ArticleClassifier {
         return Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
     }
 
+    /// Carries pins and corrections across the item-identity change.
+    ///
+    /// Same reasoning as `ReadStore.migrateLegacyIDs`: every key in
+    /// `classifier.json` was a feed-supplied guid and is now that guid hashed
+    /// with its feed. A pin that stops resolving is a section the reader chose
+    /// and silently lost.
+    func migrateLegacyIDs(for items: [FeedItem]) {
+        var carried = 0
+        for item in items {
+            guard let legacy = item.legacyItemId, legacy != item.itemId else { continue }
+            if let section = state.pins[legacy], state.pins[item.itemId] == nil {
+                state.pins[item.itemId] = section
+                carried += 1
+            }
+            if let correction = state.corrections[legacy], state.corrections[item.itemId] == nil {
+                state.corrections[item.itemId] = correction
+                carried += 1
+            }
+        }
+        guard carried > 0 else { return }
+        jdnLog("classifier: carried \(carried) pin(s)/correction(s) onto namespaced item ids")
+        save()
+    }
+
     // MARK: - Internals
 
     private func apply(tokens: [String: Int], section: String) {

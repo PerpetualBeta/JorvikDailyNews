@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum FeedFetchError: Error, LocalizedError {
@@ -90,6 +91,17 @@ final class FeedFetcher: Sendable {
     static let maxStoredSummary = 4000
     /// Items taken from one feed.
     static let maxItemsPerFeed = 500
+
+    /// An item's identity, scoped to the feed that offered it.
+    ///
+    /// Hashed rather than concatenated so the result is a fixed length: this
+    /// string is a dictionary key in `read.json` and `classifier.json`, both
+    /// of which are rewritten whole, and a guid can be as long as a feed
+    /// likes.
+    static func namespacedID(_ offered: String, in feedId: UUID) -> String {
+        let digest = SHA256.hash(data: Data((feedId.uuidString + "\u{1F}" + offered).utf8))
+        return digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
 
     static let maxEntityValue = 256
     static let maxEntityDeclarations = 64
@@ -507,7 +519,23 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         // Undated items rank LAST on the front page rather than masquerading
         // as "newest" (Date()) which would dominate anything correctly dated.
         let date = parseDate(b.published, b.updated, b.pubDate) ?? Date.distantPast
-        let itemId = b.guid.isEmpty ? link.absoluteString : b.guid
+        // The identity a feed offers, and the identity the paper uses.
+        //
+        // These used to be the same string, and a guid is public. So a hostile
+        // feed could copy a `<guid>` verbatim from a target's feed XML, stamp
+        // a `<pubDate>` a minute later, and the genuine story would never
+        // reach a page: `AppStore` merges every feed's items into one array,
+        // `EditionBuilder` sorts date-descending, and first-seen-wins dedupe
+        // then drops the older copy — which is the real one. A few hundred
+        // bytes to delete somebody else's article.
+        //
+        // Namespacing by `feed.id` makes that impossible: no feed can name
+        // another feed's item. Cross-feed dedupe still works, because it runs
+        // on the canonical LINK as well, and a link is a real syndication
+        // signal an attacker cannot forge without pointing at the genuine
+        // article.
+        let offered = b.guid.isEmpty ? link.absoluteString : b.guid
+        let itemId = FeedFetcher.namespacedID(offered, in: feed.id)
         let sourceTitle = feed.title?.isEmpty == false ? feed.title! : channelTitle
 
         return FeedItem(
@@ -519,7 +547,8 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             imageURL: imageURL,
             publishedAt: date,
             section: feed.section,
-            sourceTitle: sourceTitle
+            sourceTitle: sourceTitle,
+            legacyItemId: offered
         )
     }
 
