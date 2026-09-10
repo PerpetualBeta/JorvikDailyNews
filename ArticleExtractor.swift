@@ -452,6 +452,13 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// post and one day of one person's feeds is a small sample:
     ///
     ///     defaults write cc.jorviksoftware.JorvikDailyNews minimumArticleLength -int 400
+    /// Smallest body worth handing to the parser when the status was an error.
+    ///
+    /// An error page is usually a few hundred bytes of apology. This is not a
+    /// judgement about whether an article is present — Readability makes that
+    /// call — only a floor below which asking is pointless.
+    static let minimumBodyWorthReading = 2048
+
     /// `nonisolated` so it can be a default argument: a default is evaluated
     /// at the call site, which may be anywhere.
     nonisolated static var minimumArticleLength: Int {
@@ -546,6 +553,11 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                 // not about a frame it never mentioned.
                 jdnLog("extract: the frame held no article either — \(error.localizedDescription)")
             }
+        }
+
+        if let status = page.badStatus {
+            jdnLog("extract: nothing readable, and the body arrived under HTTP \(status)")
+            throw ExtractionError.fetchFailed("HTTP \(status)")
         }
 
         jdnLog("extract: every rung failed — no document by any route")
@@ -1077,6 +1089,11 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// strategies that want to be handed a response, and the decoded string for
     /// the strategies that want text.
     private struct FetchedPage {
+        /// The error status the body arrived under, if it did. Reported only
+        /// when no article is found, so a page served under a wrong header
+        /// still opens while a genuine 404 still says 404.
+        var badStatus: Int?
+
         let data: Data
         let html: String
         let response: URLResponse
@@ -1109,10 +1126,32 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             throw ExtractionError.fetchFailed(error.localizedDescription)
         }
         jdnLog("fetch: \((response as? HTTPURLResponse)?.statusCode ?? -1) — \(data.count) bytes")
+        var badStatus: Int?
 
+        // A bad status with a real body is still worth reading.
+        //
+        // The status used to end it, and the body was never looked at. Plenty
+        // of sites get this wrong: a client-routed path is served as the app's
+        // shell with a 404 because the route only exists once JavaScript runs,
+        // a misconfigured CDN returns 500 with the page intact, a soft-404
+        // serves the article and the wrong header.
+        //
+        // Readability decides. If it finds an article in the body then there
+        // was an article, whatever the header claimed; if it finds nothing the
+        // reader hears about the status exactly as before, so a genuine 404
+        // still reports a genuine 404. `line.klet.app/about/` is the case that
+        // prompted this and is NOT rescued by it — 7,220 bytes carrying 55
+        // characters of text, all of it the title — which is the point: this
+        // changes what happens to pages that have something to show.
         if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
-            jdnLog("fetch: rejected on status \(http.statusCode)")
-            throw ExtractionError.fetchFailed("HTTP \(http.statusCode)")
+            guard data.count >= Self.minimumBodyWorthReading else {
+                jdnLog("fetch: rejected on status \(http.statusCode) — "
+                       + "\(data.count) bytes is too little to be an article")
+                throw ExtractionError.fetchFailed("HTTP \(http.statusCode)")
+            }
+            jdnLog("fetch: status \(http.statusCode) but \(data.count) bytes arrived — "
+                   + "reading it anyway, and reporting the status only if there is no article")
+            badStatus = http.statusCode
         }
 
         // Detect PDFs before we ever treat the bytes as HTML — by declared
@@ -1135,7 +1174,8 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             throw ExtractionError.badEncoding
         }
         jdnLog("extract: \(html.count) chars fetched, base \(finalURL.absoluteString)")
-        return FetchedPage(data: data, html: html, response: response, url: finalURL)
+        return FetchedPage(badStatus: badStatus, data: data, html: html,
+                           response: response, url: finalURL)
     }
 
     // MARK: - Base URL rewriting

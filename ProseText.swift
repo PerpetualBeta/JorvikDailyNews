@@ -125,19 +125,59 @@ struct ProseText: NSViewRepresentable {
             for area in trackingAreas where area.owner === self {
                 removeTrackingArea(area)
             }
+            // `.mouseMoved` is here as well as `.cursorUpdate`, and it is the
+            // one that matters. Three declarative mechanisms lost: `.cursor`
+            // in `linkTextAttributes`, cursor rects, and `cursorUpdate`. The
+            // diagnostic proved the view is real and receiving clicks
+            // throughout — 10 blocks routed here, 5 views created, 4 clicks
+            // handled by this view's own delegate — so the view was never the
+            // problem. Something else is winning the window's cursor
+            // management, and asking politely three times has not worked.
+            //
+            // A tracking area with `.mouseMoved` delivers `mouseMoved` to this
+            // view whenever the pointer is inside it, whatever the window's
+            // `acceptsMouseMovedEvents` says, and setting the cursor there is
+            // imperative rather than a request.
             addTrackingArea(NSTrackingArea(
                 rect: bounds,
-                options: [.cursorUpdate, .activeInActiveApp, .mouseEnteredAndExited],
+                options: [.cursorUpdate, .mouseMoved, .activeInActiveApp,
+                          .mouseEnteredAndExited],
                 owner: self,
                 userInfo: nil))
         }
 
+        /// Whether either cursor event has ever arrived, logged once.
+        ///
+        /// If neither line appears the tracking area is not firing and the
+        /// fault is in the hosting, not in the cursor. That distinction has
+        /// cost three attempts to guess at.
+        private var reportedCursorUpdate = false
+        private var reportedMouseMoved = false
+
         override func cursorUpdate(with event: NSEvent) {
+            if !reportedCursorUpdate {
+                reportedCursorUpdate = true
+                jdnLog("prosetext: cursorUpdate reached the TextKit view")
+            }
             if link(under: convert(event.locationInWindow, from: nil)) != nil {
                 NSCursor.pointingHand.set()
             } else {
                 super.cursorUpdate(with: event)
             }
+        }
+
+        override func mouseMoved(with event: NSEvent) {
+            if !reportedMouseMoved {
+                reportedMouseMoved = true
+                jdnLog("prosetext: mouseMoved reached the TextKit view")
+            }
+            let over = link(under: convert(event.locationInWindow, from: nil)) != nil
+            if over { NSCursor.pointingHand.set() } else { super.mouseMoved(with: event) }
+        }
+
+        override func mouseExited(with event: NSEvent) {
+            super.mouseExited(with: event)
+            NSCursor.arrow.set()
         }
 
         /// The link at a point in this view's coordinates, if any.
