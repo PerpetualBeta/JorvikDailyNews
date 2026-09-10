@@ -185,3 +185,43 @@ enum StandfirstLimitTests {
         }
     }
 }
+
+/// Some sites double-encode their titles. Tom's Hardware puts `&amp;mdash;` in
+/// its `<title>`, so one honest decode yields the literal text `&mdash;` and
+/// that is what the reader saw. A second blanket pass would fix it and break
+/// something worse.
+enum TitleDecodeTests {
+
+    static func run() {
+        T.suite("Title: a double-encoded entity is resolved") {
+            T.equal(Standfirst.decodeTitle("LG denies claims &amp;mdash; online investigation"),
+                    "LG denies claims \u{2014} online investigation",
+                    "the case that was reported")
+            T.equal(Standfirst.decodeTitle("A &amp;nbsp; B"), "A \u{00a0} B", "double nbsp")
+            T.equal(Standfirst.decodeTitle("A &amp;#8212; B"), "A \u{2014} B", "double numeric")
+        }
+
+        T.suite("Title: a single-encoded entity still works") {
+            T.equal(Standfirst.decodeTitle("A &mdash; B"), "A \u{2014} B", "single")
+            T.equal(Standfirst.decodeTitle("A \u{2014} B"), "A \u{2014} B", "already a real dash")
+            T.equal(Standfirst.decodeTitle("Marks &amp; Spencer"), "Marks & Spencer", "ampersand")
+            T.equal(Standfirst.decodeTitle("plain text"), "plain text", "nothing to do")
+        }
+
+        T.suite("Title: the second pass cannot produce markup") {
+            // The whole reason decodeTitle is separate from decodeEntities. A
+            // page that deliberately escaped its markup must keep it escaped.
+            T.equal(Standfirst.decodeTitle("&amp;lt;script&amp;gt;"), "&lt;script&gt;",
+                    "an escaped script tag stays escaped")
+            T.equal(Standfirst.decodeTitle("&amp;lt;img src=x onerror=alert(1)&amp;gt;"),
+                    "&lt;img src=x onerror=alert(1)&gt;", "and so does an escaped payload")
+            T.equal(Standfirst.decodeTitle("&amp;quot;quoted&amp;quot;"), "&quot;quoted&quot;",
+                    "quotes are refused too")
+            T.equal(Standfirst.decodeTitle("&amp;amp;"), "&amp;", "and a doubled ampersand")
+            // One pass on the same input decodes normally: the refusal is
+            // specific to the SECOND pass.
+            T.equal(Standfirst.decodeEntities("&lt;script&gt;"), "<script>",
+                    "a single pass is unchanged in behaviour")
+        }
+    }
+}

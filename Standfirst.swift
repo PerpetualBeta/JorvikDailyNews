@@ -255,6 +255,10 @@ enum Standfirst {
     /// out, restricted to the ranges that turn up in prose: Latin-1, General
     /// Punctuation, and the arrows and maths signs feeds use.
     static func decodeEntities(_ s: String) -> String {
+        decodeEntities(s, refusingMarkup: false)
+    }
+
+    static func decodeEntities(_ s: String, refusingMarkup: Bool) -> String {
         guard s.contains("&") else { return s }
         var out = ""
         out.reserveCapacity(s.count)
@@ -263,7 +267,8 @@ enum Standfirst {
             out += s[index..<ampersand]
             let body = s[s.index(after: ampersand)...].prefix(maxReferenceLength)
             if let terminator = body.firstIndex(of: ";"),
-               let scalar = scalar(forReference: body[..<terminator]) {
+               let scalar = scalar(forReference: body[..<terminator]),
+               !(refusingMarkup && markupScalars.contains(scalar)) {
                 out.unicodeScalars.append(scalar)
                 index = s.index(after: terminator)
             } else {
@@ -276,6 +281,34 @@ enum Standfirst {
         out += s[index...]
         return out
     }
+
+    /// Decodes a title that was encoded twice, and only where that is safe.
+    ///
+    /// Some sites double-encode. Tom's Hardware puts `&amp;mdash;` in its
+    /// `<title>`, so one honest decode yields the literal text `&mdash;` and
+    /// that is what a reader sees — in our header and in Safari's tab alike.
+    /// We are being faithful and it looks broken.
+    ///
+    /// A second blanket pass is NOT the fix, and that is the whole reason this
+    /// function is separate from `decodeEntities`. Decoding twice turns a
+    /// deliberately-escaped `&amp;lt;script&amp;gt;` into real markup, which
+    /// is the exact trap the single left-to-right scan was written to avoid.
+    ///
+    /// So the second pass runs only over references that cannot produce
+    /// markup: anything decoding to `<`, `>`, `&`, `"` or `'` is left exactly
+    /// as the page wrote it. An em dash is safe; an angle bracket never is.
+    ///
+    /// Titles only. Body text keeps the single pass, because a title is short,
+    /// is displayed as one line, and is the one place a stray `&mdash;` is
+    /// unmissable.
+    static func decodeTitle(_ s: String) -> String {
+        let once = decodeEntities(s)
+        guard once.contains("&"), once.contains(";") else { return once }
+        return decodeEntities(once, refusingMarkup: true)
+    }
+
+    /// Characters a second decode pass must never produce.
+    private static let markupScalars: Set<Unicode.Scalar> = ["<", ">", "&", "\"", "'"]
 
     /// The longest reference worth looking for. Long enough for the longest
     /// name in the table and any numeric form, short enough that a bare

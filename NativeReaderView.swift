@@ -146,7 +146,8 @@ struct NativeReaderView: View {
                 .font(.custom(Style.serif, size: Style.bylineSize))
                 .tracking(Style.bylineTracking)
                 .foregroundStyle(Palette.byline(dark))
-            Text(article.title ?? sourceTitle)
+            // Double-decoded where that cannot produce markup. See decodeTitle.
+            Text(Standfirst.decodeTitle(article.title ?? sourceTitle))
                 .font(.custom(Style.display, size: Style.h1))
                 .foregroundStyle(Palette.heading(dark))
                 .lineSpacing(Style.h1 * 0.15)
