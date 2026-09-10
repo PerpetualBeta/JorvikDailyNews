@@ -898,6 +898,20 @@ final class AppStore {
         let resolvedURL: URL
     }
 
+    /// Whether two URLs are the same site for the purpose of self-healing.
+    ///
+    /// Host and scheme, compared exactly, except that an `http` feed is
+    /// allowed to heal to `https` on the same host — an upgrade, and the one
+    /// scheme change that is never a downgrade.
+    private nonisolated static func sameHost(_ candidate: URL, as original: URL) -> Bool {
+        guard let a = candidate.host?.lowercased(),
+              let b = original.host?.lowercased(), a == b,
+              let newScheme = candidate.scheme?.lowercased(),
+              let oldScheme = original.scheme?.lowercased()
+        else { return false }
+        return newScheme == oldScheme || (oldScheme == "http" && newScheme == "https")
+    }
+
     /// Fetch a feed. If the stored URL returns content that can't be parsed as
     /// a feed (e.g. the user supplied a site URL, or a site moved its feed),
     /// try discovery on the same URL and retry with the discovered feed URL.
@@ -912,6 +926,25 @@ final class AppStore {
         } catch FeedFetchError.parseFailure {
             guard let found = try? await discovery.discover(from: feed.url).first,
                   found.url != feed.url else {
+                return (feed, .failure(FeedFetchError.parseFailure))
+            }
+            // Self-healing follows a pointer the *served page* provides, and
+            // the served page is whatever is at that address today. A feed
+            // that stops parsing — because it was retired, sold, or taken over
+            // — can answer with `<link rel="alternate" href="…">` naming any
+            // address it likes, and `updateURL` below writes that into
+            // `feeds.json` permanently. The user chose a subscription and
+            // would silently have a different one.
+            //
+            // So healing may only move a feed WITHIN the host the user
+            // subscribed to. That still covers what this was built for: a site
+            // moving /feed to /rss, or handing out a new path. It does not
+            // cover a site moving to a new domain, and it should not: that is
+            // a decision for the person who chose the subscription.
+            guard sameHost(found.url, as: feed.url) else {
+                jdnLog("refresh: \(feed.url.host ?? "?") offered a feed at "
+                       + "\(found.url.host ?? "?") — refused, a subscription may only "
+                       + "move within its own host")
                 return (feed, .failure(FeedFetchError.parseFailure))
             }
             let healed = Feed(

@@ -103,6 +103,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/EditionBuilderTests.swift \
                 Tests/PagePicturesTests.swift \
                 Tests/DayRolloverTests.swift \
+                Tests/WebURLTests.swift \
                 Tests/ReaderLinkTests.swift \
                 Tests/MailtoLinkTests.swift \
                 Tests/EmbeddedArticleTests.swift \
