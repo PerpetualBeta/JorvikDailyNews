@@ -45,6 +45,15 @@
   function isBlank(s) { return !s || !/\S/.test(s); }
 
   // Collect the inline content of an element as styled runs.
+  /// Elements that end a paragraph when they turn up inside a stretch of
+  /// otherwise inline content — inside a list item or a table cell, say.
+  var BLOCK_INSIDE_TEXT = {
+    P: 1, DIV: 1, BLOCKQUOTE: 1, PRE: 1, FIGURE: 1, FIGCAPTION: 1,
+    H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, SECTION: 1, ARTICLE: 1,
+    HEADER: 1, FOOTER: 1, ASIDE: 1, DL: 1, DT: 1, DD: 1, HR: 1, TABLE: 1
+  };
+  var PARAGRAPH_MARK = '\u0001';
+
   function runsOf(node, inherited) {
     var out = [];
     var style = inherited || { bold: false, italic: false, code: false, href: null };
@@ -71,6 +80,22 @@
       if (tag === 'UL' || tag === 'OL') return;
       if (tag === 'BR') { push('\n', s); return; }
 
+      // A block boundary inside a run of inline text.
+      //
+      // Nothing used to be inserted here, so two paragraphs of one list item
+      // came out welded: a Lobsters comment read "...nothing to do with it.I
+      // don't agree with many of the points" — the end of one paragraph
+      // against the start of the next, with no space and no break. Same
+      // family as the bare <p> that welded standfirsts, and invisible in
+      // exactly the same way, because it looks like the author's own bad
+      // typing.
+      //
+      // Marked with U+0001 rather than a newline because the whitespace
+      // collapse below is what HTML does and would eat a newline. A control
+      // character cannot occur in real prose, so it survives the collapse and
+      // is turned into a paragraph break afterwards.
+      if (BLOCK_INSIDE_TEXT[tag] && out.length) push(PARAGRAPH_MARK, s);
+
       var next = {
         bold: s.bold || !!BOLD[tag],
         italic: s.italic || !!ITALIC[tag],
@@ -90,6 +115,9 @@
     // that separate words across an inline boundary.
     for (var i = 0; i < out.length; i++) {
       out[i].text = out[i].text.replace(/\s+/g, ' ');
+      // Now the marks can become real breaks, taking any space that collapsed
+      // against them with them.
+      out[i].text = out[i].text.replace(/ ?\u0001+ ?/g, '\n\n');
     }
     // Trim the very ends of the block only.
     if (out.length) {
