@@ -99,6 +99,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/DayRolloverTests.swift \
                 Tests/ReaderLinkTests.swift \
                 Tests/EmbeddedArticleTests.swift \
+                Tests/WalkerTests.swift \
                 Tests/main.swift
 
 TEST_BIN := .build/tests
