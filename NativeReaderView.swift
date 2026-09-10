@@ -446,6 +446,14 @@ struct NativeReaderView: View {
     }
 }
 
+/// Where the SVG parse is allowed to block. Serial, because a page has few
+/// diagrams and one thread cannot starve anything.
+///
+/// At file scope rather than inside `InlineSVG`, which is generic over its
+/// caption view — and a generic type cannot hold a static stored property.
+private let svgParseQueue = DispatchQueue(label: "cc.jorviksoftware.jdn.svg",
+                                          qos: .userInitiated)
+
 /// An inline `<svg>` from an article, parsed off the main actor and only once.
 ///
 /// It used to call `NSImage(data:)` inside a `@ViewBuilder` reached from
@@ -466,11 +474,6 @@ private struct InlineSVG<Caption: View>: View {
 
     @State private var image: NSImage?
     @State private var refused = false
-
-    /// Where the SVG parse is allowed to block. Serial, because a page has
-    /// few diagrams and one thread cannot starve anything.
-    private static let parseQueue = DispatchQueue(label: "cc.jorviksoftware.jdn.svg",
-                                                  qos: .userInitiated)
 
     /// The same ceiling the walker applies, restated because this is the far
     /// side of a stored boundary.
@@ -517,7 +520,7 @@ private struct InlineSVG<Caption: View>: View {
             // cost is small. The queue is not about the cost; it is about
             // where a blocking call is allowed to block.
             let parsed = await withCheckedContinuation { continuation in
-                Self.parseQueue.async {
+                svgParseQueue.async {
                     continuation.resume(returning: source.data(using: .utf8)
                         .flatMap(NSImage.init(data:)))
                 }
