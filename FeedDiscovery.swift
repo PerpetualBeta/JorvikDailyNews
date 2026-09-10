@@ -63,7 +63,7 @@ final class FeedDiscovery: Sendable {
         request.setValue("application/rss+xml, application/atom+xml, application/xml;q=0.9, text/html;q=0.8, */*;q=0.5", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 20
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await BoundedFetch.data(for: request, on: .shared, limit: BoundedFetch.markupLimit)
             if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
                 throw FeedDiscoveryError.fetchFailed("HTTP \(http.statusCode)")
             }

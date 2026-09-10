@@ -38,13 +38,15 @@ struct ReaderBlock: Codable, Sendable, Identifiable {
         /// something that looks like a link and does nothing is the exact bug
         /// this was written to fix.
         func destination(relativeTo base: URL) -> URL? {
-            guard let href else { return nil }
-            let trimmed = href.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
-            // `javascript:` cannot do anything here and must not open a
-            // browser window showing its source.
-            guard !trimmed.lowercased().hasPrefix("javascript:") else { return nil }
-            return URL(string: trimmed, relativeTo: base)?.absoluteURL
+            // http(s) only. This used to reject `javascript:` and pass
+            // everything else, which meant an article could hand
+            // `NSWorkspace.open` any scheme an installed app had registered:
+            // `webcal:` to subscribe Calendar to the attacker's feed for good,
+            // `smb:` to prompt Finder for credentials against their host,
+            // `ssh:`/`x-man-page:` to put a command line in front of a
+            // terminal, `file:///System/Applications/…` to launch an app. One
+            // click, no consent step, and drawn identically to a real link.
+            WebURL.resolve(href, against: base)
         }
     }
 

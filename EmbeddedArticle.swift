@@ -19,10 +19,7 @@ enum EmbeddedArticle {
     static func candidate(in html: String, base: URL) -> URL? {
         for match in frames(in: html) {
             guard let src = attribute("src", in: match),
-                  let url = URL(string: src.trimmingCharacters(in: .whitespacesAndNewlines),
-                                relativeTo: base)?.absoluteURL,
-                  let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https"
+                  let url = WebURL.resolve(src, against: base)
             else { continue }
             if isDecoration(url) { continue }
             if isTiny(match) { continue }

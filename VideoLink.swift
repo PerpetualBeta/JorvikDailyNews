@@ -36,18 +36,60 @@ enum VideoLink: Equatable {
         return nil
     }
 
+    /// Characters a YouTube id may contain, and nothing else.
+    ///
+    /// The id is interpolated into an HTML attribute in
+    /// `ReaderSheet.youTubeEmbedHTML`, so anything that can carry a quote or
+    /// an angle bracket escapes the attribute. `URL.pathComponents` and
+    /// `URLComponents.queryItems` both hand back **percent-decoded** text, so
+    /// a feed item linking to
+    ///
+    ///     https://www.youtube.com/watch?v=a%22%3E%3Cimg%20src=x%20onerror=…%3E
+    ///
+    /// produced the id `a"><img src=x onerror=…>` and injected it into a
+    /// JavaScript-enabled web view loaded with a base of
+    /// `https://jorviksoftware.cc`, so the injected script ran with the
+    /// project's own origin.
+    ///
+    /// Escaping at the point of interpolation would fix that one site.
+    /// Validating here fixes it for every site, present and future, and a real
+    /// id has no business containing anything outside this set.
+    private static let youTubeIDCharacters = Set(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+    /// Eleven is the standard length. The bound is loose because YouTube has
+    /// changed id formats before and a longer real id should not stop a video
+    /// playing; it is here only so an unbounded string cannot be carried
+    /// around.
+    private static let maxVideoIDLength = 64
+
+    private static func validYouTubeID(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty, raw.count <= maxVideoIDLength,
+              raw.allSatisfy({ youTubeIDCharacters.contains($0) })
+        else { return nil }
+        return raw
+    }
+
+    /// Vimeo ids are decimal, and the same reasoning applies.
+    private static func validVimeoID(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty, raw.count <= maxVideoIDLength,
+              raw.allSatisfy(\.isASCII), raw.allSatisfy(\.isNumber)
+        else { return nil }
+        return raw
+    }
+
     private static func youTubeID(_ url: URL) -> String? {
         let host = url.host?.lowercased() ?? ""
         let parts = url.pathComponents.filter { $0 != "/" }
-        if host.hasSuffix("youtu.be") { return parts.first }
+        if host.hasSuffix("youtu.be") { return validYouTubeID(parts.first) }
         if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == "v" })?.value, !v.isEmpty {
-            return v
+            return validYouTubeID(v)
         }
         // /embed/ID, /shorts/ID, /v/ID
         if let idx = parts.firstIndex(where: { ["embed", "shorts", "v"].contains($0) }),
            idx + 1 < parts.count {
-            return parts[idx + 1]
+            return validYouTubeID(parts[idx + 1])
         }
         return nil
     }
@@ -55,6 +97,8 @@ enum VideoLink: Equatable {
     private static func vimeoID(_ url: URL) -> String? {
         // vimeo.com/123456789 or player.vimeo.com/video/123456789
         let parts = url.pathComponents.filter { $0 != "/" }
-        return parts.last(where: { !$0.isEmpty && $0.allSatisfy(\.isNumber) })
+        // `Character.isNumber` is true for Arabic-Indic and other non-ASCII
+        // digits, which cannot carry a quote but can build a nonsense URL.
+        return parts.compactMap(validVimeoID).last
     }
 }

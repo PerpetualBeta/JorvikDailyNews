@@ -54,3 +54,45 @@ enum VideoLinkTests {
         }
     }
 }
+
+/// A video id is interpolated into an HTML attribute in a JavaScript-enabled
+/// web view, so it has to be validated before it gets there. `pathComponents`
+/// and `queryItems` both hand back percent-DECODED text, which is what made
+/// this reachable.
+enum VideoIDTests {
+
+    static func run() {
+        T.suite("Video id: injection payloads are refused") {
+            // Proved against the shipping extractor before the guard existed:
+            // this produced the id `a"><img src=x onerror=alert(1)>` and put it
+            // inside src="https://www.youtube.com/embed/…".
+            for raw in ["https://www.youtube.com/watch?v=a%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E",
+                        "https://youtu.be/a%22%3E%3Cscript%3Ealert(1)%3C/script%3E",
+                        "https://www.youtube.com/embed/a%22%20onload=%22alert(1)",
+                        "https://www.youtube.com/watch?v=%3E%3Cimg/src/onerror=alert(1)%3E",
+                        "https://vimeo.com/1%22%3E%3Cimg%20src=x%3E",
+                        "https://player.vimeo.com/video/%22%3E%3Cscript%3E"] {
+                T.expect(VideoLink.detect(URL(string: raw)!) == nil,
+                         "refuses \(raw.suffix(38))")
+            }
+        }
+
+        T.suite("Video id: real ids still play") {
+            // The guard must not cost a working video.
+            T.expect(VideoLink.detect(URL(string: "https://youtu.be/dQw4w9WgXcQ")!) != nil,
+                     "a standard 11-character id")
+            T.expect(VideoLink.detect(URL(string: "https://www.youtube.com/shorts/XgJjdkYOKz8")!) != nil,
+                     "a shorts id")
+            T.expect(VideoLink.detect(URL(string: "https://www.youtube.com/watch?v=abc-DEF_123")!) != nil,
+                     "hyphen and underscore are legitimate")
+            T.expect(VideoLink.detect(URL(string: "https://vimeo.com/123456789")!) != nil,
+                     "a numeric Vimeo id")
+        }
+
+        T.suite("Video id: bounded") {
+            let long = String(repeating: "a", count: 200)
+            T.expect(VideoLink.detect(URL(string: "https://youtu.be/\(long)")!) == nil,
+                     "a 200-character id is not an id")
+        }
+    }
+}

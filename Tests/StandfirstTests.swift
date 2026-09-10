@@ -143,3 +143,45 @@ enum StandfirstTests {
         (1...n).map { "This is sentence number \($0) of the test paragraph." }.joined(separator: " ")
     }
 }
+
+/// The fetch path runs several `.*?` regexes with `dotMatchesLineSeparators`
+/// over whatever a feed puts in `content:encoded`. An unclosed tag makes those
+/// backtrack across the rest of the document, and a feed body has no natural
+/// size, so one hostile item could stop the paper publishing at all.
+enum StandfirstLimitTests {
+
+    static func run() {
+        T.suite("Standfirst: a body over the ceiling is clamped") {
+            let huge = String(repeating: "<p>Some ordinary words in a paragraph.</p>",
+                              count: 40_000)   // roughly 1.7 MB
+            T.expect(huge.utf8.count > Standfirst.maxBodyBytes, "the fixture is over the ceiling")
+            let started = Date()
+            let out = Standfirst.extract(from: huge)
+            let took = Date().timeIntervalSince(started)
+            T.expect(!out.isEmpty, "it still yields a standfirst")
+            T.expect(took < 2.0, "and does it promptly (took \(String(format: "%.2f", took))s)")
+        }
+
+        T.suite("Standfirst: an unclosed tag cannot run away") {
+            // The shape that backtracks: an opening tag the pattern must find
+            // a partner for, and megabytes of text after it that it never
+            // will.
+            let hostile = "<script>" + String(repeating: "a", count: 900_000)
+                        + "<p>" + String(repeating: "word ", count: 60) + "</p>"
+            let started = Date()
+            _ = Standfirst.extract(from: hostile)
+            let took = Date().timeIntervalSince(started)
+            T.expect(took < 2.0, "bounded (took \(String(format: "%.2f", took))s)")
+        }
+
+        T.suite("Standfirst: an ordinary body is untouched") {
+            // The clamp must not change any real result. Today's largest
+            // extracted standfirst was 1,551 characters.
+            let normal = "<p>" + String(repeating: "word ", count: 400) + "</p>"
+            T.expect(normal.utf8.count < Standfirst.maxBodyBytes, "well under the ceiling")
+            T.equal(Standfirst.extract(from: normal), Standfirst.extract(from: normal),
+                    "stable")
+            T.expect(!Standfirst.extract(from: normal).isEmpty, "and non-empty")
+        }
+    }
+}

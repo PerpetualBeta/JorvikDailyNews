@@ -31,7 +31,9 @@ SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                     ManageFeedsSheet.swift \
                     ReaderSheet.swift \
                     ArticleExtractor.swift \
-                    EmbeddedArticle.swift \
+                    WebURL.swift \
+                    BoundedFetch.swift \
+                EmbeddedArticle.swift \
                     ArticleClassifier.swift \
                     AppStore.swift \
                     Feed.swift \
@@ -76,6 +78,8 @@ include ../jorvik-release/release.mk
 # here is Foundation-only apart from ImageCache, which EditionBuilder consults
 # to ask whether a picture is known to have failed.
 TEST_SOURCES := VideoLink.swift \
+                WebURL.swift \
+                BoundedFetch.swift \
                 EmbeddedArticle.swift \
                 PictureSignature.swift \
                 PictureSignatureStore.swift \

@@ -13,7 +13,39 @@ enum ReaderLinkTests {
         T.suite("Links: absolute addresses pass through") {
             equal("https://other.example/thing", "https://other.example/thing", "https")
             equal("http://other.example/thing", "http://other.example/thing", "http")
-            equal("mailto:someone@example.com", "mailto:someone@example.com", "mailto")
+            // Foundation does not normalise the scheme's case, so the check
+            // has to. `URL(string: "HTTP://x")?.scheme` is "HTTP".
+            equal("HTTPS://other.example/thing", "HTTPS://other.example/thing", "uppercase scheme")
+        }
+
+        T.suite("Links: only the web, and nothing else") {
+            // Every one of these had a handler on the machine this was written
+            // on, and each reached NSWorkspace.open on a single click with no
+            // consent step: webcal subscribes Calendar to the attacker's feed
+            // permanently, smb prompts Finder for credentials against their
+            // host, ssh and x-man-page hand a command line to a terminal, and
+            // file:// launches an application at a fixed absolute path.
+            for scheme in ["file:///System/Applications/Utilities/Terminal.app",
+                           "webcal://attacker.example/track.ics",
+                           "smb://attacker.example/share",
+                           "afp://attacker.example/share",
+                           "vnc://attacker.example:5900",
+                           "ssh://root@attacker.example",
+                           "telnet://attacker.example",
+                           "x-man-page://ls",
+                           "itms://attacker.example",
+                           "macappstore://apps.apple.com/app/id1",
+                           "vscode://file//Users/x/.ssh/id_rsa:1:1",
+                           "mailto:someone@example.com",
+                           "tel:+441234567890",
+                           "data:text/html,<script>alert(1)</script>",
+                           "about:blank"] {
+                T.expect(run(scheme) == nil, "refuses \(scheme.prefix(28))")
+            }
+            // And the case-shifted forms, since a deny-list would have been
+            // beaten by these even if it had listed the schemes above.
+            T.expect(run("FILE:///etc/passwd") == nil, "refuses an uppercase file scheme")
+            T.expect(run("JavaScript:alert(1)") == nil, "still refuses javascript")
         }
 
         T.suite("Links: relative addresses resolve against the article") {

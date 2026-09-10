@@ -106,7 +106,7 @@ enum Standfirst {
     /// not kept in the edition to re-extract from. `trim(_:toWords:)` cuts it
     /// back wherever it appears somewhere narrower.
     static func extract(from html: String) -> String {
-        let stripped = removeNonProse(html)
+        let stripped = removeNonProse(clamp(html))
         let marked = replace(Patterns.blockEnd, in: stripped, with: separator)
         let minWords = minParagraphWords
 
@@ -155,6 +155,35 @@ enum Standfirst {
             break
         }
         return kept.joined(separator: "\n\n")
+    }
+
+    /// Longest body this will look at.
+    ///
+    /// The regexes below run over whatever a feed puts in `content:encoded`,
+    /// and several of them are `.*?` with `dotMatchesLineSeparators` — the
+    /// `nonProse` pattern has to be, because it spans a whole `<script>` or
+    /// `<table>`. Given an opening tag that is never closed, that backtracks
+    /// across the remainder of the document, and a feed body has no natural
+    /// size at all. This runs on the fetch path during a refresh, so a single
+    /// hostile item could stop the paper ever publishing.
+    ///
+    /// A quarter of a megabyte, against a job that needs the first 200 words.
+    /// Today's real corpus: 296 items, largest *extracted* standfirst 1,551
+    /// characters, median 134. No legitimate body needs anything like this
+    /// much to yield an opening paragraph, and truncation only ever costs the
+    /// tail of an article the standfirst was never going to reach.
+    static let maxBodyBytes = 256 * 1024
+
+    /// The body, or as much of it as is worth reading.
+    ///
+    /// Cut on a character boundary, and logged, so a feed that trips it is
+    /// visible rather than quietly shortened.
+    private static func clamp(_ html: String) -> String {
+        guard html.utf8.count > maxBodyBytes else { return html }
+        let kept = String(html.prefix(maxBodyBytes))
+        jdnLog("standfirst: body of \(html.utf8.count) bytes clamped to "
+               + "\(kept.utf8.count) before extraction")
+        return kept
     }
 
     /// Drops HTML comments, and the elements whose *contents* are not prose.

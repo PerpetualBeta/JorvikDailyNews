@@ -470,7 +470,7 @@ final class ImageCache: @unchecked Sendable {
         let response: URLResponse
         let source = FetchSource()
         do {
-            (data, response) = try await Self.session.data(for: request, delegate: source)
+            (data, response) = try await BoundedFetch.data(for: request, on: Self.session, limit: BoundedFetch.imageLimit, delegate: source)
         } catch {
             // A timeout, a dropped connection, a DNS hiccup. Nothing here says
             // the picture is bad.

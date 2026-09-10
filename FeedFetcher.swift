@@ -36,7 +36,7 @@ final class FeedFetcher: Sendable {
         request.setValue("application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 20
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await BoundedFetch.data(for: request, on: .shared, limit: BoundedFetch.markupLimit)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             throw FeedFetchError.invalidResponse(http.statusCode)
         }

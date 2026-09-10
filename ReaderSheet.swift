@@ -624,6 +624,8 @@ struct ReaderWebView: NSViewRepresentable {
                                    forURLScheme: ReaderBytesHandler.scheme)
         let web = WKWebView(frame: .zero, configuration: config)
         web.setValue(false, forKey: "drawsBackground")
+        // Refuses everything after the first load. See the delegate.
+        web.navigationDelegate = context.coordinator
         return web
     }
 
@@ -658,10 +660,43 @@ struct ReaderWebView: NSViewRepresentable {
     /// reporter has never reached a reader view to find out. It is here because
     /// the cost is one timer and the cost of being wrong is release ten.
     @MainActor
-    final class Coordinator {
+    final class Coordinator: NSObject, WKNavigationDelegate {
         let handler = ReaderBytesHandler()
         var shown: String?
         private var check: Task<Void, Never>?
+
+        /// The reader pane renders one extracted document and must never leave
+        /// it.
+        ///
+        /// Scripting is already off, which stops `location =` and a submitted
+        /// form. It does not stop `<meta http-equiv="refresh" content="0;
+        /// url=…">`, which WebKit honours with no script involved, so an
+        /// article could replace the reader's own pane with any page it liked
+        /// — a convincing place to put a login form, since the sheet carries
+        /// the app's chrome and the reader has no address bar to check.
+        ///
+        /// Nothing legitimate navigates here: the document is loaded once by
+        /// `show(_:baseURL:in:)`, its links are drawn by the native renderer,
+        /// and a click on one goes to the browser. So everything except that
+        /// first load is refused, and any attempt is logged rather than
+        /// silently dropped.
+        func webView(_ web: WKWebView,
+                     decidePolicyFor action: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            // The initial load. `loadHTMLString` presents as `.other` with no
+            // originating frame, and the reader's own scheme serves the same
+            // document by another route.
+            let target = action.request.url
+            let isInitial = action.navigationType == .other
+                && (target == nil
+                    || target?.scheme == ReaderBytesHandler.scheme
+                    || target?.absoluteString == "about:blank")
+            guard !isInitial else { return decisionHandler(.allow) }
+            jdnLog("reader: refused a navigation the article asked for — "
+                   + "\(target?.absoluteString.prefix(120) ?? "(no url)") "
+                   + "(type \(action.navigationType.rawValue))")
+            decisionHandler(.cancel)
+        }
 
         /// How long to let `loadHTMLString` render before checking on it.
         /// Measured on macOS 26, a reader document commits and parses in about
@@ -1245,6 +1280,15 @@ struct PDFKitView: NSViewRepresentable {
                 // Streamed rather than fetched whole, so the size can be shown
                 // and the wait stops looking like a hang. `data(for:)` reports
                 // nothing until it has everything.
+                // http(s) only, and this is the sink rather than a caller, so
+                // it asks rather than trusting whoever built the URL. A `.pdf`
+                // extension on a `file://` link would otherwise have read a
+                // local document straight into the viewer.
+                guard WebURL.isAllowed(url) else {
+                    jdnLog("pdf: refused \(url.scheme ?? "(no scheme)"): — not a web address")
+                    await MainActor.run { onFailure("not a web address") }
+                    return
+                }
                 let (stream, response) = try await URLSession.shared.bytes(for: request)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     jdnLog("pdf: \(url.host ?? "?") returned HTTP \(http.statusCode)")
@@ -1255,11 +1299,33 @@ struct PDFKitView: NSViewRepresentable {
                 jdnLog("pdf: downloading \(url.lastPathComponent) — "
                        + (total > 0 ? "\(total) bytes" : "size not declared"))
 
+                // A declared size over the ceiling is refused before the body
+                // is read.
+                if total > Int64(BoundedFetch.documentLimit) {
+                    let cap = ByteCountFormatter.string(fromByteCount: Int64(BoundedFetch.documentLimit),
+                                                        countStyle: .file)
+                    jdnLog("pdf: \(url.host ?? "?") declares \(total) bytes, over the \(cap) ceiling")
+                    await MainActor.run { onFailure("larger than \(cap)") }
+                    return
+                }
+
                 var data = Data()
-                if total > 0 { data.reserveCapacity(Int(total)) }
+                // Clamped to the ceiling. Reserving straight off the
+                // attacker's `Content-Length` is how a 20 KB response asks for
+                // a gigabyte of address space.
+                if total > 0 { data.reserveCapacity(min(Int(total), BoundedFetch.documentLimit)) }
                 var lastReport = Date()
                 for try await byte in stream {
                     data.append(byte)
+                    // A host that understates its length, or declares none at
+                    // all, is stopped here instead.
+                    if data.count > BoundedFetch.documentLimit {
+                        let cap = ByteCountFormatter.string(fromByteCount: Int64(BoundedFetch.documentLimit),
+                                                            countStyle: .file)
+                        jdnLog("pdf: \(url.host ?? "?") went past the \(cap) ceiling — abandoned")
+                        await MainActor.run { onFailure("larger than \(cap)") }
+                        return
+                    }
                     // Report on a timer, not per byte: a 7.4 MB file is 7.4
                     // million iterations and a state write on each would cost
                     // far more than the download.

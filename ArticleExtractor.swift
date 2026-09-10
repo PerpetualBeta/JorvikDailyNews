@@ -1101,7 +1101,9 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         let (data, response): (Data, URLResponse)
         do {
             jdnLog("fetch: requesting \(url.absoluteString) (timeout \(request.timeoutInterval)s)")
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await BoundedFetch.data(for: request,
+                                                          on: .shared,
+                                                          limit: BoundedFetch.markupLimit)
         } catch {
             jdnLog("fetch: FAILED — \(error.localizedDescription)")
             throw ExtractionError.fetchFailed(error.localizedDescription)
