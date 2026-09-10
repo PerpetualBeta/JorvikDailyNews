@@ -398,16 +398,8 @@ struct ReaderView: View {
               }, onDrew: { liveDrew = true })
 
               if !liveDrew {
-                  VStack(spacing: 14) {
-                      ProgressView()
-                      Text("The reader could not lay this one out.")
-                          .font(.custom("Charter", size: 14))
-                      Text("Fetching the original page\u{2026}")
-                          .font(.custom("Charter", size: 12))
-                          .foregroundStyle(.secondary)
-                  }
-                  .frame(maxWidth: .infinity, maxHeight: .infinity)
-                  .background(Color(nsColor: .textBackgroundColor))
+                  LivePageCover(host: item.link.host ?? "the original page",
+                                link: item.link)
               }
             }
             .task(id: "live-\(item.itemId)") { liveDrew = false }
@@ -810,7 +802,29 @@ struct LiveWebView: NSViewRepresentable {
         /// render" about a page that was merely slow would be worse than the
         /// blank sheet, because it would send the reader away from a page that
         /// was about to appear.
-        private static let grace: TimeInterval = 6
+        ///
+        /// A backstop only. The real test is `isLoading`, below: a page that
+        /// is still arriving has not failed at anything, and no fixed deadline
+        /// can tell a slow server from a broken page.
+        ///
+        /// `adam.math.hhu.de` measured: the Lean Game Server sends 1,480 bytes
+        /// of shell and then a **6,114,882-byte** JavaScript bundle from a
+        /// server running at about 175 KB/s. `isLoading` stays true for **45
+        /// seconds**, and React paints one second after it goes false. Any
+        /// deadline short enough to feel responsive would have called that
+        /// page broken while it was busily working.
+        ///
+        /// So this exists only so a page that loads for ever cannot hold the
+        /// spinner for ever.
+        private static let hardCap: TimeInterval = 75
+
+        /// How long to keep asking after the page has stopped loading.
+        ///
+        /// A JavaScript application paints some time after its last byte
+        /// arrives — one second, on the page above. This is the only window
+        /// where "drew nothing" is real evidence of failure, because before it
+        /// the page had not finished arriving.
+        private static let settle: TimeInterval = 5
 
         func watch(_ web: WKWebView, onBlank: @escaping () -> Void,
                    onDrew: @escaping () -> Void) {
@@ -822,31 +836,147 @@ struct LiveWebView: NSViewRepresentable {
             // reader saw a blank pane for all of it.
             check = Task { @MainActor [weak web] in
                 let started = Date()
-                let probe = "document.documentElement.outerHTML.length"
-                while Date().timeIntervalSince(started) < Self.grace {
+                // When the page stopped loading, or nil while it still is.
+                var stoppedLoading: Date?
+                while Date().timeIntervalSince(started) < Self.hardCap {
                     try? await Task.sleep(nanoseconds: Self.pollInterval)
                     guard !Task.isCancelled, let web else { return }
-                    let chars = ReaderFailureSimulation.isOn ? Self.emptyDocumentChars
-                        : (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
-                    // 39 characters is the empty skeleton a web view starts
-                    // with, and it reports `readyState` as `complete`, so
-                    // length is the only honest test. A real page is thousands.
-                    if chars > Self.emptyDocumentChars {
-                        jdnLog("reader: live page rendered \(chars) chars")
+                    let drawn = ReaderFailureSimulation.isOn ? Drawn.nothing
+                        : await Self.measure(web)
+                    if drawn.hasDrawn {
+                        let waited = String(format: "%.1f", Date().timeIntervalSince(started))
+                        jdnLog("reader: live page drew \(drawn.text) char(s) of text and "
+                               + "\(drawn.media) media element(s) after \(waited)s")
                         onDrew()
                         return
                     }
+                    // Still arriving. Nothing has failed, so nothing is
+                    // reported — a slow server is not a broken page, and
+                    // `estimatedProgress` cannot tell us how far along it is
+                    // because it tracks the document and not the megabytes of
+                    // script the document asks for afterwards.
+                    if ReaderFailureSimulation.isOn || !web.isLoading {
+                        if stoppedLoading == nil { stoppedLoading = Date() }
+                    } else {
+                        stoppedLoading = nil
+                    }
+                    guard let stoppedLoading,
+                          Date().timeIntervalSince(stoppedLoading) >= Self.settle
+                    else { continue }
+                    let waited = String(format: "%.1f", Date().timeIntervalSince(started))
+                    jdnLog("reader: live page finished loading and drew nothing "
+                           + "within \(Int(Self.settle))s — gave up after \(waited)s")
+                    onBlank()
+                    return
                 }
                 guard !Task.isCancelled else { return }
-                jdnLog("reader: live page produced nothing after \(Int(Self.grace))s")
+                jdnLog("reader: live page still had not drawn after "
+                       + "\(Int(Self.hardCap))s — gave up while it was still loading")
                 onBlank()
             }
         }
 
-        private static let pollInterval: UInt64 = 200_000_000
+        /// What the page has actually put on screen.
+        ///
+        /// The old probe read `document.documentElement.outerHTML.length` and
+        /// revealed the page as soon as that passed 39 characters, the length
+        /// of the empty skeleton a web view starts with. That measures the
+        /// markup the server sent, which is not the same thing at all.
+        ///
+        /// `adam.math.hhu.de` is the case that showed it. The server sends
+        /// **1,480 bytes** — a `<div id="root">` and a `<noscript>` — and
+        /// builds the whole page in React afterwards. 1,461 characters sailed
+        /// past the threshold, the cover lifted at once, and the reader
+        /// watched a white rectangle for as long as the bundle took to boot.
+        ///
+        /// So this asks what has been laid out instead. `innerText` reports
+        /// rendered text only, so an un-booted app scores zero and a
+        /// `<noscript>` block does not count — which is exactly right, because
+        /// the reader cannot see it either.
+        ///
+        /// Media is counted separately because a page can legitimately be one
+        /// photograph and no prose, and text alone would call that blank for
+        /// ever.
+        private struct Drawn {
+            let text: Int
+            let media: Int
+            static let nothing = Drawn(text: 0, media: 0)
+            /// One picture, or roughly a sentence.
+            var hasDrawn: Bool { media >= 1 || text >= 80 }
+        }
 
-        private static let emptyDocumentChars =
-            "<html><head></head><body></body></html>".count
+        private static let paintProbe =
+            "(function(){var b=document.body;if(!b){return [0,0];}"
+            + "var t=(b.innerText||'').trim().length;"
+            + "var m=b.querySelectorAll('img,svg,canvas,video,iframe').length;"
+            + "return [t,m];})()"
+
+        private static func measure(_ web: WKWebView) async -> Drawn {
+            guard let pair = (try? await web.evaluateJavaScript(paintProbe)) as? [Int],
+                  pair.count == 2 else { return .nothing }
+            return Drawn(text: pair[0], media: pair[1])
+        }
+
+        private static let pollInterval: UInt64 = 200_000_000
+    }
+}
+
+/// What the reader looks at while the original page loads underneath.
+///
+/// It counts, and that is the whole point of it. A spinner that never changes
+/// is indistinguishable from a hang, and some of these waits are long for
+/// honest reasons: `adam.math.hhu.de` sends a 6 MB JavaScript bundle from a
+/// server running at about 175 KB/s, so `isLoading` stays true for 45 seconds
+/// before anything can possibly appear. A number that goes up says the app is
+/// still working; a still spinner says nothing at all.
+///
+/// There is no progress bar because there is no honest number to put in one.
+/// `estimatedProgress` sat at 0.136 for the whole of those 45 seconds — it
+/// follows the document, not the megabytes of script the document then asks
+/// for. A bar frozen at 14% would be worse than no bar.
+private struct LivePageCover: View {
+    let host: String
+    let link: URL
+    @State private var elapsed = 0
+
+    /// When to stop apologising and start explaining. Below this a wait is
+    /// ordinary and needs no comment.
+    private static let longWait = 6
+
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+            Text("The reader could not lay this one out.")
+                .font(.custom("Charter", size: 14))
+            Text("Fetching \(host)\u{2026} \(elapsed)s")
+                .font(.custom("Charter", size: 12))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            if elapsed >= Self.longWait {
+                // Some pages arrive as an empty shell and build themselves
+                // once they are running, and a few are very large. Saying so
+                // turns a suspicious wait into an explained one.
+                Text("This page builds itself once open, which can take a while "
+                     + "on a large site.")
+                    .font(.custom("Charter", size: 11))
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+                Button("Open in Browser") { NSWorkspace.shared.open(link) }
+                    .buttonStyle(.link)
+                    .font(.custom("Charter", size: 12))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
+        .task {
+            elapsed = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                elapsed += 1
+            }
+        }
     }
 }
 
