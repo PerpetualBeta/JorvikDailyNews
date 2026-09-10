@@ -867,17 +867,46 @@ struct LiveWebView: NSViewRepresentable {
                     guard let stoppedLoading,
                           Date().timeIntervalSince(stoppedLoading) >= Self.settle
                     else { continue }
-                    let waited = String(format: "%.1f", Date().timeIntervalSince(started))
-                    jdnLog("reader: live page finished loading and drew nothing "
-                           + "within \(Int(Self.settle))s — gave up after \(waited)s")
-                    onBlank()
+                    Self.finish(drawn, after: started, why: "finished loading",
+                                onBlank: onBlank, onDrew: onDrew)
                     return
                 }
-                guard !Task.isCancelled else { return }
-                jdnLog("reader: live page still had not drawn after "
-                       + "\(Int(Self.hardCap))s — gave up while it was still loading")
-                onBlank()
+                guard !Task.isCancelled, let web else { return }
+                Self.finish(await Self.measure(web), after: started,
+                            why: "was still loading", onBlank: onBlank, onDrew: onDrew)
             }
+        }
+
+        /// The end of the wait: reveal, or report a blank pane.
+        ///
+        /// Never reports failure while a document exists. On 10 September 2026
+        /// the layout probe returned **zero for every live page** inside the
+        /// app while returning 2,873 characters for the same page in a bare
+        /// harness, so two pages that were rendering perfectly well were told
+        /// they had not rendered. Why the app's web view reports nothing is
+        /// not yet known — it loads underneath an opaque cover, which is the
+        /// obvious suspect and not yet the proven one.
+        ///
+        /// Until it is known, the asymmetry decides the behaviour. Revealing a
+        /// page that turns out to be blank costs the reader a blank pane they
+        /// can close. Claiming a page failed when it did not sends them away
+        /// from an article that was there. So a document present but unmeasured
+        /// is revealed, and only an empty document is called a failure.
+        @MainActor
+        private static func finish(_ drawn: Drawn, after started: Date, why: String,
+                                   onBlank: @escaping () -> Void,
+                                   onDrew: @escaping () -> Void) {
+            let waited = String(format: "%.1f", Date().timeIntervalSince(started))
+            guard drawn.hasDocument else {
+                jdnLog("reader: live page held nothing at all after \(waited)s "
+                       + "(it \(why)) — reporting a blank page")
+                onBlank()
+                return
+            }
+            jdnLog("reader: live page never reported any laid-out content after "
+                   + "\(waited)s (it \(why)), but holds \(drawn.markup) chars of "
+                   + "document — showing it rather than claiming it failed")
+            onDrew()
         }
 
         /// What the page has actually put on screen.
@@ -904,21 +933,28 @@ struct LiveWebView: NSViewRepresentable {
         private struct Drawn {
             let text: Int
             let media: Int
-            static let nothing = Drawn(text: 0, media: 0)
-            /// One picture, or roughly a sentence.
+            /// Length of the whole document's markup. Needs no layout, which
+            /// is the point of keeping it.
+            let markup: Int
+            static let nothing = Drawn(text: 0, media: 0, markup: 0)
+            /// One picture, or roughly a sentence, laid out.
             var hasDrawn: Bool { media >= 1 || text >= 80 }
+            /// 39 characters is `<html><head></head><body></body></html>`, the
+            /// skeleton a web view starts with. Anything more means a document
+            /// arrived, whatever the layout probe says about it.
+            var hasDocument: Bool { markup > 39 }
         }
 
         private static let paintProbe =
-            "(function(){var b=document.body;if(!b){return [0,0];}"
+            "(function(){var b=document.body;if(!b){return [0,0,0];}"
             + "var t=(b.innerText||'').trim().length;"
             + "var m=b.querySelectorAll('img,svg,canvas,video,iframe').length;"
-            + "return [t,m];})()"
+            + "return [t,m,document.documentElement.outerHTML.length];})()"
 
         private static func measure(_ web: WKWebView) async -> Drawn {
-            guard let pair = (try? await web.evaluateJavaScript(paintProbe)) as? [Int],
-                  pair.count == 2 else { return .nothing }
-            return Drawn(text: pair[0], media: pair[1])
+            guard let values = (try? await web.evaluateJavaScript(paintProbe)) as? [Int],
+                  values.count == 3 else { return .nothing }
+            return Drawn(text: values[0], media: values[1], markup: values[2])
         }
 
         private static let pollInterval: UInt64 = 200_000_000

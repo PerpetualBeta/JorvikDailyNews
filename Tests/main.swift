@@ -11,5 +11,6 @@ PagePicturesTests.run()
 BlankPictureTests.run()
 DayRolloverTests.run()
 ReaderLinkTests.run()
+EmbeddedArticleTests.run()
 
 exit(T.report())

@@ -461,7 +461,8 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     }
 
     func extract(url: URL, minimumLength: Int = ArticleExtractor.minimumArticleLength,
-                 timeout: TimeInterval = 20) async throws -> Article {
+                 timeout: TimeInterval = 20,
+                 followingFrame: Bool = false) async throws -> Article {
         jdnLog("extract: begin \(url.absoluteString)")
         guard let path = Bundle.main.path(forResource: "Readability", ofType: "js"),
               let js = try? String(contentsOfFile: path, encoding: .utf8) else {
@@ -528,6 +529,25 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                 continue
             }
         }
+        // A page can be a frame around somebody else's document and carry
+        // almost no text of its own. Asked only now, when the page's own
+        // content has already failed, so a real article that merely embeds a
+        // video or a map is never redirected away from.
+        if !followingFrame,
+           let frame = EmbeddedArticle.candidate(in: page.html, base: page.url) {
+            jdnLog("extract: no article on the page itself — following its frame to "
+                   + frame.absoluteString)
+            do {
+                return try await extract(url: frame, minimumLength: minimumLength,
+                                         timeout: timeout, followingFrame: true)
+            } catch {
+                // The frame is a guess. If it does not hold an article either,
+                // the reader must hear about the page it actually asked for,
+                // not about a frame it never mentioned.
+                jdnLog("extract: the frame held no article either — \(error.localizedDescription)")
+            }
+        }
+
         jdnLog("extract: every rung failed — no document by any route")
         // Each rung's own reason is already logged above this line, so the
         // error only has to name which of the two failures this was.
