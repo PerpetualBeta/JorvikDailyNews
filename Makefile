@@ -14,50 +14,78 @@ BUNDLE_ID        := cc.jorviksoftware.JorvikDailyNews
 BUILD_SYSTEM     := swiftc
 
 SWIFT_FRAMEWORKS := Cocoa SwiftUI WebKit JavaScriptCore PDFKit AVKit AVFoundation Vision
-SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
-                    ContentView.swift \
-                    Masthead.swift \
-                    FrontPage.swift \
-                    SectionPageView.swift \
-                    MasonryColumns.swift \
-                    StoryCard.swift \
-                    OptionalImage.swift \
-                    ImageCache.swift \
-                    PictureSignature.swift \
-                    PictureSignatureStore.swift \
-                    PagePictures.swift \
-                    DayRollover.swift \
-                    AddFeedSheet.swift \
-                    ManageFeedsSheet.swift \
-                    ReaderSheet.swift \
-                    ArticleExtractor.swift \
-                    WebURL.swift \
-                    MailtoLink.swift \
-                    EmailLinkSheet.swift \
-                    BoundedFetch.swift \
-                EmbeddedArticle.swift \
-                    ArticleClassifier.swift \
-                    AppStore.swift \
-                    StoreMigration.swift \
-                    Feed.swift \
-                    VideoLink.swift \
-                    ReaderBlock.swift \
-                    NativeReaderView.swift \
-                    ProseText.swift \
-                    Edition.swift \
-                    FeedStore.swift \
-                    EditionStore.swift \
-                    ReadStore.swift \
-                    FeedFetcher.swift \
-                    Log.swift \
-                    Standfirst.swift \
-                    StandfirstLayout.swift \
-                    StandfirstText.swift \
-                    FeedDiscovery.swift \
-                    EditionBuilder.swift \
-                    ImageEnricher.swift \
-                    OPMLImporter.swift \
-                    OPMLExporter.swift
+# Sources, one variable per folder so the grouping survives in the build
+# and a new file has an obvious home. release.mk takes the composed list;
+# it also auto-globs JorvikKit/*.swift, which is not repeated here.
+
+# The entry point, the shell, and the store everything hangs off.
+APP_SOURCES := App/AppStore.swift \
+               App/ContentView.swift \
+               App/DayRollover.swift \
+               App/JorvikDailyNewsApp.swift \
+               App/StoreMigration.swift
+
+# The newspaper itself: masthead, front page, section pages, cards.
+PAPER_SOURCES := Paper/Edition.swift \
+                 Paper/EditionBuilder.swift \
+                 Paper/FrontPage.swift \
+                 Paper/MasonryColumns.swift \
+                 Paper/Masthead.swift \
+                 Paper/OptionalImage.swift \
+                 Paper/SectionPageView.swift \
+                 Paper/StoryCard.swift
+
+# Extracting a standfirst, and fitting it to the space it has.
+STANDFIRST_SOURCES := Standfirsts/Standfirst.swift \
+                      Standfirsts/StandfirstLayout.swift \
+                      Standfirsts/StandfirstText.swift
+
+# Reading one article: extraction, block rendering, media, links.
+READER_SOURCES := Reader/ArticleExtractor.swift \
+                  Reader/EmailLinkSheet.swift \
+                  Reader/EmbeddedArticle.swift \
+                  Reader/MailtoLink.swift \
+                  Reader/NativeReaderView.swift \
+                  Reader/ProseText.swift \
+                  Reader/ReaderBlock.swift \
+                  Reader/ReaderSheet.swift \
+                  Reader/VideoLink.swift
+
+# Subscriptions: fetching, parsing, discovery, classification.
+FEEDS_SOURCES := Feeds/AddFeedSheet.swift \
+                 Feeds/ArticleClassifier.swift \
+                 Feeds/Feed.swift \
+                 Feeds/FeedDiscovery.swift \
+                 Feeds/FeedFetcher.swift \
+                 Feeds/ImageEnricher.swift \
+                 Feeds/ManageFeedsSheet.swift \
+                 Feeds/OPMLExporter.swift \
+                 Feeds/OPMLImporter.swift
+
+# Fetching, caching, cropping and de-duplicating hero images.
+PICTURES_SOURCES := Pictures/ImageCache.swift \
+                    Pictures/PagePictures.swift \
+                    Pictures/PictureSignature.swift \
+                    Pictures/PictureSignatureStore.swift
+
+# The four files on disk.
+STORAGE_SOURCES := Storage/EditionStore.swift \
+                   Storage/FeedStore.swift \
+                   Storage/ReadStore.swift
+
+# Small things with no home of their own.
+SUPPORT_SOURCES := Support/BoundedFetch.swift \
+                   Support/Log.swift \
+                   Support/WebURL.swift
+
+SWIFT_SOURCES := $(APP_SOURCES) \
+                 $(PAPER_SOURCES) \
+                 $(STANDFIRST_SOURCES) \
+                 $(READER_SOURCES) \
+                 $(FEEDS_SOURCES) \
+                 $(PICTURES_SOURCES) \
+                 $(STORAGE_SOURCES) \
+                 $(SUPPORT_SOURCES)
 
 PACKAGE_TYPE     := zip
 ALSO_SHIP_PKG    := true
@@ -80,23 +108,23 @@ include ../jorvik-release/release.mk
 # pulling them in would drag `@main` into a second binary. Everything listed
 # here is Foundation-only apart from ImageCache, which EditionBuilder consults
 # to ask whether a picture is known to have failed.
-TEST_SOURCES := VideoLink.swift \
-                WebURL.swift \
-                MailtoLink.swift \
-                BoundedFetch.swift \
-                EmbeddedArticle.swift \
-                PictureSignature.swift \
-                PictureSignatureStore.swift \
-                PagePictures.swift \
-                DayRollover.swift \
-                ReaderBlock.swift \
-                Feed.swift \
-                FeedFetcher.swift \
-                Standfirst.swift \
-                EditionBuilder.swift \
-                Edition.swift \
-                Log.swift \
-                ImageCache.swift
+TEST_SOURCES := Reader/VideoLink.swift \
+                Support/WebURL.swift \
+                Reader/MailtoLink.swift \
+                Support/BoundedFetch.swift \
+                Reader/EmbeddedArticle.swift \
+                Pictures/PictureSignature.swift \
+                Pictures/PictureSignatureStore.swift \
+                Pictures/PagePictures.swift \
+                App/DayRollover.swift \
+                Reader/ReaderBlock.swift \
+                Feeds/Feed.swift \
+                Feeds/FeedFetcher.swift \
+                Standfirsts/Standfirst.swift \
+                Paper/EditionBuilder.swift \
+                Paper/Edition.swift \
+                Support/Log.swift \
+                Pictures/ImageCache.swift
 
 TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/VideoLinkTests.swift \

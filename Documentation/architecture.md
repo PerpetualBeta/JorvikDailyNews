@@ -2,6 +2,30 @@
 
 *The extraction ladder, the parsers, the self-test, and the decisions behind them — including several that were wrong first.*
 
+## Where the code lives
+
+One folder per concern, composed in the Makefile as one variable each, so the
+grouping survives into the build and a new file has an obvious home.
+
+| Folder | |
+|---|---|
+| `App/` | The entry point, the shell, and the store everything hangs off |
+| `Paper/` | The newspaper itself: masthead, front page, section pages, cards |
+| `Standfirsts/` | Extracting a standfirst, and fitting it to the space it has |
+| `Reader/` | Reading one article: extraction, block rendering, media, links |
+| `Feeds/` | Subscriptions: fetching, parsing, discovery, classification |
+| `Pictures/` | Fetching, caching, cropping and de-duplicating hero images |
+| `Storage/` | The four files on disk |
+| `Support/` | Small things with no home of their own |
+| `JorvikKit/` | Shared across the Jorvik apps; auto-globbed by `release.mk` |
+| `Resources/` | The bundled JavaScript and the reader stylesheet |
+| `Tests/` | The suite, and its fixtures |
+| `tools/` | Standalone scripts, not part of the app |
+
+`release.mk` takes an explicit source list rather than globbing, so a new file
+has to be added to its folder's variable in the Makefile before it compiles.
+That is deliberate: a glob quietly picks up whatever is lying around.
+
 ## The shape of it
 
 - Pure Swift + SwiftUI. `swiftc -O` single-binary build — no Xcode project required.
