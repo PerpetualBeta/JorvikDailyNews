@@ -128,9 +128,6 @@ struct NativeReaderView: View {
         // all, which separates "the link is not live" from "the browser did
         // not come forward".
         .environment(\.openURL, OpenURLAction { url in
-            // If this fires for an in-article link, the block was drawn by
-            // SwiftUI `Text` rather than by `ProseText`.
-            jdnLog("prosetext: SwiftUI openURL handled the click, NOT TextKit")
             open(url)
             return .handled
         })
@@ -177,8 +174,7 @@ struct NativeReaderView: View {
         case .heading:
             let level = max(1, min(6, block.level ?? 2))
             prose(block.runs ?? [], size: headingSize(level), display: true,
-                  lineSpacing: headingSize(level) * 0.25,
-                  colour: Palette.heading(dark))
+                  lineSpacing: headingSize(level) * 0.25)
                 .foregroundStyle(Palette.heading(dark))
                 .padding(.top, Style.body * Style.headingTopGap)
                 .padding(.bottom, Style.body * Style.headingBottomGap)
@@ -256,89 +252,24 @@ struct NativeReaderView: View {
 
     // MARK: Runs
 
-    /// One `Text` built from concatenated runs, so a line wraps across an
-    /// emphasis boundary exactly as it would in prose. Building a run per
-    /// `Text` in an `HStack` looks equivalent and is not: each becomes an
-    /// unbreakable box and a long sentence stops wrapping.
-    /// A run of prose, drawn by whichever renderer suits it.
+    /// A run of prose.
     ///
-    /// Text with a link goes through `ProseText`, which lays it out with
-    /// TextKit and therefore knows where the link's glyphs are — that is what
-    /// gives the pointing-hand cursor. Text without one stays on SwiftUI
-    /// `Text`, so the overwhelming majority of an article is drawn exactly as
-    /// it was before this existed.
+    /// This used to choose between SwiftUI `Text` and a TextKit renderer, the
+    /// TextKit one existing only to put a pointing hand over links. It could
+    /// not be made to work: SwiftUI's own hover handling replaced the cursor
+    /// as fast as five different mechanisms could set it, and it was not worth
+    /// more of the day. The renderer went with it, so every block is drawn by
+    /// the code that drew it before any of that started.
     ///
-    /// The two were compared headlessly at 2x and are identical to the pixel:
-    /// same size, same line breaks, same position, differences confined to
-    /// antialiasing edges. The switch is invisible.
-    @ViewBuilder
+    /// Links still work and the mailto sheet still works. Only the cursor is
+    /// gone, and it never arrived.
     private func prose(_ runs: [ReaderBlock.Run], size: CGFloat,
                        display: Bool = false, italic: Bool = false,
-                       lineSpacing: CGFloat, colour: Color? = nil,
-                       alignment: NSTextAlignment = .natural) -> some View {
-        if runs.contains(where: { $0.target(relativeTo: baseURL) != nil }) {
-            // Diagnostic: which renderer a link-bearing block actually got.
-            // A SwiftUI `Text` cannot show a cursor at all, so if these lines
-            // are absent while links still work, the block never reached
-            // TextKit and that is the whole answer.
-            let _ = { jdnLog("prosetext: routing a link block to TextKit") }()
-            ProseText(attributed: appKitStyled(runs, size: size, display: display,
-                                               italic: italic, lineSpacing: lineSpacing,
-                                               colour: colour),
-                      linkColour: NSColor(Palette.link(dark)),
-                      alignment: alignment,
-                      onOpen: open)
-        } else {
-            styled(runs, size: size, display: display, italic: italic)
-                .lineSpacing(lineSpacing)
-        }
+                       lineSpacing: CGFloat) -> some View {
+        styled(runs, size: size, display: display, italic: italic)
+            .lineSpacing(lineSpacing)
     }
 
-    /// The same styling as `styled`, in AppKit attributes.
-    ///
-    /// Written out twice rather than converted, because a SwiftUI
-    /// `AttributedString` carries SwiftUI `Font` and `Color` values and
-    /// `NSAttributedString` cannot read them. The two must be kept in step by
-    /// hand; the pixel comparison above is what catches it if they drift.
-    private func appKitStyled(_ runs: [ReaderBlock.Run], size: CGFloat,
-                              display: Bool, italic: Bool,
-                              lineSpacing: CGFloat, colour: Color?) -> NSAttributedString {
-        let out = NSMutableAttributedString()
-        let paragraph = NSMutableParagraphStyle()
-        // SwiftUI's `lineSpacing` is extra space between lines, and so is
-        // NSParagraphStyle's. That equivalence is why the two renderings
-        // measured the same height.
-        paragraph.lineSpacing = lineSpacing
-        let ink = NSColor(colour ?? Palette.text(dark))
-
-        for run in runs {
-            let family = run.code ? Style.mono : (display ? Style.display : Style.serif)
-            let pointSize = run.code ? size * Style.smallerScale : size
-            var font = NSFont(name: family, size: pointSize)
-                ?? .systemFont(ofSize: pointSize)
-            var traits: NSFontTraitMask = []
-            if run.bold || display { traits.insert(.boldFontMask) }
-            if run.italic || italic { traits.insert(.italicFontMask) }
-            if !traits.isEmpty {
-                font = NSFontManager.shared.convert(font, toHaveTrait: traits)
-            }
-            var attributes: [NSAttributedString.Key: Any] = [
-                .font: font,
-                .paragraphStyle: paragraph,
-                .foregroundColor: ink
-            ]
-            // The link colour and underline are left to `linkTextAttributes`,
-            // which overrides whatever is set here anyway.
-            if let target = run.target(relativeTo: baseURL) {
-                switch target {
-                case .web(let url): attributes[.link] = url
-                case .email(let mail): attributes[.link] = mail.original
-                }
-            }
-            out.append(NSAttributedString(string: run.text, attributes: attributes))
-        }
-        return out
-    }
 
     /// One paragraph as a single `Text`, so it wraps as prose.
     ///
