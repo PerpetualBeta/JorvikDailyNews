@@ -24,7 +24,9 @@ struct NativeReaderView: View {
 
     // MARK: Measurements, all from reader.css
 
-    private enum Style {
+    /// `fileprivate` rather than `private` so `InlineSVG` at the foot of this
+    /// file can use the same measurements. One renderer, one column width.
+    fileprivate enum Style {
         static let column: CGFloat = 680        // article max-width
         static let sidePadding: CGFloat = 32    // article padding
         static let topPadding: CGFloat = 56     // article margin-top
@@ -174,7 +176,8 @@ struct NativeReaderView: View {
         case .heading:
             let level = max(1, min(6, block.level ?? 2))
             prose(block.runs ?? [], size: headingSize(level), display: true,
-                  lineSpacing: headingSize(level) * 0.25)
+                  lineSpacing: headingSize(level) * 0.25,
+                  colour: Palette.heading(dark))
                 .foregroundStyle(Palette.heading(dark))
                 .padding(.top, Style.body * Style.headingTopGap)
                 .padding(.bottom, Style.body * Style.headingBottomGap)
@@ -252,22 +255,69 @@ struct NativeReaderView: View {
 
     // MARK: Runs
 
-    /// A run of prose.
+    /// A run of prose, drawn by TextKit only when it carries a link.
     ///
-    /// This used to choose between SwiftUI `Text` and a TextKit renderer, the
-    /// TextKit one existing only to put a pointing hand over links. It could
-    /// not be made to work: SwiftUI's own hover handling replaced the cursor
-    /// as fast as five different mechanisms could set it, and it was not worth
-    /// more of the day. The renderer went with it, so every block is drawn by
-    /// the code that drew it before any of that started.
-    ///
-    /// Links still work and the mailto sheet still works. Only the cursor is
-    /// gone, and it never arrived.
+    /// The `.textSelection(.disabled)` boundary is the fix, not a loss of
+    /// selection: `ProseText` contains its own selectable `NSTextView`. It
+    /// keeps the reader-wide SwiftUI selection layer from reclaiming the
+    /// cursor after TextKit has correctly chosen the pointing hand.
+    @ViewBuilder
     private func prose(_ runs: [ReaderBlock.Run], size: CGFloat,
                        display: Bool = false, italic: Bool = false,
-                       lineSpacing: CGFloat) -> some View {
-        styled(runs, size: size, display: display, italic: italic)
-            .lineSpacing(lineSpacing)
+                       lineSpacing: CGFloat, colour: Color? = nil,
+                       alignment: NSTextAlignment = .natural) -> some View {
+        if runs.contains(where: { $0.target(relativeTo: baseURL) != nil }) {
+            ProseText(
+                attributed: appKitStyled(runs, size: size, display: display,
+                                         italic: italic, lineSpacing: lineSpacing,
+                                         colour: colour),
+                linkColour: NSColor(Palette.link(dark)),
+                alignment: alignment,
+                onOpen: open
+            )
+            // End the ancestor's cursor ownership at this boundary. The
+            // NSTextView remains selectable through `isSelectable = true`.
+            .textSelection(.disabled)
+        } else {
+            styled(runs, size: size, display: display, italic: italic)
+                .lineSpacing(lineSpacing)
+        }
+    }
+
+    /// The AppKit equivalent of `styled`, kept explicit because SwiftUI Font
+    /// and Color attributes do not bridge back into `NSAttributedString`.
+    private func appKitStyled(_ runs: [ReaderBlock.Run], size: CGFloat,
+                              display: Bool, italic: Bool,
+                              lineSpacing: CGFloat, colour: Color?) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = lineSpacing
+        let ink = NSColor(colour ?? Palette.text(dark))
+
+        for run in runs {
+            let family = run.code ? Style.mono : (display ? Style.display : Style.serif)
+            let pointSize = run.code ? size * Style.smallerScale : size
+            var font = NSFont(name: family, size: pointSize) ?? .systemFont(ofSize: pointSize)
+            var traits: NSFontTraitMask = []
+            if run.bold || display { traits.insert(.boldFontMask) }
+            if run.italic || italic { traits.insert(.italicFontMask) }
+            if !traits.isEmpty {
+                font = NSFontManager.shared.convert(font, toHaveTrait: traits)
+            }
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .paragraphStyle: paragraph,
+                .foregroundColor: ink
+            ]
+            if let target = run.target(relativeTo: baseURL) {
+                switch target {
+                case .web(let url): attributes[.link] = url
+                case .email(let mail): attributes[.link] = mail.original
+                }
+            }
+            out.append(NSAttributedString(string: run.text, attributes: attributes))
+        }
+        return out
     }
 
 
@@ -347,7 +397,8 @@ struct NativeReaderView: View {
                 OptionalImage(url: url, maxHeight: nil, onFailure: nil)
                     .frame(maxWidth: .infinity)
                 if let caption = block.caption, !caption.isEmpty {
-                    styled(caption, size: Style.body * Style.smallerScale, italic: true)
+                    prose(caption, size: Style.body * Style.smallerScale, italic: true,
+                          lineSpacing: 0, colour: Palette.caption(dark), alignment: .center)
                         .foregroundStyle(Palette.caption(dark))
                         .frame(maxWidth: .infinity, alignment: .center)
                         .multilineTextAlignment(.center)
@@ -365,22 +416,10 @@ struct NativeReaderView: View {
     /// reference, which is the shape real pages use.
     @ViewBuilder
     private func inlineSVG(_ block: ReaderBlock) -> some View {
-        if let source = block.svg,
-           let data = source.data(using: .utf8),
-           let image = NSImage(data: data) {
-            VStack(alignment: .leading, spacing: 10) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    // Never upscale past its own size, the same rule the
-                    // masonry uses: a small mark drawn large is a blur.
-                    .frame(maxWidth: min(Style.column, CGFloat(block.width ?? Double(Style.column))))
-                if let caption = block.caption, !caption.isEmpty {
-                    styled(caption, size: Style.body * Style.smallerScale, italic: true)
-                        .foregroundStyle(Palette.caption(dark))
-                }
-            }
-            .padding(.vertical, Style.mediaGap)
+        InlineSVG(block: block) { runs in
+            prose(runs, size: Style.body * Style.smallerScale, italic: true,
+                  lineSpacing: 0, colour: Palette.caption(dark))
+                .foregroundStyle(Palette.caption(dark))
         }
     }
 
@@ -392,7 +431,8 @@ struct NativeReaderView: View {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, cells in
                     HStack(alignment: .top, spacing: 0) {
                         ForEach(Array(cells.enumerated()), id: \.offset) { _, runs in
-                            styled(runs, size: Style.body * Style.smallerScale)
+                            prose(runs, size: Style.body * Style.smallerScale,
+                                  lineSpacing: 0)
                                 .padding(.horizontal, Style.cellPadding + 4)
                                 .padding(.vertical, Style.cellPadding)
                                 .frame(minWidth: 80, alignment: .leading)
@@ -403,5 +443,66 @@ struct NativeReaderView: View {
             }
         }
         .padding(.vertical, Style.mediaGap)
+    }
+}
+
+/// An inline `<svg>` from an article, parsed off the main actor and only once.
+///
+/// It used to call `NSImage(data:)` inside a `@ViewBuilder` reached from
+/// `body`, uncached, so the parse re-ran on every body evaluation and ran on
+/// whichever actor was drawing. Fine for a diagram, and not fine at all for
+/// what an article can send: measured on the exact bytes this pipeline
+/// produced, **240.1 KB of filter primitives took 31.05 seconds to draw and
+/// 1,680 MB of resident memory, and painted nothing at all** — a frozen window
+/// per body pass, from a file smaller than a photograph.
+///
+/// The walker now refuses a source over 64 KB. This re-checks rather than
+/// trusting it, because the walker's output is persisted in the edition and a
+/// block written by an older build reaches here without ever having passed
+/// the new cap.
+private struct InlineSVG<Caption: View>: View {
+    let block: ReaderBlock
+    @ViewBuilder let caption: ([ReaderBlock.Run]) -> Caption
+
+    @State private var image: NSImage?
+    @State private var refused = false
+
+    /// The same ceiling the walker applies, restated because this is the far
+    /// side of a stored boundary.
+    private static var maxSource: Int { 64 * 1024 }
+
+    var body: some View {
+        Group {
+            if let image {
+                VStack(alignment: .leading, spacing: 10) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        // Never upscale past its own size, the same rule the
+                        // masonry uses: a small mark drawn large is a blur.
+                        .frame(maxWidth: min(NativeReaderView.Style.column,
+                                             CGFloat(block.width ?? Double(NativeReaderView.Style.column))))
+                    if let runs = block.caption, !runs.isEmpty { caption(runs) }
+                }
+                .padding(.vertical, NativeReaderView.Style.mediaGap)
+            }
+        }
+        .task(id: block.id) {
+            guard image == nil, !refused else { return }
+            guard let source = block.svg, source.utf8.count <= Self.maxSource else {
+                refused = true
+                jdnLog("reader: refused an inline SVG of \(block.svg?.utf8.count ?? 0) bytes"
+                       + " — over the \(Self.maxSource) allowed")
+                return
+            }
+            // Off the main actor. A drawing instruction set that takes half a
+            // minute must not take the window with it, and a diagram nobody
+            // scrolls to should cost nothing.
+            let parsed = await Task.detached(priority: .userInitiated) {
+                source.data(using: .utf8).flatMap(NSImage.init(data:))
+            }.value
+            guard !Task.isCancelled else { return }
+            image = parsed
+        }
     }
 }

@@ -42,6 +42,7 @@ SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                     VideoLink.swift \
                     ReaderBlock.swift \
                     NativeReaderView.swift \
+                    ProseText.swift \
                     Edition.swift \
                     FeedStore.swift \
                     EditionStore.swift \
