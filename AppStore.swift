@@ -42,6 +42,10 @@ final class AppStore {
     /// scrolled; the target below is what actually decides how far enrichment
     /// goes.
     private static let enrichCapPerSection = 24
+    /// When the day-scoped state was last cleared, so it happens once a day
+    /// and not once per refresh. See `DayRollover`.
+    private var lastDayRollover: Date?
+
     /// Only for the log line that names the edition being dropped at midnight.
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -425,9 +429,11 @@ final class AppStore {
             let carried = priorItems.filter { activeFeedIds.contains($0.feedId) }
             allItems.append(contentsOf: carried)
             jdnLog("refresh: carried over \(carried.count) from the existing edition")
-        } else if let existing = editionStore.today {
-            // A process left running across midnight reaches here once. The
-            // enrichment memo is a record of which of *today's* items have
+        } else if let existing = editionStore.today,
+                  DayRollover.isDue(editionDate: existing.date,
+                                    lastReset: lastDayRollover, now: Date()) {
+            // A process left running across midnight reaches here once a day.
+            // The enrichment memo is a record of which of *today's* items have
             // already been asked for a picture, so it is meaningless against a
             // new day's items and would otherwise grow for as long as the app
             // stays open.
@@ -435,6 +441,7 @@ final class AppStore {
             enrichmentRetries.removeAll()
             // The picture caches are day-scoped for the same reason.
             ImageCache.shared.newDay()
+            lastDayRollover = Date()
             jdnLog("refresh: new day — dropped the edition dated "
                    + "\(Self.dayFormatter.string(from: existing.date)) "
                    + "and cleared the enrichment memo")

@@ -8,5 +8,6 @@ FeedFetcherTests.run()
 StandfirstTests.run()
 EditionBuilderTests.run()
 PagePicturesTests.run()
+DayRolloverTests.run()
 
 exit(T.report())

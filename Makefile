@@ -26,6 +26,7 @@ SWIFT_SOURCES    := JorvikDailyNewsApp.swift \
                     PictureSignature.swift \
                     PictureSignatureStore.swift \
                     PagePictures.swift \
+                    DayRollover.swift \
                     AddFeedSheet.swift \
                     ManageFeedsSheet.swift \
                     ReaderSheet.swift \
@@ -76,6 +77,7 @@ TEST_SOURCES := VideoLink.swift \
                 PictureSignature.swift \
                 PictureSignatureStore.swift \
                 PagePictures.swift \
+                DayRollover.swift \
                 Feed.swift \
                 FeedFetcher.swift \
                 Standfirst.swift \
@@ -90,6 +92,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/StandfirstTests.swift \
                 Tests/EditionBuilderTests.swift \
                 Tests/PagePicturesTests.swift \
+                Tests/DayRolloverTests.swift \
                 Tests/main.swift
 
 TEST_BIN := .build/tests
