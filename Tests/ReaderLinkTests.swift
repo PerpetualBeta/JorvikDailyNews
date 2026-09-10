@@ -42,6 +42,22 @@ enum ReaderLinkTests {
             T.expect(run("JavaScript:alert(1)") == nil, "and case does not save it")
         }
 
+        T.suite("Links: the base is the page's own address, not the feed's") {
+            // A feed link that redirects gives a base whose host and path are
+            // not the article's. Resolving against it sends every relative
+            // link in the prose to the wrong site.
+            let feedLink = URL(string: "https://feeds.feedburner.com/example/abc123")!
+            let real = URL(string: "https://example.com/news/2026/story")!
+            let run = ReaderBlock.Run(text: "more", bold: false, italic: false,
+                                      code: false, href: "/archive")
+            T.equal(run.destination(relativeTo: feedLink)?.absoluteString,
+                    "https://feeds.feedburner.com/archive",
+                    "against the feed's link this goes to FeedBurner")
+            T.equal(run.destination(relativeTo: real)?.absoluteString,
+                    "https://example.com/archive",
+                    "against the resolved address it goes to the site")
+        }
+
         T.suite("Links: surrounding whitespace is not a broken link") {
             // Feeds ship href="\n  /story  \n" more often than one would hope.
             equal("  /other\n", "https://example.com/other", "trimmed before resolving")

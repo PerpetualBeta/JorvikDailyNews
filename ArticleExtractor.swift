@@ -48,6 +48,19 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         /// How many nodes had to be moved out of `<head>` because the page
         /// never closed it. Zero on a well-formed page.
         var repairedNodes: Int?
+        /// The address the page was actually fetched from, after redirects.
+        ///
+        /// Not the same thing as the link in the feed, and the difference is
+        /// what relative links inside the article resolve against. A feed that
+        /// hands out `feeds.feedburner.com/...` or an `http://` address that
+        /// redirects to `https://` gives a base whose host or path is not the
+        /// article's own, and every `/section/other` in the prose would then
+        /// point at the wrong site entirely.
+        ///
+        /// Optional because an article restored from an older cache will not
+        /// have one; callers fall back to the feed's link, which is what the
+        /// reader used for everything before this existed.
+        var resolvedURL: URL?
     }
 
     enum ExtractionError: Error, LocalizedError {
@@ -484,7 +497,13 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             switch await attempt(strategy, page: page, blocker: blocker, minimumLength: minimumLength) {
             case .article(let article):
                 Self.recordWin(strategy)
-                return article
+                var resolved = article
+                resolved.resolvedURL = page.url
+                if page.url != url {
+                    jdnLog("extract: links resolve against \(page.url.absoluteString) "
+                           + "after a redirect from \(url.absoluteString)")
+                }
+                return resolved
             case .documentButNoArticle(let error):
                 // A real document arrived and Readability read it. Its verdict
                 // is about the page, not about the loader, so the WebKit rungs

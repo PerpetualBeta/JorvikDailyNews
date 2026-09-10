@@ -284,7 +284,11 @@ struct ReaderView: View {
               NativeReaderView(article: article,
                                blocks: blocks,
                                sourceTitle: item.sourceTitle,
-                               baseURL: item.link)
+                               // Where the page actually came from, so a
+                               // relative link resolves against the article's
+                               // own address rather than the feed's version of
+                               // it. They differ whenever the link redirects.
+                               baseURL: article.resolvedURL ?? item.link)
                   .task(id: "native-\(item.itemId)") {
                       jdnLog("reader: drawn natively — \(blocks.count) block(s), no web view")
                   }
