@@ -23,13 +23,15 @@ import SwiftUI
 /// Used only for blocks that actually contain a link. Everything else stays on
 /// SwiftUI `Text`, so the overwhelming majority of an article is untouched by
 /// this.
-struct ProseText: NSViewRepresentable {
+private struct ProseTextView: NSViewRepresentable {
     let attributed: NSAttributedString
     let linkColour: NSColor
     var alignment: NSTextAlignment = .natural
     /// Called with the link the reader clicked, so opening it stays in one
     /// place rather than being AppKit's default behaviour by accident.
     var onOpen: (URL) -> Void
+    /// Called once the view exists, so the wrapper can hit-test it.
+    var onReady: (LinkCursorTextView) -> Void
 
     func makeNSView(context: Context) -> NSTextView {
         let view = LinkCursorTextView()
@@ -48,7 +50,7 @@ struct ProseText: NSViewRepresentable {
             .underlineStyle: NSUnderlineStyle.single.rawValue,
             .cursor: NSCursor.pointingHand
         ]
-        jdnLog("prosetext: TextKit view created for a block with a link")
+        onReady(view)
         return view
     }
 
@@ -102,91 +104,34 @@ struct ProseText: NSViewRepresentable {
     /// rect declared here beats anything implicit.
     final class LinkCursorTextView: NSTextView {
 
-        /// Two mechanisms, deliberately.
+        /// This view no longer sets the cursor. It answers where the links
+        /// are, and SwiftUI decides.
         ///
-        /// `linkTextAttributes` carries `.cursor` and in a bare text view that
-        /// is enough — measured in isolation, the link attribute is present,
-        /// the cursor is in the attributes, and hit-testing finds the link
-        /// under the point. Inside the reader it was not enough, twice.
+        /// Four mechanisms tried to set it from here and all four lost:
+        /// `.cursor` in `linkTextAttributes`, cursor rects, a `.cursorUpdate`
+        /// tracking area, and `mouseMoved` setting it imperatively. The last
+        /// one got close enough to see the problem — the hand appeared and was
+        /// immediately replaced — and the replacement was the **arrow**, not
+        /// the I-beam an `NSTextView` sets over its own text. So the thing
+        /// overriding sits above the text view, and it is SwiftUI's own hover
+        /// handling.
         ///
-        /// Cursor rects are the next mechanism up, and they are awkward here:
-        /// they are declared in view coordinates and recomputed only when
-        /// something invalidates them, so a view SwiftUI has resized or
-        /// repositioned can be carrying rects for a layout it no longer has.
+        /// Both events did arrive, which is what ruled everything else out:
         ///
-        /// A tracking area asking for `.cursorUpdate` is the mechanism AppKit
-        /// documents for a cursor that depends on what is under the pointer.
-        /// It is resolved per event against the current layout, so it cannot
-        /// go stale, and it needs no `acceptsMouseMovedEvents` on the window —
-        /// which is `false` by default and one of the things I could not rule
-        /// out.
-        override func updateTrackingAreas() {
-            super.updateTrackingAreas()
-            for area in trackingAreas where area.owner === self {
-                removeTrackingArea(area)
-            }
-            // `.mouseMoved` is here as well as `.cursorUpdate`, and it is the
-            // one that matters. Three declarative mechanisms lost: `.cursor`
-            // in `linkTextAttributes`, cursor rects, and `cursorUpdate`. The
-            // diagnostic proved the view is real and receiving clicks
-            // throughout — 10 blocks routed here, 5 views created, 4 clicks
-            // handled by this view's own delegate — so the view was never the
-            // problem. Something else is winning the window's cursor
-            // management, and asking politely three times has not worked.
-            //
-            // A tracking area with `.mouseMoved` delivers `mouseMoved` to this
-            // view whenever the pointer is inside it, whatever the window's
-            // `acceptsMouseMovedEvents` says, and setting the cursor there is
-            // imperative rather than a request.
-            addTrackingArea(NSTrackingArea(
-                rect: bounds,
-                options: [.cursorUpdate, .mouseMoved, .activeInActiveApp,
-                          .mouseEnteredAndExited],
-                owner: self,
-                userInfo: nil))
-        }
-
-        /// Whether either cursor event has ever arrived, logged once.
+        ///     prosetext: mouseMoved reached the TextKit view
+        ///     prosetext: cursorUpdate reached the TextKit view
         ///
-        /// If neither line appears the tracking area is not firing and the
-        /// fault is in the hosting, not in the cursor. That distinction has
-        /// cost three attempts to guess at.
-        private var reportedCursorUpdate = false
-        private var reportedMouseMoved = false
-
-        override func cursorUpdate(with event: NSEvent) {
-            if !reportedCursorUpdate {
-                reportedCursorUpdate = true
-                jdnLog("prosetext: cursorUpdate reached the TextKit view")
-            }
-            if link(under: convert(event.locationInWindow, from: nil)) != nil {
-                NSCursor.pointingHand.set()
-            } else {
-                super.cursorUpdate(with: event)
-            }
-        }
-
-        override func mouseMoved(with event: NSEvent) {
-            if !reportedMouseMoved {
-                reportedMouseMoved = true
-                jdnLog("prosetext: mouseMoved reached the TextKit view")
-            }
-            let over = link(under: convert(event.locationInWindow, from: nil)) != nil
-            if over { NSCursor.pointingHand.set() } else { super.mouseMoved(with: event) }
-        }
-
-        override func mouseExited(with event: NSEvent) {
-            super.mouseExited(with: event)
-            NSCursor.arrow.set()
-        }
-
+        /// You cannot win that fight by setting the cursor harder. So the
+        /// wrapper below hovers in SwiftUI, where SwiftUI is not competing
+        /// with anything, and asks this view only the question it can answer
+        /// accurately: is there a link under this point.
         /// The link at a point in this view's coordinates, if any.
         ///
         /// Hit-tested through the layout manager rather than by comparing
         /// rects, so a link that wraps across several line fragments needs no
         /// special handling, and the blank end of a line is correctly not a
         /// link.
-        private func link(under point: NSPoint) -> Any? {
+        func link(under point: NSPoint) -> Any? {
             guard let manager = layoutManager,
                   let container = textContainer,
                   let storage = textStorage,
@@ -223,6 +168,59 @@ struct ProseText: NSViewRepresentable {
             guard let url else { return false }
             onOpen(url)
             return true    // handled; AppKit must not also open it
+        }
+    }
+}
+
+/// Prose with links, and a pointing hand over them.
+///
+/// The hover lives here rather than in the text view because SwiftUI is what
+/// was overriding the cursor. Driving it from SwiftUI means nothing is
+/// competing: on macOS 15 and later `pointerStyle` is the sanctioned API and
+/// SwiftUI applies it itself, and on 14 the cursor is set from inside
+/// SwiftUI's own hover callback rather than from an AppKit event that SwiftUI
+/// will undo a moment later.
+struct ProseText: View {
+    let attributed: NSAttributedString
+    let linkColour: NSColor
+    var alignment: NSTextAlignment = .natural
+    var onOpen: (URL) -> Void
+
+    @State private var textView: ProseTextView.LinkCursorTextView?
+    @State private var overLink = false
+    @State private var reported = false
+
+    var body: some View {
+        hoverable
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case .active(let point):
+                    // `NSTextView` is flipped, so its coordinates and
+                    // SwiftUI's local space share a top-left origin and the
+                    // point needs no conversion.
+                    let hit = textView?.link(under: point) != nil
+                    if hit != overLink { overLink = hit }
+                    if !reported {
+                        reported = true
+                        jdnLog("prosetext: SwiftUI hover is driving the cursor")
+                    }
+                case .ended:
+                    if overLink { overLink = false }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var hoverable: some View {
+        let view = ProseTextView(attributed: attributed, linkColour: linkColour,
+                                 alignment: alignment, onOpen: onOpen,
+                                 onReady: { textView = $0 })
+        if #available(macOS 15.0, *) {
+            view.pointerStyle(overLink ? .link : nil)
+        } else {
+            view.onChange(of: overLink) { _, over in
+                if over { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+            }
         }
     }
 }
