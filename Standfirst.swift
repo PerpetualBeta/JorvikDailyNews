@@ -277,42 +277,45 @@ enum Standfirst {
         return out
     }
 
-    /// A title, with anything the source encoded twice marked as unreadable.
+    /// A title, with a double-encoded source decoded the rest of the way.
     ///
-    /// Some sites double-encode. Tom's Hardware puts `&amp;mdash;` in its
-    /// `<title>`, so one honest decode yields the literal text `&mdash;`, and
-    /// that is what the reader saw. Safari's tab title for that page reads the
-    /// same, so we were faithful and it looked broken.
+    /// Some sites encode twice. Tom's Hardware puts `&amp;mdash;` in its
+    /// `<title>`, so one honest decode leaves the literal text `&mdash;` —
+    /// which is what the reader saw, and what Safari's tab shows for the same
+    /// page.
     ///
-    /// This does NOT decode a second time, and the first version of it did.
-    /// That version ran a second pass refusing any reference decoding to `<`,
-    /// `>`, `&`, `"` or `'`. Jonathan's objection, and he was right on both
-    /// counts: a denylist of characters has to be complete to be correct and
-    /// never will be — the same shape of mistake as the block-tag allow-list
-    /// that collapsed cultofmac's article into one paragraph — and it *guessed
-    /// the author's intent*, deciding they meant an em dash, when the only
-    /// fact available is that the source is malformed.
+    /// One extra pass, and it runs ONLY when a reference is still there after
+    /// the first. That condition is the whole safeguard: a correctly encoded
+    /// title leaves no residue, so it is never touched. A residue means the
+    /// source encoded it twice, which is a fault in the publisher's pipeline
+    /// rather than an intention.
     ///
-    /// So this guesses nothing. A residue that still looks like a character
-    /// reference after one honest decode means the source encoded it twice,
-    /// and the honest rendering of something unreadable is U+FFFD, the Unicode
-    /// replacement character, which exists for this and is understood
-    /// everywhere.
+    /// **Two earlier versions of this were wrong, in opposite directions.**
+    /// The first decoded the residue but refused anything producing `<`, `>`,
+    /// `&`, `"` or `'` — a denylist of characters, which has to be complete to
+    /// be correct and never will be. The second marked the residue with U+FFFD
+    /// instead of decoding it, which fixed the denylist but claimed the text
+    /// was unreadable when `&lt;` is perfectly readable and unambiguous.
     ///
-    /// `A &amp;mdash; B` becomes `A \u{FFFD} B`, not `A &mdash; B`.
+    /// Both were guarding against markup that cannot happen here. A title
+    /// reaches a SwiftUI `Text`, which never interprets markup, and the one
+    /// HTML path escapes it at the point of use (`ReaderSheet`'s
+    /// `<h1>\(escape(title))</h1>`). There is nowhere for a decoded `<` to
+    /// become a tag.
     ///
-    /// **What this deliberately also catches.** A page meaning to display
-    /// `<script>` as text writes `&amp;lt;script&amp;gt;`, which decodes once
-    /// to `&lt;script&gt;` and is reference-shaped too, so it comes out as
-    /// `\u{FFFD}script\u{FFFD}`. That loses the author's escaping and cannot
-    /// introduce markup, which is the property that matters — and it is
-    /// honest, because we could not read it.
+    /// Exactly one extra pass, not repeated to a fixed point: it fixes the
+    /// double-encoding that occurs in practice, and a triple-encoded source is
+    /// a fault nobody has produced.
     ///
-    /// Titles only. Body text keeps the single pass.
+    /// Titles only. Body text keeps the single pass, where the sequencing rule
+    /// in `decodeEntities` still matters.
     static func decodeTitle(_ s: String) -> String {
         let once = decodeEntities(s)
-        guard once.contains("&") else { return once }
-        return replace(Patterns.residualReference, in: once, with: "\u{FFFD}")
+        guard once.contains("&"),
+              Patterns.residualReference.firstMatch(
+                  in: once, range: NSRange(once.startIndex..., in: once)) != nil
+        else { return once }
+        return decodeEntities(once)
     }
 
     /// The longest reference worth looking for. Long enough for the longest

@@ -186,63 +186,60 @@ enum StandfirstLimitTests {
     }
 }
 
-/// Some sites double-encode their titles. Tom's Hardware puts `&amp;mdash;` in
-/// its `<title>`, so one honest decode yields the literal text `&mdash;` and
-/// that is what the reader saw.
+/// Some sites encode their titles twice. Tom's Hardware puts `&amp;mdash;` in
+/// its `<title>`, so one honest decode leaves the literal text `&mdash;`.
 ///
-/// The fix marks rather than guesses. An earlier version decoded a second time
-/// while refusing references that produced markup; a denylist of characters
-/// has to be complete to be correct, and it also decided what the author had
-/// meant. U+FFFD claims nothing except "this was unreadable".
+/// Two earlier fixes were wrong in opposite directions: one decoded the residue
+/// behind a denylist of characters, the other marked it U+FFFD rather than
+/// decoding. Both guarded against markup that cannot happen — a title reaches a
+/// SwiftUI `Text`, and the one HTML path escapes it at the point of use.
 enum TitleDecodeTests {
 
-    private static let mark = "\u{FFFD}"
-
     static func run() {
-        T.suite("Title: a double-encoded reference is marked, not guessed") {
+        T.suite("Title: a double-encoded reference is decoded the rest of the way") {
             T.equal(Standfirst.decodeTitle("LG denies claims &amp;mdash; online investigation"),
-                    "LG denies claims \(mark) online investigation",
+                    "LG denies claims \u{2014} online investigation",
                     "the case that was reported")
-            T.equal(Standfirst.decodeTitle("A &amp;nbsp; B"), "A \(mark) B", "double nbsp")
-            T.equal(Standfirst.decodeTitle("A &amp;#8212; B"), "A \(mark) B", "double decimal")
-            T.equal(Standfirst.decodeTitle("A &amp;#x2014; B"), "A \(mark) B", "double hex")
+            T.equal(Standfirst.decodeTitle("A &amp;nbsp; B"), "A \u{00a0} B", "double nbsp")
+            T.equal(Standfirst.decodeTitle("A &amp;#8212; B"), "A \u{2014} B", "double decimal")
+            T.equal(Standfirst.decodeTitle("A &amp;#x2014; B"), "A \u{2014} B", "double hex")
+            T.equal(Standfirst.decodeTitle("caf&amp;eacute;"), "café", "double accented")
         }
 
-        T.suite("Title: a correctly encoded title is untouched") {
+        T.suite("Title: escaped markup decodes to text, because it is text") {
+            // `&lt;` is unambiguous and readable, and nothing here renders a
+            // title as HTML: SwiftUI `Text` does not interpret markup, and
+            // ReaderSheet escapes at the point of use.
+            T.equal(Standfirst.decodeTitle("&amp;lt;script&amp;gt;"), "<script>",
+                    "shown as the characters the author meant")
+            T.equal(Standfirst.decodeTitle("&amp;lt;img src=x&amp;gt;"), "<img src=x>",
+                    "and so is anything else")
+        }
+
+        T.suite("Title: a correctly encoded title is never touched") {
+            // The residue test is the safeguard: no residue, no second pass.
             T.equal(Standfirst.decodeTitle("A &mdash; B"), "A \u{2014} B", "single named")
             T.equal(Standfirst.decodeTitle("A &#8212; B"), "A \u{2014} B", "single numeric")
             T.equal(Standfirst.decodeTitle("A \u{2014} B"), "A \u{2014} B", "already a real dash")
-            T.equal(Standfirst.decodeTitle("Marks &amp; Spencer"), "Marks & Spencer", "ampersand")
-            T.equal(Standfirst.decodeTitle("caf&eacute; society"), "café society", "accented")
+            T.equal(Standfirst.decodeTitle("&lt;script&gt;"), "<script>", "single-encoded markup")
+            T.equal(Standfirst.decodeTitle("Marks &amp; Spencer"), "Marks & Spencer",
+                    "an ampersand decodes once and leaves no residue")
             T.equal(Standfirst.decodeTitle("plain text"), "plain text", "nothing to do")
         }
 
         T.suite("Title: an ampersand in prose is not a reference") {
-            // The reason the pattern forbids whitespace inside, and requires
-            // two letters in a name.
-            T.equal(Standfirst.decodeTitle("Marks & Spencer; and others"),
-                    "Marks & Spencer; and others", "a space after the ampersand saves it")
-            T.equal(Standfirst.decodeTitle("AT&T; the sequel"), "AT&T; the sequel",
-                    "a one-letter name is not a reference")
-            T.equal(Standfirst.decodeTitle("Tom & Jerry"), "Tom & Jerry", "no semicolon at all")
-            T.equal(Standfirst.decodeTitle("R&D;"), "R&D;", "nor is D")
+            for s in ["Marks & Spencer; and others", "AT&T; the sequel",
+                      "Tom & Jerry", "R&D;", "Batman & Robin & Alfred"] {
+                T.equal(Standfirst.decodeTitle(s), s, "untouched: \(s)")
+            }
         }
 
-        T.suite("Title: escaped markup cannot become markup") {
-            // It loses the author's escaping and says so, which is the point:
-            // the alternative decodes it and the alternative to THAT is a
-            // denylist that has to be complete.
-            T.equal(Standfirst.decodeTitle("&amp;lt;script&amp;gt;"),
-                    "\(mark)script\(mark)", "an escaped script tag is marked, never decoded")
-            T.equal(Standfirst.decodeTitle("&amp;lt;img src=x onerror=alert(1)&amp;gt;"),
-                    "\(mark)img src=x onerror=alert(1)\(mark)", "and so is a payload")
-            T.expect(!Standfirst.decodeTitle("&amp;lt;script&amp;gt;").contains("<"),
-                     "no angle bracket survives")
-            T.expect(!Standfirst.decodeTitle("&amp;lt;script&amp;gt;").contains(">"),
-                     "in either direction")
-            // A single pass is unchanged: the marking is specific to titles.
-            T.equal(Standfirst.decodeEntities("&lt;script&gt;"), "<script>",
-                    "decodeEntities still behaves exactly as it did")
+        T.suite("Title: decodeEntities itself is unchanged") {
+            // The second pass is specific to titles. Body text keeps one pass,
+            // where the sequencing rule still matters.
+            T.equal(Standfirst.decodeEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;",
+                    "one pass leaves the escaped form escaped")
+            T.equal(Standfirst.decodeEntities("&lt;script&gt;"), "<script>", "and decodes one level")
         }
     }
 }
