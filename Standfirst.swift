@@ -255,10 +255,6 @@ enum Standfirst {
     /// out, restricted to the ranges that turn up in prose: Latin-1, General
     /// Punctuation, and the arrows and maths signs feeds use.
     static func decodeEntities(_ s: String) -> String {
-        decodeEntities(s, refusingMarkup: false)
-    }
-
-    static func decodeEntities(_ s: String, refusingMarkup: Bool) -> String {
         guard s.contains("&") else { return s }
         var out = ""
         out.reserveCapacity(s.count)
@@ -267,8 +263,7 @@ enum Standfirst {
             out += s[index..<ampersand]
             let body = s[s.index(after: ampersand)...].prefix(maxReferenceLength)
             if let terminator = body.firstIndex(of: ";"),
-               let scalar = scalar(forReference: body[..<terminator]),
-               !(refusingMarkup && markupScalars.contains(scalar)) {
+               let scalar = scalar(forReference: body[..<terminator]) {
                 out.unicodeScalars.append(scalar)
                 index = s.index(after: terminator)
             } else {
@@ -282,33 +277,43 @@ enum Standfirst {
         return out
     }
 
-    /// Decodes a title that was encoded twice, and only where that is safe.
+    /// A title, with anything the source encoded twice marked as unreadable.
     ///
     /// Some sites double-encode. Tom's Hardware puts `&amp;mdash;` in its
-    /// `<title>`, so one honest decode yields the literal text `&mdash;` and
-    /// that is what a reader sees — in our header and in Safari's tab alike.
-    /// We are being faithful and it looks broken.
+    /// `<title>`, so one honest decode yields the literal text `&mdash;`, and
+    /// that is what the reader saw. Safari's tab title for that page reads the
+    /// same, so we were faithful and it looked broken.
     ///
-    /// A second blanket pass is NOT the fix, and that is the whole reason this
-    /// function is separate from `decodeEntities`. Decoding twice turns a
-    /// deliberately-escaped `&amp;lt;script&amp;gt;` into real markup, which
-    /// is the exact trap the single left-to-right scan was written to avoid.
+    /// This does NOT decode a second time, and the first version of it did.
+    /// That version ran a second pass refusing any reference decoding to `<`,
+    /// `>`, `&`, `"` or `'`. Jonathan's objection, and he was right on both
+    /// counts: a denylist of characters has to be complete to be correct and
+    /// never will be — the same shape of mistake as the block-tag allow-list
+    /// that collapsed cultofmac's article into one paragraph — and it *guessed
+    /// the author's intent*, deciding they meant an em dash, when the only
+    /// fact available is that the source is malformed.
     ///
-    /// So the second pass runs only over references that cannot produce
-    /// markup: anything decoding to `<`, `>`, `&`, `"` or `'` is left exactly
-    /// as the page wrote it. An em dash is safe; an angle bracket never is.
+    /// So this guesses nothing. A residue that still looks like a character
+    /// reference after one honest decode means the source encoded it twice,
+    /// and the honest rendering of something unreadable is U+FFFD, the Unicode
+    /// replacement character, which exists for this and is understood
+    /// everywhere.
     ///
-    /// Titles only. Body text keeps the single pass, because a title is short,
-    /// is displayed as one line, and is the one place a stray `&mdash;` is
-    /// unmissable.
+    /// `A &amp;mdash; B` becomes `A \u{FFFD} B`, not `A &mdash; B`.
+    ///
+    /// **What this deliberately also catches.** A page meaning to display
+    /// `<script>` as text writes `&amp;lt;script&amp;gt;`, which decodes once
+    /// to `&lt;script&gt;` and is reference-shaped too, so it comes out as
+    /// `\u{FFFD}script\u{FFFD}`. That loses the author's escaping and cannot
+    /// introduce markup, which is the property that matters — and it is
+    /// honest, because we could not read it.
+    ///
+    /// Titles only. Body text keeps the single pass.
     static func decodeTitle(_ s: String) -> String {
         let once = decodeEntities(s)
-        guard once.contains("&"), once.contains(";") else { return once }
-        return decodeEntities(once, refusingMarkup: true)
+        guard once.contains("&") else { return once }
+        return replace(Patterns.residualReference, in: once, with: "\u{FFFD}")
     }
-
-    /// Characters a second decode pass must never produce.
-    private static let markupScalars: Set<Unicode.Scalar> = ["<", ">", "&", "\"", "'"]
 
     /// The longest reference worth looking for. Long enough for the longest
     /// name in the table and any numeric form, short enough that a bare
@@ -422,6 +427,18 @@ enum Standfirst {
             "</?(?:p|div|h[1-6]|li|blockquote|section|article|figure|tr|dd|dt)(?:\\s[^>]*)?\\s*>|<br\\s*/?>"
         )
         static let tag = regex("<[^>]+>")
+
+        /// A character reference still present AFTER one honest decode, which
+        /// means the source encoded it twice.
+        ///
+        /// No whitespace can appear inside it, because the character classes
+        /// forbid it — so `Marks & Spencer; Ltd` is untouched, on the strength
+        /// of the space after the ampersand. Named references need at least
+        /// two letters, which every real one has (`lt`, `gt`, `amp`) and which
+        /// keeps `AT&T;` out of it.
+        static let residualReference = regex(
+            "&(?:[A-Za-z][A-Za-z0-9]{1,30}|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});"
+        )
         static let whitespace = regex("\\s+")
 
         private static func regex(_ pattern: String, dotMatchesLineSeparators: Bool = false) -> NSRegularExpression {
