@@ -2,9 +2,9 @@
 
 **A macOS RSS reader shaped like a daily newspaper.** It publishes what your feeds put out *today* — and nothing else. No unread counts, no infinite stream, no yesterday's leftovers. You read the paper, put it down, and get on with your day.
 
-![The front page — a full-width lead above a three-column masonry](Documentation/screenshots/front-page.png)
-
 Free, native, and open source. No account, no subscription, no telemetry, no Electron.
+
+![The front page — a full-width lead above a three-column masonry](Documentation/screenshots/front-page.png)
 
 ## Install
 
