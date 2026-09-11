@@ -31,6 +31,44 @@ enum FeedBoundsTests {
     }
 
     static func run() {
+        T.suite("Bounds: whitespace and long names do not hide a declaration") {
+            // XML's production is `'<!ENTITY' S Name S EntityDef`, and S is
+            // whitespace of ANY length while a name may run to tens of
+            // thousands of characters. The scan gave up after 512 bytes and
+            // called it "a short hop", so 600 spaces hid the bomb completely.
+            func bomb(gap: String, name: String = "big") -> Data {
+                let v = String(repeating: "A", count: 4000)
+                return Data(("<?xml version=\"1.0\"?>\n<!DOCTYPE rss [<!ENTITY\(gap)\(name) \"\(v)\">]>"
+                    + "<rss><channel><title>&\(name);</title></channel></rss>").utf8)
+            }
+            for (what, gap) in [("one space", " "),
+                                ("600 spaces", " " + String(repeating: " ", count: 600)),
+                                ("600 tabs", " " + String(repeating: "\t", count: 600)),
+                                ("600 newlines", " " + String(repeating: "\n", count: 600))] {
+                T.expect(FeedFetcher.entityAmplification(in: bomb(gap: gap)) != nil, "caught: \(what)")
+            }
+            T.expect(FeedFetcher.entityAmplification(in: bomb(gap: " ", name: String(repeating: "n", count: 900))) != nil,
+                     "caught: a 900-character entity name")
+            // A declaration with no quoted value must not stall the scan.
+            let external = Data("<?xml version=\"1.0\"?>\n<!DOCTYPE rss [<!ENTITY e SYSTEM \"x\">]><rss/>".utf8)
+            _ = FeedFetcher.entityAmplification(in: external)
+            T.expect(true, "an external declaration does not hang the scan")
+        }
+
+        T.suite("Bounds: an encoding the scan cannot read is refused") {
+            // The scan looks for the ASCII bytes of <!ENTITY, so it only scans
+            // documents that happen to be ASCII-compatible. EBCDIC parses
+            // perfectly in libxml2 and matched nothing.
+            let ibm037 = Data([0x4C, 0x6F, 0xA7, 0x94] + [UInt8](repeating: 0x40, count: 40))
+            T.expect(!FeedFetcher.isReadableEncoding(ibm037), "IBM037 refused")
+            for encoding in [String.Encoding.utf8, .utf16LittleEndian, .utf16BigEndian,
+                             .isoLatin1, .windowsCP1252] {
+                let d = "<?xml version=\"1.0\"?><rss><channel/></rss>".data(using: encoding) ?? Data()
+                T.expect(FeedFetcher.isReadableEncoding(d), "readable: \(encoding)")
+            }
+            T.expect(FeedFetcher.isReadableEncoding(Data("<r/>".utf8)), "a short document")
+        }
+
         T.suite("Bounds: the entity guard cannot be walked past") {
             func bomb(prolog: String = "", encoding: String.Encoding = .utf8) -> Data {
                 let xml = "<?xml version=\"1.0\"?>\n" + prolog

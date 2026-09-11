@@ -93,6 +93,20 @@ enum WebURL {
         if host.hasPrefix("["), host.hasSuffix("]") {
             host = String(host.dropFirst().dropLast())
         }
+        // **The DNS root label. One character, and it defeated everything.**
+        // `127.0.0.1.` is a legal, fully-qualified spelling of loopback that
+        // resolvers accept — and it parses as neither an address nor a name, so
+        // `ipv4Readings` returned nothing and `isPrivateName` matched nothing,
+        // and the host was allowed. Verified: 127.0.0.1., 192.168.1.1.,
+        // 10.0.0.5. and 169.254.169.254. were all permitted.
+        //
+        // Every guard in this app delegates here — the redirect guard,
+        // BoundedFetch, the video pre-flight, the PDF download, the live page —
+        // so this was the single point where all of them failed together.
+        //
+        // Stripped in a loop, because `127.0.0.1..` is the same trick twice.
+        while host.hasSuffix(".") { host = String(host.dropLast()) }
+        guard !host.isEmpty else { return true }
         // Every reading of the host, and private if ANY of them is. One
         // spelling can mean two addresses, and the safe answer is to refuse
         // when either is somewhere it should not go.

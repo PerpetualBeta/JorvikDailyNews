@@ -71,8 +71,25 @@ final class IsolatedPDFModel {
         "\(page)@\(Int(width.rounded()))"
     }
 
+    /// Bumped whenever a page is stored, so the view has something observed to
+    /// depend on.
+    ///
+    /// **An `NSCache` is invisible to `@Observable`.** This was a dictionary
+    /// held in a `var`, so storing an image mutated an observed property and
+    /// SwiftUI redrew. Bounding the memory meant moving to `NSCache`, whose
+    /// `setObject` mutates the cache's own internals and nothing the observation
+    /// machinery is watching — so every page rendered correctly, was cached
+    /// correctly, and spun for ever, because nothing ever asked for it again.
+    ///
+    /// Found on a 10-page PDF that Safari opened without trouble.
+    private var stored = 0
+
     func image(page: Int, width: CGFloat) -> NSImage? {
-        rendered.object(forKey: key(page, width) as NSString)
+        // The read is the point: it registers this view's dependency on
+        // `stored`, so the redraw happens when a page arrives. Written so it
+        // cannot be mistaken for a leftover and deleted.
+        guard stored >= 0 else { return nil }
+        return rendered.object(forKey: key(page, width) as NSString)
     }
 
     /// Called when the download turns out to be a web page. The reader takes
@@ -120,6 +137,7 @@ final class IsolatedPDFModel {
             let image = try await client.render(page: page, width: width,
                                                 scale: Self.renderScale)
             rendered.setObject(image, forKey: k as NSString, cost: Self.cost(of: image))
+            stored &+= 1
         } catch let failure as PDFRenderClient.Failure {
             // A helper that has died takes the whole document with it, and the
             // reader must say so rather than leaving grey rectangles.

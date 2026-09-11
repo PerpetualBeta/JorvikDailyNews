@@ -162,6 +162,38 @@ final class FeedFetcher: Sendable {
 
     /// Shared with the OPML importer, which parses an untrusted file with the
     /// same libxml2 and had none of this. One copy, not two.
+    /// Whether the body is in an encoding this scan can actually read.
+    ///
+    /// **The guard scans bytes for the ASCII `<!ENTITY`, so it only scans
+    /// documents that happen to be ASCII-compatible.** The UTF-16 half of that
+    /// was fixed by transcoding; EBCDIC was not. libxml2 detects the IBM037
+    /// signature for `<?xm` and converts through iconv, so such a document
+    /// parses perfectly while `<!ENTITY` on the wire is a byte sequence this
+    /// scan cannot match — the bomb goes straight through.
+    ///
+    /// Rather than chase encodings, this fails closed: a document whose first
+    /// bytes are not a shape the scan can read is refused. A feed served in
+    /// EBCDIC is not a feed this paper needs.
+    static func isReadableEncoding(_ data: Data) -> Bool {
+        guard data.count >= 4 else { return true }   // too short to carry a bomb
+        let b = [UInt8](data.prefix(4))
+        // UTF-8, with or without a BOM, and any other ASCII-compatible
+        // encoding: the document begins with `<` or whitespace.
+        if b[0] == 0xEF, b[1] == 0xBB, b[2] == 0xBF { return true }
+        // UTF-16, either endianness, with or without a BOM. Transcoded above.
+        if b[0] == 0xFF, b[1] == 0xFE { return true }
+        if b[0] == 0xFE, b[1] == 0xFF { return true }
+        if b[0] == 0x00 || b[1] == 0x00 { return true }
+        // Otherwise the first non-space byte must be `<`. That covers UTF-8,
+        // Latin-1, Windows-1252 and every other ASCII superset, and refuses
+        // EBCDIC, whose `<?xm` is 4C 6F A7 94.
+        for byte in b {
+            if byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D { continue }
+            return byte == 0x3C
+        }
+        return true
+    }
+
     static func entityAmplification(in data: Data) -> String? {
         let marker = Array("<!ENTITY".utf8)
         // **The whole document, not a prefix.** This used to scan the first
@@ -190,12 +222,25 @@ final class FeedFetcher: Sendable {
             if found > maxEntityDeclarations {
                 return "more than \(maxEntityDeclarations) internal entities"
             }
-            // The opening quote of the value, if there is one nearby. A name
-            // and whitespace, so this is a short hop.
+            // The opening quote of the value.
+            //
+            // **This used to give up after 512 bytes, calling it "a short
+            // hop".** XML's production is `'<!ENTITY' S Name S EntityDef`, and
+            // `S` is whitespace of ANY length while a name may run to tens of
+            // thousands of characters. So 600 spaces after `<!ENTITY` pushed
+            // the quote outside the window, the declaration was abandoned, and
+            // the guard returned nil on the very bomb it exists to catch.
+            // Verified: 600 spaces, 600 tabs, 600 newlines and a 900-character
+            // name all passed.
+            //
+            // Unbounded now, and still linear: `>` ends a declaration that has
+            // no quoted value, the index always advances past what it has read,
+            // and the declaration count is capped above.
             var j = i + marker.count
-            let nameLimit = min(bytes.count, j + 512)
-            while j < nameLimit, bytes[j] != 0x22, bytes[j] != 0x27 { j += 1 }
-            guard j < nameLimit else { i += marker.count; continue }
+            while j < bytes.count, bytes[j] != 0x22, bytes[j] != 0x27, bytes[j] != 0x3E { j += 1 }
+            // `>` first means a declaration with no internal value — an
+            // external entity, say. Nothing to measure; carry on after it.
+            guard j < bytes.count, bytes[j] != 0x3E else { i = min(j + 1, bytes.count); continue }
             let quote = bytes[j]
             // Its partner, within the limit or not at all.
             let valueStart = j + 1
@@ -234,6 +279,11 @@ final class FeedFetcher: Sendable {
     }
 
     static func parse(_ data: Data, from feed: Feed) throws -> FetchedFeed {
+        guard isReadableEncoding(data) else {
+            jdnLog("fetch: \(feed.url.host ?? "?") is in an encoding this reader will not scan "
+                   + "for entity declarations — refused")
+            throw FeedFetchError.parseFailureDetail("is in an encoding this reader will not scan")
+        }
         if let amplification = entityAmplification(in: data) {
             jdnLog("fetch: \(feed.url.host ?? "?") declares \(amplification) — refused before parsing")
             throw FeedFetchError.parseFailureDetail("declares \(amplification)")

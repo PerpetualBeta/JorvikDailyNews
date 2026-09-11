@@ -1700,6 +1700,42 @@ final class NativeReader: @unchecked Sendable {
     static let readabilityGuard = """
     globalThis.__jdnMaxDepth = 200;
     globalThis.__jdnMaxElements = 60000;
+    /// Maximum unclosed nesting, read straight off the markup.
+    ///
+    /// Generous on purpose: void elements and implicit closes mean the real
+    /// tree is shallower than this counts, so a page that trips it is
+    /// extraordinary by any reading. It exists to stop the parser, not to
+    /// measure the document.
+    globalThis.__jdnTooDeepText = function (html) {
+      var depth = 0, deepest = 0, elements = 0;
+      var i = 0, n = html.length;
+      while (i < n) {
+        var lt = html.indexOf('<', i);
+        if (lt < 0) { break; }
+        var next = html.charAt(lt + 1);
+        if (next === '/') { if (depth > 0) { depth -= 1; } }
+        else if (next === '!' || next === '?') { /* comment, doctype, PI */ }
+        else if (/[a-zA-Z]/.test(next)) {
+          var gt = html.indexOf('>', lt);
+          if (gt < 0) { break; }
+          elements += 1;
+          if (elements > globalThis.__jdnMaxElements * 8) { return true; }
+          // Self-closing tags open nothing.
+          if (html.charAt(gt - 1) !== '/') {
+            depth += 1;
+            if (depth > deepest) {
+              deepest = depth;
+              if (deepest > globalThis.__jdnMaxDepth * 8) { return true; }
+            }
+          }
+          i = gt + 1;
+          continue;
+        }
+        i = lt + 1;
+      }
+      return false;
+    };
+
     globalThis.__jdnTooDeep = function (doc) {
       var deepest = 0, elements = 0;
       var walk = function (node, depth) {
@@ -1723,6 +1759,18 @@ final class NativeReader: @unchecked Sendable {
     /// produce.
     private static let glue = """
     globalThis.__jdnExtract = function (html, url, minSvgSide) {
+      // **Before the parser, not after it.** The depth guard below is correct
+      // and was too late: `linkedom.parseHTML` is where a nesting bomb's cost
+      // lives. Measured against the bundled LinkeDOM: 50,000 levels 0.54s,
+      // 100,000 levels 2.82s, 200,000 levels 25.8s, 400,000 levels still
+      // running at 117s. The DOM guard then answers in 0ms, having already
+      // paid. WebKit's own parser caps depth at 512, which is why only rung 1
+      // is exposed.
+      //
+      // A textual scan cannot be exact — it does not know which elements are
+      // void or implicitly closed — so it is deliberately generous and only
+      // has to catch the shape that is ruinous.
+      if (__jdnTooDeepText(html)) { return JSON.stringify({ tooDeep: true }); }
       var doc = linkedom.parseHTML(html).document;
       // **The page's own <base href> wins, and it has to be read before
       // `baseURI` is set.** Readability rewrites every relative URL to an
