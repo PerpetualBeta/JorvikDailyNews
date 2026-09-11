@@ -366,6 +366,24 @@ struct ReaderView: View {
             // seconds, which is long enough for anyone to give up and click
             // away — as happened the first time it was tried.
             ZStack {
+              // A private address is refused by BoundedFetch, the reader sets
+              // `.failed`, and this arm used to load the very same URL in a web
+              // view with no policy on it at all. The refusal was not a dead
+              // end, it was the route. Nothing that failed the address rule
+              // gets a second attempt through WebKit.
+              if !WebURL.isAllowed(item.link) {
+                ReaderNotice(problem: Problem(
+                    headline: "This link could not be opened",
+                    advice: "Its address is not a public web address, so Jorvik "
+                          + "Daily News will not fetch it. A feed should not be "
+                          + "linking here.",
+                    technical: item.link.host ?? item.link.scheme ?? "unknown address"),
+                    // The same shape as every other notice. Opening it in the
+                    // browser stays offered, because that is the reader's own
+                    // machine and its browser's policy to apply, not this app's.
+                    link: item.link,
+                    retry: { state = .loading; Task { await extract() } })
+              } else {
               LiveWebView(url: item.link, onBlank: {
                 guard case .failed = state else { return }
                 jdnLog("reader: the live page did not render either — giving up with an explanation")
@@ -424,6 +442,7 @@ struct ReaderView: View {
               if !liveDrew {
                   LivePageCover(host: item.link.host ?? "the original page",
                                 link: item.link)
+              }
               }
             }
             .task(id: "live-\(item.itemId)") { liveDrew = false }
@@ -843,6 +862,18 @@ struct LiveWebView: NSViewRepresentable {
         config.websiteDataStore = .nonPersistent()
         let web = WKWebView(frame: .zero, configuration: config)
         web.allowsBackForwardNavigationGestures = true
+        // Every navigation is judged, not just the first. A page reached here
+        // can redirect, script a `location =`, or carry a meta refresh, and
+        // this view had no policy at all.
+        //
+        // **Content scripting stays ON here, deliberately, unlike the reader's
+        // own pane.** This view exists to show the real website when everything
+        // else has failed, and most sites render nothing without it — turning
+        // it off would make the last resort useless. The page's scripts run in
+        // WebKit's own content process, which is sandboxed separately from this
+        // app, so what they can reach is what any browser would allow them,
+        // not what this app's entitlements allow.
+        web.navigationDelegate = context.coordinator
         return web
     }
 
@@ -857,8 +888,26 @@ struct LiveWebView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     @MainActor
-    final class Coordinator {
+    final class Coordinator: NSObject, WKNavigationDelegate {
         private var check: Task<Void, Never>?
+
+        /// The live page may go where a person browsing would go, and nowhere
+        /// the rest of the app refuses to fetch.
+        nonisolated func webView(_ web: WKWebView,
+                                 decidePolicyFor action: WKNavigationAction,
+                                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            guard let url = action.request.url else {
+                decisionHandler(.cancel)
+                return
+            }
+            guard WebURL.isAllowed(url) else {
+                jdnLog("live page: refused a navigation to \(url.host ?? url.scheme ?? "?")"
+                       + " — outside the policy")
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
+        }
 
         /// A real page over the network needs far longer than the reader's own
         /// document does. This is generous on purpose: reporting "it did not
