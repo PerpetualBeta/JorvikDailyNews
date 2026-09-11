@@ -13,7 +13,12 @@ INSTALL_NAME     := Jorvik Daily News.app
 BUNDLE_ID        := cc.jorviksoftware.JorvikDailyNews
 BUILD_SYSTEM     := swiftc
 
-SWIFT_FRAMEWORKS := Cocoa SwiftUI WebKit JavaScriptCore PDFKit AVKit AVFoundation Vision
+# PDFKit is deliberately ABSENT. The app does not link it at all any more:
+# the PDF helper in Contents/XPCServices links it instead. That makes "PDFKit
+# never parses a feed's bytes in this process" a property of the link line
+# rather than a claim in a comment, and a future edit that reintroduces an
+# in-process parse fails to compile instead of quietly shipping.
+SWIFT_FRAMEWORKS := Cocoa SwiftUI WebKit JavaScriptCore AVKit AVFoundation Vision
 # Sources, one variable per folder so the grouping survives in the build
 # and a new file has an obvious home. release.mk takes the composed list;
 # it also auto-globs JorvikKit/*.swift, which is not repeated here.
@@ -42,6 +47,9 @@ STANDFIRST_SOURCES := Standfirsts/Standfirst.swift \
 
 # Reading one article: extraction, block rendering, media, links.
 READER_SOURCES := Reader/ArticleExtractor.swift \
+                  Reader/IsolatedPDFView.swift \
+                  Reader/PDFContentType.swift \
+                  Reader/PDFRenderClient.swift \
                   Reader/EmailLinkSheet.swift \
                   Reader/EmbeddedArticle.swift \
                   Reader/MailtoLink.swift \
@@ -78,6 +86,9 @@ SUPPORT_SOURCES := Support/BoundedFetch.swift \
                    Support/Log.swift \
                    Support/WebURL.swift
 
+# Shared with the PDF helper, so both ends agree on one declaration.
+XPC_SHARED_SOURCES := PDFService/PDFRenderProtocol.swift
+
 SWIFT_SOURCES := $(APP_SOURCES) \
                  $(PAPER_SOURCES) \
                  $(STANDFIRST_SOURCES) \
@@ -85,14 +96,60 @@ SWIFT_SOURCES := $(APP_SOURCES) \
                  $(FEEDS_SOURCES) \
                  $(PICTURES_SOURCES) \
                  $(STORAGE_SOURCES) \
-                 $(SUPPORT_SOURCES)
+                 $(SUPPORT_SOURCES) \
+                 $(XPC_SHARED_SOURCES)
 
 PACKAGE_TYPE     := zip
 ALSO_SHIP_PKG    := true
 EMBEDDED_FRAMEWORKS := Sparkle
 ENTITLEMENTS     := JorvikDailyNews.entitlements
+# The PDF helper gets its OWN, far smaller, entitlements. Signed without
+# these it would have no sandbox, which is worse than not having a helper:
+# today PDFKit at least parses inside the app's sandbox.
+NESTED_ENTITLEMENTS := Contents/XPCServices/PDFService.xpc=PDFService/PDFService.entitlements
 
 include ../jorvik-release/release.mk
+
+# ---------------------------------------------------------------------------
+# The PDF helper
+#
+# A feed controls the bytes of a linked PDF and also chooses that PDFKit is
+# what parses them, because routing is extension-driven. PDFKit is a large
+# C/C++ parser with a long CVE history and it used to run in this app's own
+# process, one click from a headline. It now runs in a bundled XPC service
+# with nothing but `app-sandbox` to its name: no network, no file access, no
+# user data. A memory-safety bug in PDFKit becomes a crash of a process
+# launchd will restart.
+#
+# Built the way release.mk builds the app — per arch, then lipo — so the helper
+# is universal too. A thin helper inside a universal app would fail on
+# whichever architecture it lacked, and only there.
+#
+# `stamp` depends on this, so the order is build → helper → stamp → sign. That
+# matters: release.mk's sign pass finds nested .xpc bundles and signs them, so
+# the helper has to exist before signing rather than after.
+XPC_NAME       := PDFService
+XPC_BUNDLE     := $(BUILT_BUNDLE)/Contents/XPCServices/$(XPC_NAME).xpc
+XPC_SOURCES    := PDFService/PDFRenderProtocol.swift \
+                  PDFService/PDFRenderService.swift \
+                  PDFService/main.swift
+XPC_FRAMEWORKS := -framework Cocoa -framework PDFKit
+
+.PHONY: xpc-service
+xpc-service: build
+	@echo "→ build $(XPC_NAME).xpc (swiftc, universal)"
+	@mkdir -p "$(XPC_BUNDLE)/Contents/MacOS"
+	for ARCH in $(ARCH_LIST); do
+		xcrun swiftc -O -target $$ARCH-apple-macos$(MACOS_TARGET) \
+			-o "$(XPC_BUNDLE)/Contents/MacOS/$(XPC_NAME)_$$ARCH" \
+			$(XPC_SOURCES) $(XPC_FRAMEWORKS)
+	done
+	lipo -create $(foreach A,$(ARCH_LIST),"$(XPC_BUNDLE)/Contents/MacOS/$(XPC_NAME)_$(A)") \
+		-output "$(XPC_BUNDLE)/Contents/MacOS/$(XPC_NAME)"
+	rm -f $(foreach A,$(ARCH_LIST),"$(XPC_BUNDLE)/Contents/MacOS/$(XPC_NAME)_$(A)")
+	cp PDFService/Info.plist "$(XPC_BUNDLE)/Contents/Info.plist"
+
+stamp: xpc-service
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -109,6 +166,8 @@ include ../jorvik-release/release.mk
 # here is Foundation-only apart from ImageCache, which EditionBuilder consults
 # to ask whether a picture is known to have failed.
 TEST_SOURCES := Reader/VideoLink.swift \
+                PDFService/PDFRenderProtocol.swift \
+                Reader/PDFContentType.swift \
                 Support/WebURL.swift \
                 Reader/MailtoLink.swift \
                 Support/BoundedFetch.swift \
@@ -127,6 +186,8 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Pictures/ImageCache.swift
 
 TEST_HARNESS := Tests/TestRunner.swift \
+                Tests/PDFPageSizesTests.swift \
+                Tests/PDFContentTypeTests.swift \
                 Tests/VideoLinkTests.swift \
                 Tests/FeedFetcherTests.swift \
                 Tests/FeedBoundsTests.swift \

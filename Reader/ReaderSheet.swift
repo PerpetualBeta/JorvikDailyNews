@@ -1,6 +1,5 @@
 import SwiftUI
 import WebKit
-import PDFKit
 import AVKit
 import AVFoundation
 import AppKit
@@ -319,7 +318,15 @@ struct ReaderView: View {
           }
 
         case .pdf(let url):
-            PDFReader(url: url)
+            // A `.pdf` path that serves HTML goes back through extraction. The
+            // routing below trusts the extension, which is fine as a fast path
+            // and wrong as a verdict — GitHub's `…/blob/…/report.pdf` is a web
+            // page that displays a PDF, and the file is elsewhere.
+            PDFReader(url: url, onNotAPDF: {
+                jdnLog("reader: .pdf path served a web page — re-running extraction")
+                state = .loading
+                Task { await extract(trustingExtension: false) }
+            })
 
         case .video(let target):
             switch target {
@@ -429,11 +436,15 @@ struct ReaderView: View {
     /// that never returns at all.
     private static let readerDeadline: TimeInterval = 25
 
-    private func extract() async {
+    /// - Parameter trustingExtension: false after a `.pdf` path turned out to
+    ///   serve HTML, so the fast path is skipped and the same link is not sent
+    ///   straight back to the PDF viewer it just came from. Without this the
+    ///   two would hand the link to each other for ever.
+    private func extract(trustingExtension: Bool = true) async {
         state = .loading
         jdnLog("reader: opening \(item.link.absoluteString)")
         // Fast path: an obvious .pdf link skips the HTML extractor entirely.
-        if item.link.pathExtension.lowercased() == "pdf" {
+        if trustingExtension, item.link.pathExtension.lowercased() == "pdf" {
             jdnLog("reader: .pdf extension — PDF view")
             state = .pdf(item.link)
             return
@@ -1098,51 +1109,52 @@ private struct LivePageCover: View {
 
 // MARK: - PDF rendering
 
-/// Native PDF reader for items that link straight to a PDF. PDFKit gives a
-/// proper document experience — continuous scroll, pinch-zoom, selection,
-/// `⌘F` find — rather than the page of mojibake you'd get from running the
-/// raw PDF stream through the HTML reader. A spinner covers the view while
-/// the (possibly large) file downloads.
+/// Native PDF reader for items that link straight to a PDF.
+///
+/// The bytes are downloaded and capped here, then handed to the sandboxed
+/// helper in `Contents/XPCServices/PDFService.xpc`, which parses them and
+/// returns page images. This process does not link PDFKit at all, so a
+/// malformed document cannot reach a parser inside the app.
+///
+/// See `IsolatedPDFView` for what that costs: PDFKit's text selection and find
+/// bar are not available, because both need the document in this process.
 private struct PDFReader: View {
     let url: URL
-    @State private var state: Load = .starting
+    /// Called when the download turns out to be a web page rather than a PDF,
+    /// so the reader can run its normal extraction instead.
+    var onNotAPDF: () -> Void = { }
+    @State private var model = IsolatedPDFModel()
+    /// 1.0 fits the pane. Zoom re-renders through the helper rather than
+    /// scaling a bitmap, so a magnified page stays sharp.
+    @State private var zoom: CGFloat = 1.0
 
-    /// A 7.4 MB report at 176 KB/s is forty-two seconds of waiting, and
-    /// "Loading PDF…" for forty-two seconds is indistinguishable from a hang.
-    /// The reader asked "how big is this PDF, it's taking ages?" — a question
-    /// the app was holding the answer to and not saying.
-    enum Load {
-        case starting
-        case downloading(received: Int64, total: Int64)
-        case ready
-        case failed(String)
-    }
+    private static let zoomStep: CGFloat = 0.25
+    private static let zoomRange: ClosedRange<CGFloat> = 0.5...4.0
 
     var body: some View {
         ZStack {
-            PDFKitView(url: url,
-                       onProgress: { received, total in
-                           if case .ready = state { return }
-                           state = .downloading(received: received, total: total)
-                       },
-                       onReady: { state = .ready },
-                       onFailure: { state = .failed($0) })
-
-            switch state {
-            case .ready:
-                EmptyView()
+            switch model.state {
+            case .ready(let pageCount):
+                IsolatedPDFPages(model: model, pageCount: pageCount, zoom: $zoom)
+                    .overlay(alignment: .bottomTrailing) { zoomControls }
 
             case .failed(let why):
                 // Previously this was a white page: `defer { onLoaded() }`
                 // lifted the cover whether or not a document had arrived, so a
-                // failure revealed an empty PDFView and said nothing.
+                // failure revealed an empty viewer and said nothing.
+                //
+                // It now also covers a helper that died on a malformed
+                // document, which is the case the helper exists for: a crash
+                // over there has to become a sentence over here.
                 ReaderNotice(problem: ReaderView.Problem(
                     headline: "This PDF would not open",
                     advice: "The file could not be downloaded or could not be "
                           + "read as a PDF. Opening it in your browser is the "
                           + "quickest way to see it, and will also show you "
                           + "whether the file itself is the problem.",
-                    technical: why), link: url, retry: { state = .starting })
+                    technical: why), link: url, retry: {
+                        Task { await model.load(url) }
+                    })
 
             case .starting, .downloading:
                 VStack(spacing: 14) {
@@ -1153,14 +1165,14 @@ private struct PDFReader: View {
                     // absent on that request, so the determinate branch never
                     // fired and the reader got no sign of progress for nearly
                     // three minutes.
-                    if case .downloading(let got, let total) = state, total > 0 {
+                    if case .downloading(let got, let total) = model.state, total > 0 {
                         ProgressView(value: Double(got), total: Double(total))
                             .frame(width: 220)
                         Text("\(Self.mb(got)) of \(Self.mb(total))")
                             .font(.custom("Charter", size: 12))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
-                    } else if case .downloading(let got, _) = state {
+                    } else if case .downloading(let got, _) = model.state {
                         ProgressView()
                         Text("\(Self.mb(got)) downloaded")
                             .font(.custom("Charter", size: 12))
@@ -1180,6 +1192,44 @@ private struct PDFReader: View {
                 .background(Color(nsColor: .textBackgroundColor))
             }
         }
+        .task {
+            model.onNotAPDF = onNotAPDF
+            await model.load(url)
+        }
+        .onDisappear { model.close() }
+    }
+
+    /// Zoom, because the helper renders at a fixed width and the reader has no
+    /// `PDFView` to do it any more. Keyboard shortcuts as well as buttons: a
+    /// document viewer without command-plus is a document viewer someone will
+    /// complain about.
+    private var zoomControls: some View {
+        HStack(spacing: 2) {
+            Button {
+                zoom = max(Self.zoomRange.lowerBound, zoom - Self.zoomStep)
+            } label: { Image(systemName: "minus.magnifyingglass") }
+                .keyboardShortcut("-", modifiers: .command)
+                .disabled(zoom <= Self.zoomRange.lowerBound)
+
+            Button { zoom = 1.0 } label: {
+                Text("\(Int(zoom * 100))%")
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .frame(minWidth: 38)
+            }
+            .keyboardShortcut("0", modifiers: .command)
+            .help("Fit to the width of the pane")
+
+            Button {
+                zoom = min(Self.zoomRange.upperBound, zoom + Self.zoomStep)
+            } label: { Image(systemName: "plus.magnifyingglass") }
+                .keyboardShortcut("+", modifiers: .command)
+                .disabled(zoom >= Self.zoomRange.upperBound)
+        }
+        .buttonStyle(.borderless)
+        .padding(6)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(12)
     }
 
     /// A file size the way macOS states one.
@@ -1195,183 +1245,6 @@ private struct PDFReader: View {
         formatter.countStyle = .file
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
         return formatter.string(fromByteCount: bytes)
-    }
-}
-
-extension PDFView {
-    /// Scroll to the top-left of the first page.
-    func goToTop() {
-        guard let first = document?.page(at: 0) else { return }
-        let box = first.bounds(for: .cropBox)
-        // PDF coordinates run bottom-up, so the top of the page is maxY.
-        go(to: CGRect(x: box.minX, y: box.maxY - 1, width: 1, height: 1), on: first)
-    }
-}
-
-struct PDFKitView: NSViewRepresentable {
-    let url: URL
-    var onProgress: (Int64, Int64) -> Void = { _, _ in }
-    var onReady: () -> Void = {}
-    var onFailure: (String) -> Void = { _ in }
-
-    /// Long enough for a large report on a slow line — the one that prompted
-    /// this took 42 seconds for 7.4 MB — and short enough that a dead host
-    /// does not hold the reader indefinitely. The request carried no timeout
-    /// at all before, so it inherited URLSession's 60-second default and gave
-    /// no sign of which it was doing.
-    private static let timeout: TimeInterval = 120
-    /// How often to publish progress. Five times a second is smooth to watch
-    /// and costs nothing against a download measured in minutes.
-    ///
-    /// `nonisolated` because it is read from the detached download task. The
-    /// view is main-actor isolated, so a plain `static let` on it is too, and
-    /// Swift 6 makes that an error rather than a warning.
-    nonisolated static let reportEvery: TimeInterval = 0.2
-
-    func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
-        view.autoScales = true
-        view.displayMode = .singlePageContinuous
-        view.displayDirection = .vertical
-        view.backgroundColor = .textBackgroundColor
-        load(into: view)
-        return view
-    }
-
-    func updateNSView(_ view: PDFView, context: Context) {}
-
-    private func load(into view: PDFView) {
-        var request = URLRequest(url: url)
-        request.timeoutInterval = Self.timeout
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
-            forHTTPHeaderField: "User-Agent"
-        )
-        // Ask for the bytes uncompressed, which is how the size comes back.
-        //
-        // `URLSession` sends `Accept-Encoding: gzip, deflate, br` by default.
-        // Offered that, `metr.org` returns `content-encoding: br` and **no
-        // Content-Length at all**, so `expectedContentLength` is -1 and a
-        // 7.4 MB report downloaded for 163 seconds with no size to show.
-        // The same URL declares `content-length: 7443085` when no encoding is
-        // offered — measured both ways.
-        //
-        // Identity is the right ask regardless of the size: a PDF is already
-        // a compressed container, so Brotli-ing it spends CPU at both ends to
-        // save very little. A server free to ignore this leaves us in the
-        // spinner-with-a-byte-count state, which is why that state exists.
-        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        let url = self.url
-        let onProgress = self.onProgress
-        let onReady = self.onReady
-        let onFailure = self.onFailure
-
-        // Downloaded OFF the main actor, with only the progress reports and the
-        // finished document hopping onto it.
-        //
-        // The first version ran the whole `for try await byte in stream` loop
-        // on the main actor. Appending 7.4 million bytes measures at 0.21s, so
-        // the append is not the problem, but seven million suspension points
-        // interleaved with the interface is not something to ship on the
-        // strength of one benchmark that did not include them.
-        Task.detached {
-            let started = Date()
-            do {
-                // Streamed rather than fetched whole, so the size can be shown
-                // and the wait stops looking like a hang. `data(for:)` reports
-                // nothing until it has everything.
-                // http(s) only, and this is the sink rather than a caller, so
-                // it asks rather than trusting whoever built the URL. A `.pdf`
-                // extension on a `file://` link would otherwise have read a
-                // local document straight into the viewer.
-                guard WebURL.isAllowed(url) else {
-                    jdnLog("pdf: refused \(url.scheme ?? "(no scheme)"): — not a web address")
-                    await MainActor.run { onFailure("not a web address") }
-                    return
-                }
-                let (stream, response) = try await URLSession.shared.bytes(for: request)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    jdnLog("pdf: \(url.host ?? "?") returned HTTP \(http.statusCode)")
-                    await MainActor.run { onFailure("HTTP \(http.statusCode)") }
-                    return
-                }
-                let total = response.expectedContentLength
-                jdnLog("pdf: downloading \(url.lastPathComponent) — "
-                       + (total > 0 ? "\(total) bytes" : "size not declared"))
-
-                // A declared size over the ceiling is refused before the body
-                // is read.
-                if total > Int64(BoundedFetch.documentLimit) {
-                    let cap = ByteCountFormatter.string(fromByteCount: Int64(BoundedFetch.documentLimit),
-                                                        countStyle: .file)
-                    jdnLog("pdf: \(url.host ?? "?") declares \(total) bytes, over the \(cap) ceiling")
-                    await MainActor.run { onFailure("larger than \(cap)") }
-                    return
-                }
-
-                var data = Data()
-                // Clamped to the ceiling. Reserving straight off the
-                // attacker's `Content-Length` is how a 20 KB response asks for
-                // a gigabyte of address space.
-                if total > 0 { data.reserveCapacity(min(Int(total), BoundedFetch.documentLimit)) }
-                var lastReport = Date()
-                for try await byte in stream {
-                    data.append(byte)
-                    // A host that understates its length, or declares none at
-                    // all, is stopped here instead.
-                    if data.count > BoundedFetch.documentLimit {
-                        let cap = ByteCountFormatter.string(fromByteCount: Int64(BoundedFetch.documentLimit),
-                                                            countStyle: .file)
-                        jdnLog("pdf: \(url.host ?? "?") went past the \(cap) ceiling — abandoned")
-                        await MainActor.run { onFailure("larger than \(cap)") }
-                        return
-                    }
-                    // Report on a timer, not per byte: a 7.4 MB file is 7.4
-                    // million iterations and a state write on each would cost
-                    // far more than the download.
-                    if Date().timeIntervalSince(lastReport) > Self.reportEvery {
-                        lastReport = Date()
-                        let got = Int64(data.count)
-                        await MainActor.run { onProgress(got, total) }
-                    }
-                }
-
-                let elapsed = String(format: "%.1f", Date().timeIntervalSince(started))
-                guard let document = PDFDocument(data: data) else {
-                    jdnLog("pdf: \(data.count) bytes arrived in \(elapsed)s but PDFKit "
-                           + "would not read them as a PDF")
-                    let n = data.count
-                    await MainActor.run { onFailure("\(n) bytes downloaded, not readable as a PDF") }
-                    return
-                }
-                let bytes = data.count
-                await MainActor.run {
-                    view.document = document
-                    // Open at the top of page one.
-                    //
-                    // `PDFView` does not, and setting `document` leaves the
-                    // scroll position somewhere in the first page, so every
-                    // document opened part-way down. `goToFirstPage` selects
-                    // the page without moving to its top edge, so the
-                    // destination is built explicitly at the top-left of the
-                    // crop box. `autoScales` recomputes the zoom after the
-                    // document is set, which moves the origin again, so this
-                    // is done once more on the next run-loop turn.
-                    view.goToTop()
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 50_000_000)
-                        view.goToTop()
-                    }
-                    jdnLog("pdf: \(document.pageCount) page(s), \(bytes) bytes in \(elapsed)s")
-                    onReady()
-                }
-            } catch {
-                let elapsed = String(format: "%.1f", Date().timeIntervalSince(started))
-                jdnLog("pdf: FAILED after \(elapsed)s — \(error.localizedDescription)")
-                let why = error.localizedDescription
-                await MainActor.run { onFailure(why) }
-            }
-        }
     }
 }
 

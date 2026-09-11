@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Sandboxed, and that is the entire list. No network, no file access, no
+         user data. The helper is handed a file descriptor for bytes the app has
+         already fetched, so it needs nothing of its own. Anything added here
+         weakens the only reason this process exists. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+</dict>
+</plist>

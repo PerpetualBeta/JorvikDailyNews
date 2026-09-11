@@ -4,6 +4,8 @@ print("JorvikDailyNews tests")
 print("")
 
 VideoLinkTests.run()
+PDFContentTypeTests.run()
+PDFPageSizesTests.run()
 VideoIDTests.run()
 FeedFetcherTests.run()
 FeedBoundsTests.run()
