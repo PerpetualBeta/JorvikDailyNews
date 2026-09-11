@@ -5,6 +5,30 @@ import Foundation
 /// gets one line wrong and nobody notices for months.
 enum VideoLinkTests {
     static func run() {
+        T.suite("Video: a look-alike host is not the platform") {
+            // `contains("youtube.com")` matched youtube.com.attacker.example,
+            // which routed that host to the embed path so the link was never
+            // fetched. Misattribution rather than a fetch of anything
+            // attacker-chosen, since the id is character-validated and
+            // interpolated into a fixed URL.
+            for bad in ["https://youtube.com.attacker.example/watch?v=abc123",
+                        "https://notyoutube.com/watch?v=abc123",
+                        "https://vimeo.com.evil.test/12345",
+                        "https://myvimeo.com/12345"] {
+                let detected = VideoLink.detect(URL(string: bad)!)
+                T.expect(detected == nil, "not a platform link: \(bad)")
+            }
+            // The real ones, and real subdomains, still are.
+            T.expect(VideoLink.detect(URL(string: "https://www.youtube.com/watch?v=abc123")!) != nil,
+                     "www.youtube.com")
+            T.expect(VideoLink.detect(URL(string: "https://youtube.com/watch?v=abc123")!) != nil,
+                     "youtube.com")
+            T.expect(VideoLink.detect(URL(string: "https://m.youtube.com/watch?v=abc123")!) != nil,
+                     "m.youtube.com")
+            T.expect(VideoLink.detect(URL(string: "https://youtu.be/abc123")!) != nil, "youtu.be")
+            T.expect(VideoLink.detect(URL(string: "https://vimeo.com/12345")!) != nil, "vimeo.com")
+        }
+
         T.suite("VideoLink: YouTube") {
             expect("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "youTube(dQw4w9WgXcQ)")
             expect("https://youtu.be/dQw4w9WgXcQ",                "youTube(dQw4w9WgXcQ)")

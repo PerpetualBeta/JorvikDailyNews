@@ -21,16 +21,28 @@ enum VideoLink: Equatable {
     /// File extensions `AVPlayer` will take directly.
     private static let nativeExtensions: Set<String> = ["mp4", "m4v", "mov", "webm"]
 
+    /// Whether `host` is `domain` itself or a subdomain of it.
+    static func isHost(_ host: String, _ domain: String) -> Bool {
+        host == domain || host.hasSuffix("." + domain)
+    }
+
     static func detect(_ url: URL) -> VideoLink? {
         let host = url.host?.lowercased() ?? ""
 
         if nativeExtensions.contains(url.pathExtension.lowercased()) {
             return .native(url)
         }
-        if host.contains("youtube.com") || host == "youtu.be" || host.hasSuffix(".youtu.be") {
+        // Exact or a real subdomain. `contains` matched
+        // `youtube.com.attacker.example`, which routed that host to the embed
+        // path and meant the link was never fetched — misattribution rather
+        // than a fetch of anything attacker-chosen, since the id itself is
+        // character-validated and interpolated into a fixed URL. The `youtu.be`
+        // test beside it always did this correctly.
+        if Self.isHost(host, "youtube.com") || Self.isHost(host, "youtube-nocookie.com")
+            || host == "youtu.be" || host.hasSuffix(".youtu.be") {
             if let id = youTubeID(url) { return .youTube(id) }
         }
-        if host.contains("vimeo.com") {
+        if Self.isHost(host, "vimeo.com") {
             if let id = vimeoID(url) { return .vimeo(id) }
         }
         return nil

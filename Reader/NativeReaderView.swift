@@ -519,10 +519,18 @@ private struct InlineSVG<Caption: View>: View {
     private var drawnSize: CGSize {
         let w = min(NativeReaderView.Style.column,
                     CGFloat(block.width ?? Double(NativeReaderView.Style.column)))
-        guard let bw = block.width, let bh = block.height, bw > 0, bh > 0 else {
+        // Restated in Swift because the walker is JavaScript in a bundled
+        // resource, and because `ReaderBlock.width/height` decode as plain
+        // `Double?` from the edition with nothing validating them.
+        guard let bw = block.width, let bh = block.height,
+              bw.isFinite, bh.isFinite, bw > 0, bh > 0 else {
             return CGSize(width: w, height: w * 0.6)
         }
-        return CGSize(width: w, height: w * CGFloat(bh / bw))
+        let height = w * CGFloat(bh / bw)
+        guard height.isFinite, height > 0 else {
+            return CGSize(width: w, height: w * 0.6)
+        }
+        return CGSize(width: w, height: min(height, NativeReaderView.Style.column * 8))
     }
 
     var body: some View {

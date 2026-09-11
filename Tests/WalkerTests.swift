@@ -347,6 +347,20 @@ enum WalkerTests {
             T.equal(src, "_media/pic/1.avif", "passed through unchanged")
         }
 
+        T.suite("Walker: an absurd SVG size is refused") {
+            // A size is a number the page chooses, and it reaches the reader's
+            // layout. `width="0.0000001" height="1e308"` is a hundred bytes.
+            for bad in ["width=\"0.0000001\" height=\"1e308\"",
+                        "width=\"1e400\" height=\"400\"",
+                        "width=\"-400\" height=\"-300\"",
+                        "width=\"999999\" height=\"400\""] {
+                let out = walk("<svg \(bad)><rect width=\"10\" height=\"10\"/></svg>")
+                T.expect(!kinds(out).contains("svg"), "refused: \(bad)")
+            }
+            T.expect(kinds(walk("<svg width=\"400\" height=\"300\"><rect/></svg>")).contains("svg"),
+                     "an ordinary diagram is kept")
+        }
+
         T.suite("Walker: nothing to walk") {
             T.expect(walk("").isEmpty, "empty input, no blocks")
             T.expect(walk("<div></div>").isEmpty, "an empty container yields nothing")

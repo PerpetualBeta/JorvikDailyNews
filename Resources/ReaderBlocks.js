@@ -142,6 +142,11 @@
   /// this file.
   var MAX_BLOCKS = 4000;
 
+  /// Largest side a declared SVG size may claim, in points. Far above any
+  /// diagram and far below the point where a layout is asked for something
+  /// impossible.
+  var MAX_SVG_SIDE = 20000;
+
   // ── SVG sanitising ────────────────────────────────────────────────────────
   //
   // An inline SVG is drawn by `NSImage(data:)`, which yields AppKit's private
@@ -239,6 +244,11 @@
       if (parts.length === 4) { w = w || parts[2]; h = h || parts[3]; }
     }
     if (!w || !h) return null;
+    // A size is a number the page chooses. `width="0.0000001" height="1e308"`
+    // is a hundred bytes of markup that reaches the reader's layout as
+    // infinity. Finite, positive, and no larger than any real diagram.
+    if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) return null;
+    if (w > MAX_SVG_SIDE || h > MAX_SVG_SIDE) return null;
     if (Math.max(w, h) < minSide) return null;
     // An SVG is source code that AppKit will execute as drawing instructions,
     // and the size of the source is the only cheap proxy for how much work it

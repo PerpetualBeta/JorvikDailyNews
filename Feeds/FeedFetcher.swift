@@ -87,6 +87,9 @@ final class FeedFetcher: Sendable {
     /// refresh, are laid out by the masonry and are measured by the standfirst
     /// fitter. A headline is a headline; `leadTargetWords` is 200, so 4,000
     /// characters of summary is already several times what any card can show.
+    /// Longest raw guid kept for matching items written by an older build.
+    static let maxStoredLegacyID = 500
+
     static let maxStoredTitle = 500
     static let maxStoredSummary = 4000
     /// Items taken from one feed.
@@ -670,7 +673,13 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             publishedAt: FeedFetcher.clamped(date),
             section: feed.section,
             sourceTitle: sourceTitle,
-            legacyItemId: offered
+            // Clamped like `title` and `summary` beside it, which are held to
+            // 500 and 4,000. This was the raw guid, bounded only by the 64 KB
+            // element ceiling, and it is stored in the edition and carried
+            // forward day to day. It is read for a lookup and never used as a
+            // dictionary key, so clamping does not reintroduce the collision
+            // `namespacedID` exists to prevent.
+            legacyItemId: String(offered.prefix(FeedFetcher.maxStoredLegacyID))
         )
     }
 

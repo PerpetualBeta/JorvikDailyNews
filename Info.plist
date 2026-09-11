@@ -22,10 +22,29 @@
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- App Transport Security, and why it is set this way.
+
+         NSAllowsArbitraryLoads is ON because a feed reader has to fetch what
+         people are subscribed to, and a great deal of RSS is still served over
+         plain http. Measured on a real subscription list: 178 of 247 feed URLs
+         begin http://. Refusing those would not make the app safer, it would
+         make it useless, and the feed itself is treated as hostile input
+         regardless of how it arrived.
+
+         NSAllowsArbitraryLoadsInWebContent is OFF, which is the part that
+         matters. Web views run the page's own scripts, and over cleartext an
+         on-path attacker can rewrite that page — script execution inside the
+         app's chrome, with no address bar to check. The cost is small and was
+         measured too: of 898 stored article links, 6 are plain http, so this
+         affects roughly one live-page fallback in 150. Extraction is
+         unaffected, because its first and usual route is URLSession rather
+         than a web view. -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
         <true/>
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <false/>
     </dict>
     <key>SUFeedURL</key>
     <string>https://jorviksoftware.cc/appcasts/jorvikdailynews.xml</string>
