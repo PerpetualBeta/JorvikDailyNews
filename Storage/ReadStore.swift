@@ -11,17 +11,26 @@ final class ReadStore {
     private(set) var readIds: Set<String> = []
     private let storeURL: URL
 
-    init() {
+    convenience init() {
+        self.init(directory: Self.supportDirectory())
+    }
+
+    /// The designated one, so a test can point at a directory of its own
+    /// rather than the reader's real `read.json`.
+    init(directory: URL) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        self.storeURL = directory.appendingPathComponent("read.json")
+        load()
+    }
+
+    static func supportDirectory() -> URL {
         let support = try! FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         )
-        let dir = support.appendingPathComponent("JorvikDailyNews", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        self.storeURL = dir.appendingPathComponent("read.json")
-        load()
+        return support.appendingPathComponent("JorvikDailyNews", isDirectory: true)
     }
 
     private func load() {
@@ -61,6 +70,18 @@ final class ReadStore {
     /// read mark for an item not in today's edition is already unreachable.
     ///
     /// Idempotent, and saves once rather than per item.
+    ///
+    /// **A legacy key is consumed as it is carried.** `namespacedID` exists so
+    /// no feed can name another feed's item, and `legacyItemId` is the raw
+    /// guid, which is public — so a feed copying a guid out of another feed's
+    /// XML could inherit its read mark, and could do it again at every launch
+    /// while this file still held legacy keys. Removing the key means each one
+    /// can be claimed exactly once, by whichever item reaches it first, and
+    /// the file drains as the upgrade completes.
+    ///
+    /// Inheriting a read mark only hides the attacker's own item, which is
+    /// harmless on its own. The pin half of the same trick, in
+    /// `ArticleClassifier`, is not.
     func migrateLegacyIDs(for items: [FeedItem]) {
         var carried = 0
         for item in items {
@@ -68,6 +89,7 @@ final class ReadStore {
                   readIds.contains(legacy), !readIds.contains(item.itemId)
             else { continue }
             readIds.insert(item.itemId)
+            readIds.remove(legacy)
             carried += 1
         }
         guard carried > 0 else { return }

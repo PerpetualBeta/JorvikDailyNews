@@ -69,6 +69,31 @@ enum FeedBoundsTests {
             T.expect(FeedFetcher.isReadableEncoding(Data("<r/>".utf8)), "a short document")
         }
 
+        T.suite("Bounds: a UTF-16 body is transcoded, so its size is bounded") {
+            // Scanning a UTF-16 document means transcoding it, which builds a
+            // whole String and then a whole Data. The comment that used to sit
+            // on that said "UTF-16 feeds are rare, so the cost is paid almost
+            // never" — a statement about honest feeds, where the attacker
+            // picks the encoding. Measured at 181 MB maxRSS against 69 MB for
+            // the same size in UTF-8, with sixteen fetches running at once.
+            let small = "<?xml version=\"1.0\"?><rss><channel/></rss>"
+                .data(using: .utf16LittleEndian) ?? Data()
+            T.expect(FeedFetcher.scanRefusal(small) == nil, "an ordinary UTF-16 feed is scanned")
+
+            let filler = String(repeating: "\u{4E00}", count: 3 * 1024 * 1024)
+            let huge = ("<?xml version=\"1.0\"?><rss><channel><title>" + filler
+                        + "</title></channel></rss>").data(using: .utf16LittleEndian) ?? Data()
+            T.expect(huge.count > FeedFetcher.maxTranscodedBody, "the fixture is over the ceiling")
+            T.expect(FeedFetcher.scanRefusal(huge)?.contains("UTF-16") == true,
+                     "and one over it is refused, saying so")
+
+            // The same size in UTF-8 is scanned, because nothing is transcoded.
+            let utf8 = ("<?xml version=\"1.0\"?><rss><channel><title>" + filler
+                        + "</title></channel></rss>").data(using: .utf8) ?? Data()
+            T.expect(utf8.count > FeedFetcher.maxTranscodedBody, "and is just as big")
+            T.expect(FeedFetcher.scanRefusal(utf8) == nil, "yet it is not refused")
+        }
+
         T.suite("Bounds: the entity guard cannot be walked past") {
             func bomb(prolog: String = "", encoding: String.Encoding = .utf8) -> Data {
                 let xml = "<?xml version=\"1.0\"?>\n" + prolog

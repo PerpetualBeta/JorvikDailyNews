@@ -25,6 +25,18 @@ struct NativeReaderView: View {
     /// The email link awaiting the reader's decision, if any.
     @State private var pendingEmail: MailtoLink?
 
+    /// The paper's own hero, resolved once per article.
+    ///
+    /// **This used to be a computed property read from `body`.** `body` also
+    /// reads `store.displayHost(for:)` and `store.allSections`, so every
+    /// `@Observable` mutation of the store — each refresh, each item marked
+    /// read — re-ran it, as did every colour-scheme change. Each pass
+    /// allocated two arrays the length of the block list and then ran
+    /// `ReaderLede.key` over every image source, and `key` does a full
+    /// allocating `removingPercentEncoding`, a backwards `range(of:)` and a
+    /// `URLComponents(string:)` for each one.
+    @State private var lede: URL?
+
     // MARK: Measurements, all from reader.css
 
     /// `fileprivate` rather than `private` so `InlineSVG` at the foot of this
@@ -154,16 +166,16 @@ struct NativeReaderView: View {
         .sheet(item: $pendingEmail) { mail in
             EmailLinkSheet(mail: mail) { pendingEmail = nil }
         }
+        // Keyed on the article's own address, so it is resolved once when the
+        // sheet opens and again only if a different article is shown.
+        .task(id: baseURL) {
+            lede = ReaderLede.hero(hero,
+                                   blockKinds: blocks.map { $0.kind.rawValue },
+                                   blockSources: blocks.map { $0.src })
+        }
     }
 
     // MARK: Header
-
-    /// The paper's own hero, when the extracted article opens without one.
-    private var lede: URL? {
-        ReaderLede.hero(hero,
-                        blockKinds: blocks.map { $0.kind.rawValue },
-                        blockSources: blocks.map { $0.src })
-    }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 0) {

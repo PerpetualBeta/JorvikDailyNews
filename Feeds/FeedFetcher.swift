@@ -150,23 +150,18 @@ final class FeedFetcher: Sendable {
     ///
     /// Only the scan is transcoded. `XMLParser` still receives the original
     /// bytes and does its own encoding detection, so nothing about parsing
-    /// changes. UTF-16 feeds are rare, so the cost is paid almost never.
+    /// changes.
+    ///
+    /// **An earlier comment here said "UTF-16 feeds are rare, so the cost is
+    /// paid almost never".** That is a statement about honest feeds offered
+    /// where a bound belongs: the attacker picks the encoding. Transcoding
+    /// builds a whole `String` and then a whole `Data`, and CJK filler
+    /// transcodes 2 bytes to 3, so a body at the markup limit costs about 1.5
+    /// times its own size twice over — measured at 181 MB maxRSS against 69 MB
+    /// for the same size in UTF-8, and `concurrentFeedFetches` is 16. Hence
+    /// `maxTranscodedBody`, checked by `scanRefusal` before this runs.
     private static func utf8Bytes(of data: Data) -> Data {
-        guard data.count >= 2 else { return data }
-        let b = [UInt8](data.prefix(2))
-        let encoding: String.Encoding?
-        switch (b[0], b[1]) {
-        case (0xFF, 0xFE): encoding = .utf16LittleEndian
-        case (0xFE, 0xFF): encoding = .utf16BigEndian
-        default:
-            // No BOM. A UTF-16 document without one still starts with a NUL in
-            // one of the first two bytes of `<?xml` or `<rss`, which UTF-8
-            // never does.
-            if b[0] == 0x00 { encoding = .utf16BigEndian }
-            else if b[1] == 0x00 { encoding = .utf16LittleEndian }
-            else { return data }
-        }
-        guard let encoding,
+        guard let encoding = utf16Encoding(of: data),
               let text = String(data: data, encoding: encoding),
               let utf8 = text.data(using: .utf8)
         else {
@@ -176,6 +171,44 @@ final class FeedFetcher: Sendable {
             return data
         }
         return utf8
+    }
+
+    /// Which UTF-16 flavour this body is in, or nil if it is not UTF-16.
+    private static func utf16Encoding(of data: Data) -> String.Encoding? {
+        guard data.count >= 2 else { return nil }
+        let b = [UInt8](data.prefix(2))
+        switch (b[0], b[1]) {
+        case (0xFF, 0xFE): return .utf16LittleEndian
+        case (0xFE, 0xFF): return .utf16BigEndian
+        default:
+            // No BOM. A UTF-16 document without one still starts with a NUL in
+            // one of the first two bytes of `<?xml` or `<rss`, which UTF-8
+            // never does.
+            if b[0] == 0x00 { return .utf16BigEndian }
+            if b[1] == 0x00 { return .utf16LittleEndian }
+            return nil
+        }
+    }
+
+    /// Largest UTF-16 body this reader will transcode in order to scan it.
+    ///
+    /// Well above any real feed — the largest in the subscribed set is 1.2 MB,
+    /// and it is UTF-8 like all the rest — and small enough that sixteen
+    /// concurrent fetches of the worst case cannot be a memory event.
+    static let maxTranscodedBody = 4 * 1024 * 1024
+
+    /// Why this body will not be scanned for entity declarations, or nil if it
+    /// will be. Both answers mean the same thing to the caller: a feed whose
+    /// bytes the guard cannot read is refused rather than parsed anyway.
+    static func scanRefusal(_ data: Data) -> String? {
+        if !isReadableEncoding(data) {
+            return "is in an encoding this reader will not scan"
+        }
+        if utf16Encoding(of: data) != nil, data.count > maxTranscodedBody {
+            return "is \(data.count) bytes of UTF-16, over the \(maxTranscodedBody) "
+                 + "this reader will transcode to scan"
+        }
+        return nil
     }
 
     /// Shared with the OPML importer, which parses an untrusted file with the
@@ -227,14 +260,21 @@ final class FeedFetcher: Sendable {
         //
         // The scan is linear with a bounded look-ahead, so the window bought
         // nothing but the hole.
-        let bytes = [UInt8](utf8Bytes(of: data))
-        guard bytes.count > marker.count else { return nil }
+        //
+        // Iterated as `Data`. `[UInt8](data)` copied the whole body a second
+        // time on every feed, for nothing: `Data` is a random-access
+        // collection of bytes already. Indexed from `base` because a `Data`
+        // slice does not start at zero.
+        let bytes = utf8Bytes(of: data)
+        let base = bytes.startIndex
+        let count = bytes.count
+        guard count > marker.count else { return nil }
 
         var found = 0
         var i = 0
-        while i <= bytes.count - marker.count {
-            guard bytes[i] == marker[0],
-                  Array(bytes[i..<(i + marker.count)]).elementsEqual(marker)
+        while i <= count - marker.count {
+            guard bytes[base + i] == marker[0],
+                  bytes[(base + i)..<(base + i + marker.count)].elementsEqual(marker)
             else { i += 1; continue }
             found += 1
             if found > maxEntityDeclarations {
@@ -255,16 +295,17 @@ final class FeedFetcher: Sendable {
             // no quoted value, the index always advances past what it has read,
             // and the declaration count is capped above.
             var j = i + marker.count
-            while j < bytes.count, bytes[j] != 0x22, bytes[j] != 0x27, bytes[j] != 0x3E { j += 1 }
+            while j < count, bytes[base + j] != 0x22, bytes[base + j] != 0x27,
+                  bytes[base + j] != 0x3E { j += 1 }
             // `>` first means a declaration with no internal value — an
             // external entity, say. Nothing to measure; carry on after it.
-            guard j < bytes.count, bytes[j] != 0x3E else { i = min(j + 1, bytes.count); continue }
-            let quote = bytes[j]
+            guard j < count, bytes[base + j] != 0x3E else { i = min(j + 1, count); continue }
+            let quote = bytes[base + j]
             // Its partner, within the limit or not at all.
             let valueStart = j + 1
-            let searchEnd = min(bytes.count, valueStart + maxEntityValue + 1)
+            let searchEnd = min(count, valueStart + maxEntityValue + 1)
             var k = valueStart
-            while k < searchEnd, bytes[k] != quote { k += 1 }
+            while k < searchEnd, bytes[base + k] != quote { k += 1 }
             if k >= searchEnd {
                 return "an internal entity of at least \(k - valueStart) bytes, "
                      + "over the \(maxEntityValue) allowed"
@@ -308,10 +349,9 @@ final class FeedFetcher: Sendable {
     }
 
     static func parse(_ data: Data, from feed: Feed) throws -> FetchedFeed {
-        guard isReadableEncoding(data) else {
-            jdnLog("fetch: \(feed.url.host ?? "?") is in an encoding this reader will not scan "
-                   + "for entity declarations — refused")
-            throw FeedFetchError.parseFailureDetail("is in an encoding this reader will not scan")
+        if let refusal = scanRefusal(data) {
+            jdnLog("fetch: \(feed.url.host ?? "?") \(refusal) for entity declarations — refused")
+            throw FeedFetchError.parseFailureDetail(refusal)
         }
         if let amplification = entityAmplification(in: data) {
             jdnLog("fetch: \(feed.url.host ?? "?") declares \(amplification) — refused before parsing")
@@ -811,9 +851,14 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             // Clamped like `title` and `summary` beside it, which are held to
             // 500 and 4,000. This was the raw guid, bounded only by the 64 KB
             // element ceiling, and it is stored in the edition and carried
-            // forward day to day. It is read for a lookup and never used as a
-            // dictionary key, so clamping does not reintroduce the collision
-            // `namespacedID` exists to prevent.
+            // forward day to day.
+            //
+            // **This IS used as a dictionary lookup, into exactly the two
+            // tables where a collision pays** — `read.json` and
+            // `classifier.json`, whose pre-1.5.0 keys are these guids. An
+            // earlier comment here said otherwise. Both migrations now consume
+            // the key as they carry it, so a copied guid can claim a mark or a
+            // pin at most once and only if it gets there first.
             legacyItemId: String(offered.prefix(FeedFetcher.maxStoredLegacyID)),
             feedHost: feed.url.host?.lowercased()
         )

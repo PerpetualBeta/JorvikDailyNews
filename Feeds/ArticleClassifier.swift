@@ -19,16 +19,15 @@ final class ArticleClassifier {
     private(set) var state: ClassifierState
     private let storeURL: URL
 
-    init() {
-        let support = try! FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let dir = support.appendingPathComponent("JorvikDailyNews", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        self.storeURL = dir.appendingPathComponent("classifier.json")
+    convenience init() {
+        self.init(directory: ReadStore.supportDirectory())
+    }
+
+    /// The designated one, so a test can point at a directory of its own
+    /// rather than the reader's real `classifier.json`.
+    init(directory: URL) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        self.storeURL = directory.appendingPathComponent("classifier.json")
         if let data = try? Data(contentsOf: storeURL),
            let decoded = try? JSONDecoder().decode(ClassifierState.self, from: data) {
             self.state = decoded
@@ -150,16 +149,23 @@ final class ArticleClassifier {
     /// `classifier.json` was a feed-supplied guid and is now that guid hashed
     /// with its feed. A pin that stops resolving is a section the reader chose
     /// and silently lost.
+    ///
+    /// **And, like `ReadStore`, a legacy key is consumed as it is carried.**
+    /// This is the half that pays: a pin places an item on a section page the
+    /// reader curated, so a feed copying a `<guid>` out of another feed's
+    /// public XML could put its own story there. Each key is claimable once.
     func migrateLegacyIDs(for items: [FeedItem]) {
         var carried = 0
         for item in items {
             guard let legacy = item.legacyItemId, legacy != item.itemId else { continue }
             if let section = state.pins[legacy], state.pins[item.itemId] == nil {
                 state.pins[item.itemId] = section
+                state.pins[legacy] = nil
                 carried += 1
             }
             if let correction = state.corrections[legacy], state.corrections[item.itemId] == nil {
                 state.corrections[item.itemId] = correction
+                state.corrections[legacy] = nil
                 carried += 1
             }
         }

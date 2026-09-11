@@ -186,6 +186,8 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Pictures/PagePictures.swift \
                 App/DayRollover.swift \
                 Reader/ReaderBlock.swift \
+                Storage/ReadStore.swift \
+                Feeds/ArticleClassifier.swift \
                 Feeds/Feed.swift \
                 Feeds/FeedFetcher.swift \
                 Standfirsts/Standfirst.swift \
@@ -215,6 +217,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/EmbeddedArticleTests.swift \
                 Tests/WalkerTests.swift \
                 Tests/ReaderBlockTests.swift \
+                Tests/LegacyIDTests.swift \
                 Tests/main.swift
 
 TEST_BIN := .build/tests

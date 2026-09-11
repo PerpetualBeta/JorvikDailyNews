@@ -27,5 +27,6 @@ MailtoLinkTests.run()
 EmbeddedArticleTests.run()
 WalkerTests.run()
 ReaderBlockTests.run()
+LegacyIDTests.run()
 
 exit(T.report())
