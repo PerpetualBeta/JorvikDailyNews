@@ -63,6 +63,26 @@ enum FeedBoundsTests {
             }
         }
 
+        T.suite("Bounds: attribute values count against the ceilings too") {
+            func refused(_ xml: String) -> Bool {
+                do { _ = try FeedFetcher.parse(Data(xml.utf8), from: feed); return false }
+                catch { return true }
+            }
+            // One oversized value ends the parse on its own.
+            let huge = String(repeating: "u", count: 9000)
+            T.expect(refused(rss(item("<media:content url=\"\(huge)\"/>"))),
+                     "a 9 KB attribute value")
+            // And many merely large ones exhaust the document budget, which
+            // they never touched before: textDelivered was incremented only
+            // from foundCharacters and foundCDATA.
+            let chunk = String(repeating: "u", count: 7000)
+            let many = String(repeating: "<media:content url=\"\(chunk)\"/>", count: 1400)
+            T.expect(refused(rss(item(many))), "many large values together")
+            // An ordinary feed with ordinary attributes is untouched.
+            T.expect(!refused(rss(item("<media:content url=\"https://e.com/a.jpg\" width=\"800\"/>"))),
+                     "an ordinary enclosure passes")
+        }
+
         T.suite("Bounds: an entity bomb is refused before parsing") {
             // 1 MB entity, 100,000 references, from a 1.5 MB file. Measured at
             // 61.69s before this guard and 0.00s after. Scaled down here so

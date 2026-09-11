@@ -37,6 +37,18 @@ enum BoundedFetch {
     /// genuinely large, so this is the most generous of the three.
     static let documentLimit = 256 * 1024 * 1024
 
+    /// A page fetched only for what is in its `<head>`.
+    ///
+    /// `ImageEnricher` asks for `Range: bytes=0-32768` and then trims to 32 KB
+    /// — but a Range header is a request, not a rule, and the fetch ceiling it
+    /// passed was `markupLimit`, 32 MB. Nothing sets `Accept-Encoding` either,
+    /// so URLSession negotiates gzip and this counts the *inflated* stream: a
+    /// zero-filled body measured 1028:1, with `expectedContentLength` reported
+    /// as -1 so the early bail never fired. Hundreds of candidates per refresh,
+    /// eight at a time, every hour, with no interaction — for data thrown away
+    /// one line later.
+    static let headLimit = 256 * 1024
+
     /// How much is held before it is moved into the body. Small enough that
     /// the ceiling cannot be overshot by more than this.
     private static let chunkSize = 64 * 1024
@@ -56,9 +68,16 @@ enum BoundedFetch {
     }
 
     /// The response body, or a failure, never more than `limit` bytes held.
+    /// - Parameter truncating: when true, reaching `limit` stops the read and
+    ///   returns what has arrived, instead of throwing. For a caller that only
+    ///   wants the head of a document — `ImageEnricher` keeps 32 KB — the
+    ///   alternative is either buffering a body it will discard, or failing on
+    ///   every page longer than the ceiling. Real pages measured today run to
+    ///   693 KB, so failing would have been a regression dressed as a fix.
     static func data(for request: URLRequest,
                      on session: URLSession,
                      limit: Int,
+                     truncating: Bool = false,
                      delegate: URLSessionTaskDelegate? = nil) async throws -> (Data, URLResponse) {
         guard let url = request.url else { throw Failure.schemeNotAllowed("(no url)") }
         guard WebURL.isAllowed(url) else {
@@ -82,7 +101,8 @@ enum BoundedFetch {
         // is read. It is only a hint — a hostile host can understate or omit
         // it — so the streaming check below is what actually enforces the
         // limit, and this only saves the transfer.
-        if response.expectedContentLength > 0, response.expectedContentLength > Int64(limit) {
+        if !truncating,
+           response.expectedContentLength > 0, response.expectedContentLength > Int64(limit) {
             throw Failure.tooLarge(limit: limit)
         }
 
@@ -106,10 +126,18 @@ enum BoundedFetch {
             guard chunk.count == Self.chunkSize else { continue }
             body.append(contentsOf: chunk)
             chunk.removeAll(keepingCapacity: true)
-            if body.count > limit { throw Failure.tooLarge(limit: limit) }
+            if body.count > limit {
+                // Stopping the iteration cancels the task, so the rest of the
+                // body is never transferred rather than merely discarded.
+                if truncating { return (body.prefix(limit), response) }
+                throw Failure.tooLarge(limit: limit)
+            }
         }
         body.append(contentsOf: chunk)
-        if body.count > limit { throw Failure.tooLarge(limit: limit) }
+        if body.count > limit {
+            if truncating { return (body.prefix(limit), response) }
+            throw Failure.tooLarge(limit: limit)
+        }
         return (body, response)
     }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// The one place that decides whether a URL taken from untrusted content may
@@ -66,6 +67,26 @@ enum WebURL {
     /// all of them answer requests from this machine that they would never
     /// answer from outside it, which is exactly what makes the app a useful
     /// proxy for someone who cannot reach them.
+    /// Hands a URL to the browser, or refuses it.
+    ///
+    /// One funnel, because three call sites in `ReaderSheet` opened a feed's
+    /// own link directly — the toolbar button present in every reader state,
+    /// and two notice buttons, one of them carrying the default keyboard
+    /// action. `NativeReaderView.open` had always applied the rule to links
+    /// *inside* an article; the item's own link was the one that skipped it.
+    ///
+    /// Refusing rather than asking: a link the app would not fetch is not a
+    /// link worth handing to another application either.
+    @discardableResult
+    static func openInBrowser(_ url: URL) -> Bool {
+        guard isAllowed(url) else {
+            jdnLog("open: refused \(url.scheme ?? "(no scheme)"): — not a public web address")
+            return false
+        }
+        NSWorkspace.shared.open(url)
+        return true
+    }
+
     static func isPrivateHost(_ url: URL) -> Bool {
         guard var host = url.host?.lowercased(), !host.isEmpty else { return true }
         // A URL literal wraps IPv6 in brackets.

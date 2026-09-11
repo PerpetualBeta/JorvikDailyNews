@@ -41,6 +41,13 @@ struct EditionBuilder {
     let secondariesCap = 3
     let briefsCap = 12
 
+    /// Most items one day's paper may hold.
+    ///
+    /// A real subscription list of 242 feeds produces a few thousand in a day.
+    /// This is well above that and far below the point where re-encoding the
+    /// edition on the main actor is felt.
+    static let maxEditionItems = 6000
+
     func build(from items: [FeedItem], date: Date) -> Edition {
         // Daily News means: only items whose published date falls inside today
         // (local calendar). Older items never appear, even if they'd otherwise
@@ -61,7 +68,30 @@ struct EditionBuilder {
         let sorted = todayOnly.sorted { $0.publishedAt > $1.publishedAt }
         // Dedupe by canonical link, then by itemId as a fallback for feeds
         // that share guids but not URLs.
-        let deduped = dedupeByLink(sorted)
+        // **A ceiling on the whole edition.**
+        //
+        // `performRefresh` carries forward every prior-edition item still
+        // belonging to a subscribed feed, with no cap, and nothing downstream
+        // imposes one: oversized sections are paginated rather than truncated,
+        // and `dedupeByLink` collapses only identical links or itemIds — both
+        // of which a feed chooses. So a feed serving 500 items an hour with a
+        // fresh `?r=` on each link grows the edition all day, and the whole
+        // thing is re-encoded pretty-printed on the main actor at every refresh
+        // and decoded on the main actor at launch before any window exists.
+        //
+        // Day-keyed storage makes it self-limiting by midnight, which bounds
+        // the damage rather than preventing it.
+        //
+        // Sorted newest-first already, so truncating keeps the newest — which
+        // is what a paper wants anyway.
+        let capped = sorted.count > Self.maxEditionItems
+            ? Array(sorted.prefix(Self.maxEditionItems))
+            : sorted
+        if capped.count < sorted.count {
+            jdnLog("edition: \(sorted.count) items is over the \(Self.maxEditionItems) "
+                   + "allowed — kept the newest \(capped.count)")
+        }
+        let deduped = dedupeByLink(capped)
         let interleaved = roundRobinByFeed(deduped)
 
         // The lead *must* display an image — a text-only hero looks like a
@@ -211,14 +241,25 @@ struct EditionBuilder {
             buckets[item.feedId]!.append(item)
         }
 
+        // Walked with an index rather than rebuilt.
+        //
+        // `buckets[feedId] = Array(bucket.dropFirst())` copied the whole
+        // remaining bucket on every single take, so one bucket of N cost about
+        // N squared over 2 `FeedItem` copies — on the main actor, several times
+        // per refresh and again on every filter toggle. At a few hundred items
+        // it is invisible; it is the accumulation in `build` that could have
+        // made it matter.
+        var taken: [UUID: Int] = [:]
         var result: [FeedItem] = []
         result.reserveCapacity(items.count)
-        while buckets.values.contains(where: { !$0.isEmpty }) {
+        var placed = 0
+        while placed < items.count {
             for feedId in order {
-                if let bucket = buckets[feedId], !bucket.isEmpty {
-                    result.append(bucket[0])
-                    buckets[feedId] = Array(bucket.dropFirst())
-                }
+                let index = taken[feedId, default: 0]
+                guard let bucket = buckets[feedId], index < bucket.count else { continue }
+                result.append(bucket[index])
+                taken[feedId] = index + 1
+                placed += 1
             }
         }
         return result

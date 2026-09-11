@@ -152,7 +152,11 @@ struct ReaderView: View {
             sectionMenu
 
             Button {
-                NSWorkspace.shared.open(item.link)
+                // Everything that leaves the app goes through the same
+                // rule, including the toolbar. NativeReaderView.open has
+                // always done this for links inside an article; the item's own
+                // link reached Launch Services unchecked.
+                WebURL.openInBrowser(item.link)
             } label: {
                 Label("Open in Browser", systemImage: "safari")
             }
@@ -910,9 +914,9 @@ struct LiveWebView: NSViewRepresentable {
 
         /// The live page may go where a person browsing would go, and nowhere
         /// the rest of the app refuses to fetch.
-        nonisolated func webView(_ web: WKWebView,
-                                 decidePolicyFor action: WKNavigationAction,
-                                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        func webView(_ web: WKWebView,
+                     decidePolicyFor action: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             guard let url = action.request.url else {
                 decisionHandler(.cancel)
                 return
@@ -1160,7 +1164,7 @@ private struct LivePageCover: View {
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 320)
-                Button("Open in Browser") { NSWorkspace.shared.open(link) }
+                Button("Open in Browser") { WebURL.openInBrowser(link) }
                     .buttonStyle(.link)
                     .font(.custom("Charter", size: 12))
             }
@@ -1550,7 +1554,7 @@ struct ReaderNotice: View {
 
             HStack(spacing: 10) {
                 Button {
-                    NSWorkspace.shared.open(link)
+                    WebURL.openInBrowser(link)
                 } label: {
                     Label("Open in Browser", systemImage: "safari")
                 }

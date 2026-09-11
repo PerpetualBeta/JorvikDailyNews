@@ -258,6 +258,10 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         // (e.g. The Guardian) ship multiple `<media:content>` elements at
         // different sizes; we pick the widest so we don't render a 140-pixel
         // thumbnail at 280-pixel height.
+        /// Capped: every candidate is held live until the item closes, and
+        /// `pickBestImage` only ever needs a handful. An uncapped list is a
+        /// place for a feed to put as many strings as it likes.
+        static let maxImageCandidates = 24
         var imageCandidates: [(url: String, width: Int)] = []
     }
     private var current: ItemBuilder?
@@ -369,6 +373,34 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         path.append(name)
         buffer = ""
 
+        // **Attribute values count against the same budget as element text.**
+        // `textDelivered` was incremented only from `foundCharacters` and
+        // `foundCDATA`, so neither the per-element nor the per-document ceiling
+        // saw an attribute at all. Measured: 31.8 MB of source, comfortably
+        // under `markupLimit`, parsed in 12.65s while delivering 2.65 GB of
+        // attribute value — `foundCharacters` saw 287 bytes of it.
+        //
+        // A single value over `maxAttributeValue` ends the parse on its own. No
+        // real feed puts 8 KB in one attribute, and an entity expanded a few
+        // hundred times inside a `url=` is exactly what this is for.
+        for value in attributeDict.values {
+            let bytes = value.utf8.count
+            if bytes > Self.maxAttributeValue {
+                jdnLog("fetch: \(feed.url.host ?? "?") sent a \(bytes)-byte attribute value — "
+                       + "stopped parsing, keeping the \(items.count) item(s) so far")
+                parser.abortParsing()
+                return
+            }
+            textDelivered += bytes
+        }
+        if textDelivered > Self.maxDocumentText {
+            jdnLog("fetch: \(feed.url.host ?? "?") delivered more than "
+                   + "\(Self.maxDocumentText / 1024 / 1024) MB across text and attributes — "
+                   + "stopped parsing, keeping the \(items.count) item(s) so far")
+            parser.abortParsing()
+            return
+        }
+
         if flavour == .unknown {
             // RSS 1.0 was never recognised, and the consequence was invisible.
             //
@@ -404,7 +436,9 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
                     }
                     if rel == "enclosure", let type = attributeDict["type"], type.hasPrefix("image/") {
                         let width = Int(attributeDict["length"] ?? "") ?? 0
-                        current!.imageCandidates.append((href, width))
+                        if (current?.imageCandidates.count ?? 0) < ItemBuilder.maxImageCandidates {
+                            current?.imageCandidates.append((href, width))
+                        }
                     }
                 }
             }
@@ -412,12 +446,16 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             // RSS: <enclosure url="..." type="image/..."/>
             if let type = attributeDict["type"], type.hasPrefix("image/"),
                let url = attributeDict["url"] {
-                current?.imageCandidates.append((url, 0))
+                if (current?.imageCandidates.count ?? 0) < ItemBuilder.maxImageCandidates {
+                    current?.imageCandidates.append((url, 0))
+                }
             }
         case "media:thumbnail", "media:content":
             if let url = attributeDict["url"] {
                 let width = Int(attributeDict["width"] ?? "") ?? 0
-                current?.imageCandidates.append((url, width))
+                if (current?.imageCandidates.count ?? 0) < ItemBuilder.maxImageCandidates {
+                    current?.imageCandidates.append((url, width))
+                }
             }
         default:
             break
@@ -447,6 +485,13 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
     /// is distributed. Measured on this machine: 1 MB expanded 100,000 times,
     /// from a **1.5 MB** file, cost 59.2 seconds. A response-size limit cannot
     /// help at that ratio; a limit on how much text is delivered can.
+    /// Most bytes one attribute value may carry.
+    ///
+    /// Generous — a long `srcset` or a data URI in an enclosure is the biggest
+    /// legitimate case and neither approaches this — and far below what an
+    /// entity expanded a few hundred times inside one `url=` produces.
+    static let maxAttributeValue = 8 * 1024
+
     private static let maxDocumentText = 8 * 1024 * 1024
 
     private var textDelivered = 0
@@ -550,7 +595,14 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             .prefix(FeedFetcher.maxStoredTitle))
         guard !title.isEmpty else { return nil }
         guard let originalLink = URL(string: b.link.trimmingCharacters(in: .whitespacesAndNewlines)),
-              originalLink.scheme?.hasPrefix("http") == true else { return nil }
+              // **`hasPrefix` is not a scheme test.** It admitted `httpx:`,
+              // `http-custom:` and `https.zoommtg:`, all of which parse, and it
+              // carried no private-host half at all — so a feed could persist a
+              // link that Launch Services would later hand to whatever app
+              // claims that scheme. `firstExternalURL`, one function away, has
+              // always used exact equality. This is the same rule the rest of
+              // the app uses, applied where the link first enters the store.
+              WebURL.isAllowed(originalLink) else { return nil }
 
         let bodyHTML = !b.contentEncoded.isEmpty ? b.contentEncoded : b.description
         // Link aggregators (HN, Reddit, Lobste.rs, etc.) give you the

@@ -7,6 +7,33 @@ import Foundation
 enum EditionBuilderTests {
 
     static func run() {
+        T.suite("Edition: the day's paper has a ceiling") {
+            // performRefresh carries every prior item forward with no cap, and
+            // nothing downstream imposes one: sections paginate rather than
+            // truncate, and dedupe collapses only identical links or ids —
+            // both feed-chosen. A feed serving 500 items an hour with a fresh
+            // ?r= grows the edition all day.
+            let now = Date()
+            let many = (0..<(EditionBuilder.maxEditionItems + 500)).map {
+                item("Item \($0)", at: now.addingTimeInterval(-Double($0)),
+                     link: "https://e.com/a?r=\($0)")
+            }
+            let edition = EditionBuilder().build(from: many, date: Date())
+            let total = edition.sections.reduce(0) { $0 + $1.items.count }
+                      + (edition.lead == nil ? 0 : 1)
+            T.expect(total <= EditionBuilder.maxEditionItems,
+                     "capped, got \(total)")
+            // An ordinary day is untouched.
+            let ordinary = (0..<300).map {
+                item("Item \($0)", at: now.addingTimeInterval(-Double($0)),
+                     link: "https://e.com/b?r=\($0)")
+            }
+            let small = EditionBuilder().build(from: ordinary, date: Date())
+            let smallTotal = small.sections.reduce(0) { $0 + $1.items.count }
+                           + (small.lead == nil ? 0 : 1)
+            T.expect(smallTotal > 250, "300 items come through, got \(smallTotal)")
+        }
+
         T.suite("Day range: one day, half open") {
             let noon = date("2026-09-09 12:00")
             let range = EditionBuilder.dayRange(for: noon)
