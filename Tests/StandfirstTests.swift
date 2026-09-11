@@ -208,13 +208,37 @@ enum TitleDecodeTests {
             T.equal(Standfirst.decodeTitle("Marks &amp; Spencer"), "Marks & Spencer", "ampersand")
         }
 
-        T.suite("Title: one pass, so escaped text stays escaped") {
-            // The single left-to-right scan's own rule, which is what the
-            // three abandoned second-pass versions kept breaking.
+        T.suite("Title: markup a source escaped on purpose stays escaped") {
+            // The rule the three abandoned second-pass versions kept breaking,
+            // and the one that still holds: nothing this decoder does may hand
+            // back a character that could build a tag.
             T.equal(Standfirst.decodeTitle("&amp;lt;script&amp;gt;"), "&lt;script&gt;",
                     "text the source deliberately escaped is preserved")
-            T.equal(Standfirst.decodeTitle("&amp;mdash;"), "&mdash;",
-                    "and a genuinely double-encoded reference is shown as written")
+            T.equal(Standfirst.decodeTitle("&amp;quot;q&amp;quot;"), "&quot;q&quot;", "quote")
+            T.equal(Standfirst.decodeTitle("&amp;apos;"), "&apos;", "apostrophe")
+            T.equal(Standfirst.decodeTitle("&amp;#60;"), "&#60;", "numeric less-than")
+            T.equal(Standfirst.decodeTitle("&amp;#x3C;"), "&#x3C;", "hex less-than")
+            T.equal(Standfirst.decodeTitle("&amp;amp;"), "&amp;", "ampersand")
+        }
+
+        T.suite("Title: one level of double-encoding is peeled") {
+            // blog.lewman.com serves content="…Miniforum UM790 Pro&amp;hellip;",
+            // so a correct single decode printed entity source under a headline.
+            T.equal(Standfirst.decodeTitle("Miniforum UM790 Pro&amp;hellip;"),
+                    "Miniforum UM790 Pro\u{2026}", "the reported case")
+            T.equal(Standfirst.decodeTitle("&amp;mdash;"), "\u{2014}", "typographic dash")
+            T.equal(Standfirst.decodeTitle("caf&amp;eacute;"), "café", "accented letter")
+            T.equal(Standfirst.decodeTitle("a&amp;nbsp;b"), "a\u{00a0}b", "no-break space")
+            // Exactly one level. The inner reference here resolves to `&`,
+            // which is markup-significant, so the peel stops there.
+            T.equal(Standfirst.decodeTitle("&amp;amp;hellip;"), "&amp;hellip;",
+                    "triple-encoded peels once and stops")
+            // A decoded ampersand with ordinary prose after it is not a
+            // double-encoding and must be left alone.
+            T.equal(Standfirst.decodeTitle("Marks &amp; Spencer"), "Marks & Spencer",
+                    "a real ampersand followed by a word")
+            T.equal(Standfirst.decodeTitle("Tom &amp; Jerry; the sequel"),
+                    "Tom & Jerry; the sequel", "and one followed by a clause")
         }
 
         T.suite("Title: nothing to decode is left alone") {

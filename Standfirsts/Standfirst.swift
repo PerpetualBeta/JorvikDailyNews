@@ -264,8 +264,16 @@ enum Standfirst {
             let body = s[s.index(after: ampersand)...].prefix(maxReferenceLength)
             if let terminator = body.firstIndex(of: ";"),
                let scalar = scalar(forReference: body[..<terminator]) {
-                out.unicodeScalars.append(scalar)
-                index = s.index(after: terminator)
+                // A decoded `&` with another reference welded straight onto it
+                // is the signature of a source that encoded twice. Peel one
+                // level, but never into a character that could build markup.
+                if scalar == "&", let inner = doubleEncoded(after: terminator, in: s) {
+                    out.unicodeScalars.append(inner.scalar)
+                    index = inner.resume
+                } else {
+                    out.unicodeScalars.append(scalar)
+                    index = s.index(after: terminator)
+                }
             } else {
                 // Not a reference: a bare ampersand in running text. Keep it and
                 // carry on past it, so the scan cannot stall.
@@ -293,19 +301,70 @@ enum Standfirst {
     /// this file's siblings already work around, and the reason rung 1 keeps
     /// a WebKit second opinion behind it.
     ///
-    /// One pass, deliberately. **Three earlier versions of this were wrong,
-    /// all from the same mistake: I diagnosed the site instead of measuring
-    /// the pipeline.** I decided Tom's Hardware double-encoded its title, and
-    /// built a second decode pass behind a character denylist, then replaced
-    /// that with U+FFFD marking, then with a conditional second pass. The site
-    /// encodes correctly. There was never any double-encoding, and none of the
-    /// three was needed.
+    /// One left-to-right scan that never re-reads what it has written.
+    /// **Three earlier versions of this were wrong, all from the same mistake:
+    /// I diagnosed the site instead of measuring the pipeline.** I decided
+    /// Tom's Hardware double-encoded its title, and built a second decode pass
+    /// behind a character denylist, then replaced that with U+FFFD marking,
+    /// then with a conditional second pass. The site encodes correctly. There
+    /// was never any double-encoding, and none of the three was needed.
+    ///
+    /// A site that genuinely double-encodes was measured later, and the scan
+    /// peels one level for it inside the same pass — see `doubleEncoded`. The
+    /// difference from those three is the order of work: that rule exists
+    /// because a page was measured first, not because a symptom was explained.
     ///
     /// The feed's own title needs none of this: `FeedFetcher.finalise` already
     /// decodes it, which is why cards were right while the reader header was
     /// wrong.
     static func decodeTitle(_ s: String) -> String {
         decodeEntities(s)
+    }
+
+    /// The five characters HTML uses to build markup. A second decode must
+    /// never produce one of them: a page that deliberately shows escaped source
+    /// writes `&amp;lt;script&amp;gt;`, and that has to stay `&lt;script&gt;`
+    /// rather than become a tag. Everything outside this set is typographic and
+    /// safe to peel. The set is closed and defined by HTML's own syntax, which
+    /// is the same reason the reader's inline set is trustworthy and a list of
+    /// suspicious-looking characters was not.
+    private static let markupSignificant: Set<Unicode.Scalar> = ["<", ">", "&", "\"", "'"]
+
+    /// One level of double-encoding, resolved, or nil to leave the text alone.
+    ///
+    /// Reached only when the pass has just decoded a literal `&`, so the
+    /// question is narrow: is another reference welded directly onto it, with
+    /// nothing in between? That is Jonathan's own test for this, and it is
+    /// structural — it asks what the source did rather than whether a character
+    /// looks suspicious.
+    ///
+    /// **Three earlier attempts at a second pass were wrong, and this is not a
+    /// fourth of the same kind.** Those diagnosed a site that turned out to
+    /// encode correctly, so there was no double-encoding to undo and any second
+    /// pass was damage. This one was measured before it was written:
+    /// blog.lewman.com serves
+    /// `content="…Miniforum UM790 Pro&amp;hellip;"`, so by the specification
+    /// that attribute's value really is the text `Pro&hellip;`, and a correct
+    /// single decode really does print entity source under a headline.
+    ///
+    /// It stays rare, which is why this peels exactly one level instead of
+    /// looping to a fixed point: of 120 sampled hosts, 80 declared a
+    /// description and one of them double-encoded it. `&amp;amp;hellip;`
+    /// therefore becomes `&amp;hellip;` and stops, because the inner reference
+    /// resolves to `&`.
+    ///
+    /// Only titles and standfirsts reach here. Reader body prose is decoded by
+    /// LinkeDOM during parsing, so an article that deliberately shows
+    /// `&amp;hellip;` in its text is untouched by this.
+    private static func doubleEncoded(after terminator: Substring.Index,
+                                      in s: String) -> (scalar: Unicode.Scalar, resume: String.Index)? {
+        let rest = s[s.index(after: terminator)...]
+        let body = rest.prefix(maxReferenceLength)
+        guard let end = body.firstIndex(of: ";"),
+              let scalar = scalar(forReference: body[..<end]),
+              !markupSignificant.contains(scalar)
+        else { return nil }
+        return (scalar, s.index(after: end))
     }
 
     /// The longest reference worth looking for. Long enough for the longest
