@@ -49,6 +49,44 @@ enum ReaderLedeTests {
                     "a different picture later does not suppress the lede")
         }
 
+        T.suite("Reader lede: a CDN transform is unwrapped to the file it transforms") {
+            // Verbatim shapes from rbaldwin.substack.com, where the reader
+            // showed the same chart twice: once as the lede it supplied and
+            // once as the article's own copy. Same host, same picture,
+            // different transform parameters in the path.
+            let file = "https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2F6ffa9394-10d4-4114-8337-db903354d268_1379x776.png"
+            let heroURL = "https://substackcdn.com/image/fetch/$s_!k441!,w_1200,h_675,c_fill,f_jpg,q_auto:good,fl_progressive:steep,g_auto/" + file
+            let inArticle = "https://substackcdn.com/image/fetch/w_1456,c_limit,f_webp,q_auto:good,fl_progressive:steep/" + file
+            T.equal(ReaderLede.key(heroURL), ReaderLede.key(inArticle),
+                    "two transforms of one file are one picture")
+
+            let hero = URL(string: heroURL)!
+            let deep = Array(repeating: "paragraph", count: 6) + ["image"]
+            let srcs: [String?] = Array(repeating: nil, count: 6) + [inArticle]
+            T.expect(ReaderLede.hero(hero, blockKinds: deep, blockSources: srcs) == nil,
+                     "so the lede is withheld")
+
+            // A different file behind the same transform is still different.
+            let other = "https://substackcdn.com/image/fetch/w_1456/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2F2e0913ca-b957-4dd4-8e56-076ee11f641b_602x338.png"
+            T.expect(ReaderLede.key(heroURL) != ReaderLede.key(other),
+                     "a different file is not folded together")
+            T.equal(ReaderLede.hero(hero, blockKinds: deep,
+                                    blockSources: Array(repeating: nil, count: 6) + [other]),
+                    hero, "and the lede is still supplied")
+
+            // The same shape from other services.
+            T.equal(ReaderLede.key("https://i0.wp.com/example.com/a/pic.jpg?resize=600"),
+                    ReaderLede.key("https://example.com/a/pic.jpg"), "WordPress i0.wp.com")
+            T.equal(ReaderLede.key("https://res.cloudinary.com/x/image/fetch/w_500/https%3A%2F%2Fexample.com%2Fa%2Fpic.jpg"),
+                    ReaderLede.key("https://example.com/a/pic.jpg"), "Cloudinary")
+
+            // An ordinary URL is untouched, including one whose path merely
+            // contains the letters "http".
+            T.equal(ReaderLede.key("https://example.com/a/pic.jpg"), "example.com/a/pic.jpg", "plain")
+            T.equal(ReaderLede.key("https://example.com/httpd/logo.png"),
+                    "example.com/httpd/logo.png", "a path containing 'http'")
+        }
+
         T.suite("Reader lede: nothing to supply") {
             T.expect(ReaderLede.hero(nil, blockKinds: ["paragraph"], blockSources: [nil]) == nil,
                      "the paper has no hero for this item")
