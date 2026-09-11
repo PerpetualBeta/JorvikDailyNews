@@ -390,7 +390,48 @@
       }
     }
 
+    /// Whether this list's items are sections of an article rather than
+    /// entries in a list.
+    ///
+    /// A heading inside an `<li>` is the signal, and it is close to
+    /// unambiguous: a real bulleted list does not have `<h2>` in it, and an
+    /// article broken into numbered parts almost always does. Deliberately NOT
+    /// keyed on several `<p>` per item — a Lobsters comment is several
+    /// paragraphs in one `<li>` and is genuinely a list entry, which
+    /// `runsOf`'s paragraph marks already handle.
+    ///
+    /// Same bound and the same safe direction as `figureHoldsProse`.
+    function listHoldsSections(node) {
+      var stack = [];
+      for (var c = node.firstChild; c; c = c.nextSibling) stack.push(c);
+      var seen = 0;
+      while (stack.length) {
+        var n = stack.pop();
+        if (++seen > FIGURE_SCAN_LIMIT) return true;
+        if (n.nodeType !== 1) continue;
+        var tag = n.tagName.toUpperCase();
+        if (HEADING[tag]) return true;
+        for (var k = n.firstChild; k; k = k.nextSibling) stack.push(k);
+      }
+      return false;
+    }
+
+    /// A list, or an article that happens to be numbered.
+    ///
+    /// **The Guardian writes a whole "Key Takeaways" piece as
+    /// `<ol><li><h2>…</h2><p>…</p><p>…</p></li>`**, seven items, forty-two
+    /// paragraphs. Flattened into list items that arrived as one block of
+    /// welded text with every heading gone, and `runsOf` would then have spent
+    /// one shared character budget across the lot. Walked as a container, the
+    /// headings are headings and the paragraphs are paragraphs — and the
+    /// numbering survives, because the page writes it into the heading itself
+    /// as `<span>1. </span>`.
     function emitList(node, ordered) {
+      if (listHoldsSections(node)) { walk(node); return; }
+      return emitPlainList(node, ordered);
+    }
+
+    function emitPlainList(node, ordered) {
       var items = [];
       // One budget for the whole list, so its ceiling is a property of the
       // block rather than of each item.
@@ -420,7 +461,70 @@
       if (rows.length) blocks.push({ kind: 'table', rows: rows });
     }
 
+    var HEADING = { H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1 };
+
+    /// Elements that mean a `<figure>` is holding an article, not a picture.
+    ///
+    /// **`P` is deliberately not in this set.** Ars Technica writes an ordinary
+    /// photograph as `<figure><div><p><a><img>`, and counting that `<p>` as
+    /// prose walked the figure as a container: its caption came out as two
+    /// paragraphs and a "Credit:" line, each of them twice over. A paragraph
+    /// inside a figure is picture furniture. A list, a table, a heading or a
+    /// section is not.
+    var FIGURE_PROSE = {
+      OL: 1, UL: 1, DL: 1, TABLE: 1, BLOCKQUOTE: 1, PRE: 1,
+      SECTION: 1, ARTICLE: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1
+    };
+
+    /// Most nodes looked at before a `<figure>` is called a container anyway.
+    ///
+    /// Bounds the scan, and errs the safe way: a figure too big to classify in
+    /// this many nodes is not a picture, and walking it as a container loses
+    /// nothing but the caption pairing. Answering `false` here instead would
+    /// hand a page a way to hide its own prose behind a few thousand empty
+    /// spans.
+    var FIGURE_SCAN_LIMIT = 2000;
+
+    /// Whether this `<figure>` carries prose of its own, outside its caption.
+    ///
+    /// Short-circuits on the first one found, so an ordinary picture figure
+    /// costs a handful of node visits.
+    function figureHoldsProse(node) {
+      var stack = [];
+      for (var c = node.firstChild; c; c = c.nextSibling) stack.push(c);
+      var seen = 0;
+      while (stack.length) {
+        var n = stack.pop();
+        if (++seen > FIGURE_SCAN_LIMIT) return true;
+        if (n.nodeType !== 1) continue;
+        var tag = n.tagName.toUpperCase();
+        // Its contents are the caption, and a caption may be a <p>.
+        if (tag === 'FIGCAPTION') continue;
+        if (FIGURE_PROSE[tag]) return true;
+        for (var k = n.firstChild; k; k = k.nextSibling) stack.push(k);
+      }
+      return false;
+    }
+
+    /// A `<figure>`: a picture with a caption, or, sometimes, a whole article.
+    ///
+    /// **This used to assume the first of those.** `getElementsByTagName` looks
+    /// at every descendant, so a figure wrapping an article found the one
+    /// picture nested somewhere inside it, emitted that, and returned — taking
+    /// the rest with it, silently, with nothing recorded in `dropped`.
+    ///
+    /// The Guardian's "Key Takeaways" articles are exactly that shape:
+    /// `<figure data-spacefinder-type="…KeyTakeawaysBlockElement"><ol><li>`
+    /// holding every heading and paragraph in the piece. One such article
+    /// extracted 13,791 characters of text and rendered as a single
+    /// photograph.
+    ///
+    /// So a figure carrying prose is walked as a container, which emits its
+    /// pictures and its prose in document order through the ordinary cases.
+    /// The only thing that costs is pairing a `<figcaption>` with the picture,
+    /// and a figure holding an article was never that pairing.
     function emitFigure(node) {
+      if (figureHoldsProse(node)) { walk(node); return; }
       var img = node.getElementsByTagName('img')[0];
       var svgs = node.getElementsByTagName('svg');
       var caption = null;

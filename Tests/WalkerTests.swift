@@ -309,6 +309,63 @@ enum WalkerTests {
             T.equal(walk(ordinary).count, 600, "600 blocks pass through whole")
         }
 
+        T.suite("Walker: a figure that holds an article is not a picture") {
+            // The Guardian writes its "Key Takeaways" pieces as a <figure>
+            // wrapping the whole article in an <ol>. `getElementsByTagName`
+            // looks at every descendant, so emitFigure found the one
+            // photograph nested inside a list item, emitted that, and returned
+            // — taking 42 paragraphs and 7 headings with it, silently, with
+            // nothing recorded in `dropped`. One live article extracted 13,791
+            // characters of text and rendered as a single photograph.
+            let article = "<figure><ol><li><h2>1. First part</h2>"
+                + "<p>Alpha prose.</p><p>Beta prose.</p></li>"
+                + "<li><h2>2. Second part</h2><p>Gamma prose.</p></li></ol></figure>"
+            let out = walk(article)
+            T.equal(kinds(out), ["heading", "paragraph", "paragraph", "heading", "paragraph"],
+                    "every heading and paragraph survives, in order")
+            T.equal(text(out[0]), "1. First part", "and the numbering the page wrote is kept")
+
+            // An ordinary photograph is untouched, including Ars Technica's
+            // shape, which wraps the image in <div><p><a>. A <p> inside a
+            // figure is picture furniture, not prose: counting it as prose
+            // made the caption come out twice over, with a "Credit:" line.
+            let ars = "<figure><div><p><a href=\"https://e.com/big.jpg\">"
+                + "<img src=\"https://e.com/small.jpg\"></a></p></div>"
+                + "<figcaption>A rocket lifting off.</figcaption></figure>"
+            let picture = walk(ars)
+            T.equal(kinds(picture), ["image"], "still exactly one block")
+            T.equal((picture[0]["caption"] as? [[String: Any]] ?? [])
+                        .map { $0["text"] as? String ?? "" }.joined(),
+                    "A rocket lifting off.", "with its caption still attached")
+
+            let plain = walk("<figure><img src=\"https://e.com/a.png\">"
+                             + "<figcaption>Cap.</figcaption></figure>")
+            T.equal(kinds(plain), ["image"], "and so is the simple shape")
+        }
+
+        T.suite("Walker: a list of sections is not a list") {
+            // A heading inside an <li> is the signal. A real bulleted list does
+            // not have an <h2> in it; an article broken into numbered parts
+            // almost always does. Flattened, the whole piece arrived as one
+            // block of welded text with every heading gone.
+            let sections = "<ol><li><h2>1. One</h2><p>Alpha.</p></li>"
+                + "<li><h2>2. Two</h2><p>Beta.</p></li></ol>"
+            T.equal(kinds(walk(sections)), ["heading", "paragraph", "heading", "paragraph"],
+                    "walked as sections, not flattened into items")
+
+            // Ordinary lists are untouched.
+            let ordinary = walk("<ul><li>One</li><li>Two</li><li>Three</li></ul>")
+            T.equal(kinds(ordinary), ["list"], "a plain list is still a list")
+            T.equal((ordinary[0]["items"] as? [[String: Any]] ?? []).count, 3, "with its three items")
+
+            // And a list item of several paragraphs — a Lobsters comment — is
+            // still one item, because that IS a list entry. Deliberately not
+            // keyed on paragraph count.
+            let comment = walk("<ul><li><p>First para.</p><p>Second para.</p></li></ul>")
+            T.equal(kinds(comment), ["list"], "several paragraphs do not make it sections")
+            T.equal((comment[0]["items"] as? [[String: Any]] ?? []).count, 1, "and it is one item")
+        }
+
         T.suite("Walker: block contents have a ceiling too") {
             // The count ceiling above says nothing about what is inside one
             // block, and one <pre> holding megabytes on one line is one
