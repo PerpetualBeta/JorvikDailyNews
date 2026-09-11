@@ -52,15 +52,22 @@ enum SVGSafety {
         // Any reference with a scheme other than data:. Fragment references
         // (`#id`) and relative ones have no scheme and so do not match, which
         // is deliberate: `<use href="#icon">` is how real diagrams are built.
-        if let range = s.range(of: #"(href|src)\s*=\s*['"]?\s*([a-z][a-z0-9+.-]*:)"#,
-                               options: .regularExpression) {
-            let scheme = String(s[range])
-            if !scheme.contains("data:") { return "it references \(trimScheme(scheme))" }
+        // **Every reference, not the first one.** `range(of:options:)` returns
+        // only the first match, and this then asked whether *that* match was a
+        // `data:` URI — so a harmless `data:` reference placed before a hostile
+        // `http:` one short-circuited the whole check. Verified: the pair was
+        // allowed, and the same markup without the leading `data:` was refused.
+        //
+        // The negative lookahead asks the question directly: a reference whose
+        // scheme is anything other than `data:`. There is no first-match
+        // problem left to have, because there is nothing to inspect afterwards.
+        if s.range(of: #"(href|src)\s*=\s*['"]?\s*(?!data:)[a-z][a-z0-9+.-]*:"#,
+                   options: .regularExpression) != nil {
+            return "it references something outside itself"
         }
-        if let range = s.range(of: #"url\(\s*['"]?\s*([a-z][a-z0-9+.-]*:)"#,
-                               options: .regularExpression) {
-            let scheme = String(s[range])
-            if !scheme.contains("data:") { return "a url() references \(trimScheme(scheme))" }
+        if s.range(of: #"url\(\s*['"]?\s*(?!data:)[a-z][a-z0-9+.-]*:"#,
+                   options: .regularExpression) != nil {
+            return "a url() references something outside itself"
         }
         // A protocol-relative reference has no scheme, so the tests above miss
         // it entirely: `url(//evil/x.css)` and `href="//evil/x.png"` both fetch.
@@ -73,12 +80,4 @@ enum SVGSafety {
         return nil
     }
 
-    /// The scheme on its own, for the log line. Best-effort: the message is for
-    /// a human reading a log, so a miss costs nothing.
-    private static func trimScheme(_ match: String) -> String {
-        guard let colon = match.lastIndex(of: ":") else { return "something outside itself" }
-        let start = match[..<colon].lastIndex(where: { !$0.isLetter && !$0.isNumber })
-            .map { match.index(after: $0) } ?? match.startIndex
-        return String(match[start...colon])
-    }
 }

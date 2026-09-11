@@ -93,9 +93,16 @@ private final class OPMLDelegate: NSObject, XMLParserDelegate {
         let text = (attributeDict["text"] ?? attributeDict["title"])?
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // `WebURL.isAllowed`, not a scheme test that resembles it. The old one
+        // did not lowercase, so an uppercase `HTTP:` entry in an otherwise good
+        // file was silently dropped with no message — a correctness bug as well
+        // as a gap — and it had no private-host half, so such an entry became a
+        // subscription that fails every hour for ever once BoundedFetch refuses
+        // it. WebURL's own header already named this file among the sites it
+        // consolidated.
         if let urlString = xmlUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
            let url = URL(string: urlString),
-           let scheme = url.scheme, scheme == "http" || scheme == "https" {
+           WebURL.isAllowed(url) {
             let section = sectionStack.last ?? "Imported"
             if entries.count >= limit {
                 jdnLog("opml: more than \(limit) entries — stopped reading")

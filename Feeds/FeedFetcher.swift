@@ -720,7 +720,13 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         // discussion URL where an article URL would be. For those, look in
         // the body HTML for the first external href and use that instead —
         // the target matters more than the meta-commentary.
-        let link = resolveTargetURL(originalLink, in: bodyHTML)
+        // **The resolved link is judged too.** `originalLink` passes
+        // `WebURL.isAllowed` above and is then replaced here whenever the item
+        // came from an aggregator, so the check gated a value that was thrown
+        // away. `firstExternalURL` tested only the scheme, with no private-host
+        // half at all.
+        let resolved = resolveTargetURL(originalLink, in: bodyHTML)
+        let link = WebURL.isAllowed(resolved) ? resolved : originalLink
         let summary = String(cleanSummary(Standfirst.extract(from: bodyHTML))
             .prefix(FeedFetcher.maxStoredSummary))
         let imageURL = pickBestImage(candidates: b.imageCandidates, bodyHTML: bodyHTML)
@@ -875,9 +881,9 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             guard match.numberOfRanges > 1,
                   let r = Range(match.range(at: 1), in: html) else { continue }
             let href = String(html[r])
-            guard let url = URL(string: href),
-                  let scheme = url.scheme, scheme == "http" || scheme == "https",
-                  url.host != nil else { continue }
+            // The same rule as everywhere else, rather than a scheme test that
+            // happens to look similar.
+            guard let url = URL(string: href), WebURL.isAllowed(url) else { continue }
             if Self.isAggregatorHost(url.host) { continue }
             return url
         }

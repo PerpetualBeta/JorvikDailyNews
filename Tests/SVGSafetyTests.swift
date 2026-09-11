@@ -58,6 +58,24 @@ enum SVGSafetyTests {
                      "nor an id that contains iframe")
         }
 
+        T.suite("SVG safety: a harmless reference does not shield a hostile one") {
+            // The check took the FIRST match and then asked whether that match
+            // was a data: URI, so a data: reference placed in front of an
+            // http: one short-circuited the whole test.
+            let dataFirst = "<image href=\"data:image/png;base64,iVBOR\"/>"
+                          + "<image href=\"http://127.0.0.1:1/x.png\"/>"
+            T.expect(SVGSafety.refusal(for: svg(dataFirst)) != nil,
+                     "data: before http: is still refused")
+            let dataFirstURL = "<rect fill=\"url(data:image/png;base64,iVBOR)\"/>"
+                             + "<rect fill=\"url(https://evil/x)\"/>"
+            T.expect(SVGSafety.refusal(for: svg(dataFirstURL)) != nil,
+                     "and in url() too")
+            // Several data: references and nothing else must still pass.
+            let onlyData = "<image href=\"data:image/png;base64,iVBOR\"/>"
+                         + "<image href=\"data:image/png;base64,AAAA\"/>"
+            T.expect(SVGSafety.refusal(for: svg(onlyData)) == nil, "data: only is kept")
+        }
+
         T.suite("SVG safety: what a real diagram keeps") {
             let fine: [(String, String)] = [
                 ("a plain rectangle", "<rect width=\"10\" height=\"10\" fill=\"blue\"/>"),
@@ -81,8 +99,12 @@ enum SVGSafetyTests {
                     "it contains a script element", "a script says so")
             T.expect(SVGSafety.refusal(for: svg("<rect onload=\"x()\"/>"))?
                         .contains("event handler") == true, "a handler says so")
+            // The scheme is no longer named: the check asks "is there a
+            // reference whose scheme is not data:" in one pass, so there is
+            // nothing left to inspect afterwards. Saying which one would mean
+            // reintroducing the first-match inspection that was the bug.
             T.expect(SVGSafety.refusal(for: svg("<image href=\"http://x/y\"/>"))?
-                        .contains("http") == true, "a reference names its scheme")
+                        .contains("outside itself") == true, "a reference says so")
         }
     }
 }

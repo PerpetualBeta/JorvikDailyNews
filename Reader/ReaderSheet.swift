@@ -924,9 +924,68 @@ struct LiveWebView: NSViewRepresentable {
 
     func updateNSView(_ web: WKWebView, context: Context) {
         // Load once — don't reload on every SwiftUI update pass.
-        if web.url == nil {
+        guard web.url == nil, !context.coordinator.started else { return }
+        context.coordinator.started = true
+        // The blocklist first, then the load. A rule list added mid-load does
+        // not apply to what has already been requested, and this view's whole
+        // job is to fetch a page the app could not extract.
+        Task { @MainActor [weak web] in
+            if let list = await LiveWebView.privateAddressBlocker() {
+                web?.configuration.userContentController.add(list)
+            } else {
+                jdnLog("live page: no private-address blocklist — subresources are unrestricted")
+            }
+            guard let web, web.url == nil else { return }
             web.load(URLRequest(url: url))
             context.coordinator.watch(web, onBlank: onBlank, onDrew: onDrew)
+        }
+    }
+
+    /// Refuses subresource loads to the addresses the rest of the app will not
+    /// fetch, because the navigation delegate never sees them.
+    ///
+    /// `WKNavigationAction` is raised for main-frame and sub-frame navigations
+    /// only — never for images, stylesheets, scripts, fonts, media or
+    /// `fetch`/XHR. Compiled once and reused.
+    static func privateAddressBlocker() async -> WKContentRuleList? {
+        let identifier = "cc.jorviksoftware.JorvikDailyNews.liveprivate"
+        guard let store = WKContentRuleListStore.default() else { return nil }
+        if let found = await withCheckedContinuation({ (c: CheckedContinuation<WKContentRuleList?, Never>) in
+            store.lookUpContentRuleList(forIdentifier: identifier) { list, _ in c.resume(returning: list) }
+        }) { return found }
+        let rules = #"""
+        [
+         {"trigger":{"url-filter":"^https?://10\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://127\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://192\\.168\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://169\\.254\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://0\\.0\\.0\\.0"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.16\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.17\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.18\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.19\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.20\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.21\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.22\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.23\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.24\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.25\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.26\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.27\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.28\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.29\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.30\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://172\\.31\\."},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://\\[::1\\]"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":".*","if-domain":["localhost","*.local","*.internal"]},"action":{"type":"block"}}]
+        """#
+        return await withCheckedContinuation { (c: CheckedContinuation<WKContentRuleList?, Never>) in
+            store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: rules) { list, error in
+                if let error {
+                    jdnLog("live page: blocklist would not compile — \(error.localizedDescription)")
+                }
+                c.resume(returning: list)
+            }
         }
     }
 
@@ -935,6 +994,9 @@ struct LiveWebView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate {
         private var check: Task<Void, Never>?
+        /// SwiftUI may call updateNSView again before the asynchronous load has
+        /// set , which would start a second one.
+        var started = false
 
         /// The live page may go where a person browsing would go, and nowhere
         /// the rest of the app refuses to fetch.
