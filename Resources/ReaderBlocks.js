@@ -54,12 +54,22 @@
   };
   var PARAGRAPH_MARK = '\u0001';
 
-  function runsOf(node, inherited) {
+  // `budget` is optional and is shared: a table or a list passes one object
+  // across all of its cells or items so the ceiling bounds the whole block,
+  // not each part of it.
+  function runsOf(node, inherited, budget) {
     var out = [];
     var style = inherited || { bold: false, italic: false, code: false, href: null };
+    var left = budget || { chars: MAX_BLOCK_CHARS };
 
     function push(text, s) {
       if (!text) return;
+      if (left.chars <= 0) { charsTruncated += text.length; return; }
+      if (text.length > left.chars) {
+        charsTruncated += text.length - left.chars;
+        text = text.slice(0, left.chars);
+      }
+      left.chars -= text.length;
       var last = out[out.length - 1];
       if (last && last.bold === s.bold && last.italic === s.italic
           && last.code === s.code && last.href === s.href) {
@@ -70,6 +80,7 @@
     }
 
     function walk(n, s) {
+      if (left.chars <= 0) return;
       if (n.nodeType === 3) { push(n.nodeValue, s); return; }
       if (n.nodeType !== 1) return;
       var tag = n.tagName.toUpperCase();
@@ -141,6 +152,36 @@
   /// Most blocks one article may produce. See the truncation at the end of
   /// this file.
   var MAX_BLOCKS = 4000;
+
+  /// Most characters one block may carry, summed over every run it holds —
+  /// and, for a table or a list, over every cell or item together.
+  ///
+  /// `MAX_BLOCKS` bounds how many blocks an article may produce and says
+  /// nothing about what is inside one, so a single `<pre>` or a single
+  /// `<p><a>` holding megabytes on one line walked straight past it. The cost
+  /// is not the parse. Any run carrying a link is drawn by `ProseText`, whose
+  /// `sizeThatFits` calls `NSLayoutManager.ensureLayout` synchronously on the
+  /// main thread: measured at about 0.27 s per MB at a 700 pt container, and
+  /// re-run on every size proposal, so continuously while a window is
+  /// resized. 16 MB of single-paragraph text extracted inside the budget and
+  /// then froze the main thread for about 4.4 s per layout pass, in a frame
+  /// roughly 3.8 million points tall.
+  var MAX_BLOCK_CHARS = 64 * 1024;
+
+  /// Most parts — list items, or table cells — one block may hold. The
+  /// character ceiling above bounds bulk, not count: 30,000 single-character
+  /// `<li>` elements are one block, well under the character budget, and
+  /// still 30,000 views drawn eagerly in a plain `VStack`.
+  var MAX_BLOCK_PARTS = 2000;
+
+  /// Longest image `src` that will be stored. Generous enough for a genuine
+  /// inline `data:` image, and small enough that the per-pass percent-decode
+  /// in `ReaderLede.key` cannot be handed a 30 MB string.
+  var MAX_SRC_CHARS = 128 * 1024;
+
+  /// Counts what the two ceilings above threw away, reported to the caller as
+  /// part of `dropped`. Reset at the top of every `__jdnBlocks` call.
+  var charsTruncated = 0;
 
   /// Largest side a declared SVG size may claim, in points. Far above any
   /// diagram and far below the point where a layout is asked for something
@@ -265,6 +306,7 @@
     var src = node.getAttribute('src')
            || (node.getAttribute('srcset') || '').split(/\s|,/)[0];
     if (!src) return null;
+    if (src.length > MAX_SRC_CHARS) return null;
     var w = parseFloat(node.getAttribute('width')) || 0;
     var h = parseFloat(node.getAttribute('height')) || 0;
     return { kind: 'image', src: src, width: w || null, height: h || null,
@@ -323,48 +365,58 @@
     var root = doc.getElementById('jdn-root');
     var blocks = [];
     var dropped = {};
+    charsTruncated = 0;
 
     function drop(tag) { dropped[tag] = (dropped[tag] || 0) + 1; }
 
     // Lists nest, and a flat list of runs cannot say so. Each item carries
     // its depth and its own ordered-ness, so the renderer can indent and
     // number correctly without knowing anything about HTML.
-    function collectItems(node, ordered, depth, into) {
+    function collectItems(node, ordered, depth, into, budget) {
       var index = 0;
       for (var li = node.firstChild; li; li = li.nextSibling) {
         if (li.nodeType !== 1 || li.tagName.toUpperCase() !== 'LI') continue;
+        if (into.length >= MAX_BLOCK_PARTS) return;
         index += 1;
-        var r = runsOf(li);
+        var r = runsOf(li, null, budget);
         if (r.length) into.push({ runs: r, depth: depth, ordered: !!ordered, index: index });
         // Then whatever hangs below it.
         for (var c = li.firstChild; c; c = c.nextSibling) {
           if (c.nodeType !== 1) continue;
           var t = c.tagName.toUpperCase();
-          if (t === 'UL') collectItems(c, false, depth + 1, into);
-          else if (t === 'OL') collectItems(c, true, depth + 1, into);
+          if (t === 'UL') collectItems(c, false, depth + 1, into, budget);
+          else if (t === 'OL') collectItems(c, true, depth + 1, into, budget);
         }
       }
     }
 
     function emitList(node, ordered) {
       var items = [];
-      collectItems(node, ordered, 0, items);
+      // One budget for the whole list, so its ceiling is a property of the
+      // block rather than of each item.
+      collectItems(node, ordered, 0, items, { chars: MAX_BLOCK_CHARS });
+      if (items.length >= MAX_BLOCK_PARTS) drop('list-items');
       if (items.length) blocks.push({ kind: 'list', ordered: !!ordered, items: items });
     }
 
     function emitTable(node) {
       var rows = [];
+      var budget = { chars: MAX_BLOCK_CHARS };
+      var parts = 0;
       var trs = node.getElementsByTagName('tr');
-      for (var i = 0; i < trs.length; i++) {
+      var i = 0;
+      for (; i < trs.length && parts < MAX_BLOCK_PARTS; i++) {
         var cells = [];
-        for (var c = trs[i].firstChild; c; c = c.nextSibling) {
+        for (var c = trs[i].firstChild; c && parts < MAX_BLOCK_PARTS; c = c.nextSibling) {
           if (c.nodeType !== 1) continue;
           var t = c.tagName.toUpperCase();
           if (t !== 'TD' && t !== 'TH') continue;
-          cells.push(runsOf(c));
+          cells.push(runsOf(c, null, budget));
+          parts += 1;
         }
         if (cells.length) rows.push(cells);
       }
+      if (i < trs.length) drop('table-rows');
       if (rows.length) blocks.push({ kind: 'table', rows: rows });
     }
 
@@ -446,7 +498,14 @@
             break;
           }
           case 'PRE': {
+            // One <pre> is one element, so MAX_BLOCKS never saw it. This is
+            // the cleanest way to hand the layout engine a megabyte on one
+            // line, and so the one that has to be clamped here.
             var code = n.textContent || '';
+            if (code.length > MAX_BLOCK_CHARS) {
+              charsTruncated += code.length - MAX_BLOCK_CHARS;
+              code = code.slice(0, MAX_BLOCK_CHARS);
+            }
             if (!isBlank(code)) blocks.push({ kind: 'code', text: code.replace(/\s+$/, '') });
             break;
           }
@@ -499,6 +558,7 @@
       dropped['over-block-limit'] = blocks.length - MAX_BLOCKS;
       blocks = blocks.slice(0, MAX_BLOCKS);
     }
+    if (charsTruncated > 0) dropped['over-block-chars'] = charsTruncated;
     return JSON.stringify({ blocks: blocks, dropped: dropped });
   };
 })();

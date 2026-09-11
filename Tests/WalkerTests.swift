@@ -309,6 +309,61 @@ enum WalkerTests {
             T.equal(walk(ordinary).count, 600, "600 blocks pass through whole")
         }
 
+        T.suite("Walker: block contents have a ceiling too") {
+            // The count ceiling above says nothing about what is inside one
+            // block, and one <pre> holding megabytes on one line is one
+            // element, so it walked straight past it. The cost is
+            // `NSLayoutManager.ensureLayout` on the main thread, about 0.27 s
+            // per MB, re-run on every size proposal.
+            let cap = 64 * 1024
+
+            let hugePre = "<pre>" + String(repeating: "x", count: cap + 5000) + "</pre>"
+            let pre = walk(hugePre)
+            T.equal(pre.count, 1, "still one code block")
+            T.expect((pre.first?["text"] as? String ?? "").count <= cap,
+                     "and its text is cut to the ceiling")
+
+            // A linked paragraph is the expensive shape, because a run
+            // carrying an href is what becomes a ProseText.
+            let hugeLink = "<p><a href=\"https://e.com/\">"
+                + String(repeating: "y", count: cap + 5000) + "</a></p>"
+            T.expect(text(walk(hugeLink).first ?? [:]).count <= cap,
+                     "a single linked run is cut too")
+
+            // The budget is shared across a whole list, not spent per item.
+            let bulk = String(repeating: "z", count: 1000)
+            let list = "<ul>" + String(repeating: "<li>\(bulk)</li>", count: 200) + "</ul>"
+            let listBlocks = walk(list)
+            T.equal(listBlocks.count, 1, "one list block")
+            T.expect(text(listBlocks[0]).count <= cap, "whose items together fit the ceiling")
+
+            // And count is bounded separately, because 30,000 single-character
+            // items are well under the character budget and still 30,000 views.
+            let many = "<ul>" + String(repeating: "<li>q</li>", count: 2500) + "</ul>"
+            T.expect((walk(many).first?["items"] as? [[String: Any]] ?? []).count <= 2000,
+                     "the item count has its own ceiling")
+
+            let cells = String(repeating: "<td>\(bulk)</td>", count: 20)
+            let table = "<table>" + String(repeating: "<tr>\(cells)</tr>", count: 200) + "</table>"
+            let rows = walk(table).first?["rows"] as? [[[[String: Any]]]] ?? []
+            T.expect(rows.count < 200, "a bulk table loses its later rows")
+            T.expect(rows.count > 0, "and keeps its first ones")
+
+            // An ordinary article notices none of this.
+            let ordinary = "<p>Some ordinary prose.</p><ul><li>One</li><li>Two</li></ul>"
+            T.equal(kinds(walk(ordinary)), ["paragraph", "list"], "normal markup is untouched")
+            T.equal(text(walk(ordinary)[1]), "OneTwo", "with its items whole")
+        }
+
+        T.suite("Walker: an absurd image source is refused") {
+            // `ReaderLede.key` percent-decodes every src on every body pass.
+            let long = "<img src=\"data:image/png;base64,"
+                + String(repeating: "A", count: 128 * 1024) + "\">"
+            T.equal(walk(long).count, 0, "a src past the ceiling emits no block")
+            let fine = "<img src=\"https://e.com/a.png\">"
+            T.equal(kinds(walk(fine)), ["image"], "an ordinary one is kept")
+        }
+
         T.suite("Walker: a quote keeps its pictures") {
             // Every image inside a blockquote used to be dropped: a quote was
             // text and nothing else. thedailywtf.com puts each screenshot in

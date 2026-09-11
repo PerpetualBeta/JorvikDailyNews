@@ -214,6 +214,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/MailtoLinkTests.swift \
                 Tests/EmbeddedArticleTests.swift \
                 Tests/WalkerTests.swift \
+                Tests/ReaderBlockTests.swift \
                 Tests/main.swift
 
 TEST_BIN := .build/tests

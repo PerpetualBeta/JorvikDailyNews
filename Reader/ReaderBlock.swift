@@ -121,20 +121,36 @@ extension ReaderBlock.Run {
 
 extension Array where Element == ReaderBlock {
     /// Number each block once, after decoding, so `id` is stable and unique.
-    /// The same ceiling the walker applies, restated because the walker is
+    /// The same ceilings the walker applies, restated because the walker is
     /// JavaScript in a bundled resource and this is Swift. A rule enforced in
-    /// only one half is one edit away from being gone.
+    /// only one half is one edit away from being gone — the same two-halves
+    /// reason `InlineSVG.maxSource` restates the SVG ceiling.
     static var maxBlocks: Int { 4000 }
+
+    /// Characters one block may carry, summed over every run, cell or item.
+    static var maxBlockChars: Int { 64 * 1024 }
+
+    /// List items, or table cells, one block may hold.
+    static var maxBlockParts: Int { 2000 }
+
+    /// Longest image `src` that will be drawn.
+    static var maxSrcChars: Int { 128 * 1024 }
 
     func numbered() -> [ReaderBlock] {
         if count > Self.maxBlocks {
             jdnLog("reader: \(count) blocks is over the \(Self.maxBlocks) allowed — truncated")
         }
-        return prefix(Self.maxBlocks).enumerated().map { index, block in
-            var copy = block
+        var cut = 0
+        let out = prefix(Self.maxBlocks).enumerated().map { index, block -> ReaderBlock in
+            var copy = block.clamped(didCut: &cut)
             copy.position = index
             return copy
         }
+        if cut > 0 {
+            jdnLog("reader: \(cut) block(s) held more than the \(Self.maxBlockChars) "
+                   + "characters or \(Self.maxBlockParts) parts allowed — truncated")
+        }
+        return out
     }
 
     var plainText: String {
@@ -144,5 +160,95 @@ extension Array where Element == ReaderBlock {
             if let items = block.items { return items.map { $0.runs.map(\.text).joined() }.joined(separator: "\n") }
             return nil
         }.joined(separator: "\n\n")
+    }
+}
+
+extension ReaderBlock {
+    /// Cut this block back to what the renderer can draw without stalling.
+    ///
+    /// `maxBlocks` bounds how many blocks there are and says nothing about
+    /// what is inside one. A single `<pre>`, or a single `<p><a>`, holding
+    /// megabytes on one line is one block, and any run carrying a link is
+    /// drawn by `ProseText`, whose `sizeThatFits` calls
+    /// `NSLayoutManager.ensureLayout` synchronously on the main thread:
+    /// about 0.27 s per MB at a 700 pt container, re-run on every size
+    /// proposal, so continuously while the window is resized.
+    ///
+    /// `didCut` counts blocks that lost something, for one log line.
+    func clamped(didCut cut: inout Int) -> ReaderBlock {
+        var copy = self
+        var lost = false
+
+        if let runs {
+            var left = [ReaderBlock].maxBlockChars
+            let kept = Self.clamp(runs, &left)
+            if kept.count != runs.count || left == 0 { lost = true }
+            copy.runs = kept
+        }
+        if let caption {
+            var left = [ReaderBlock].maxBlockChars
+            copy.caption = Self.clamp(caption, &left)
+        }
+        if let text, text.count > [ReaderBlock].maxBlockChars {
+            copy.text = String(text.prefix([ReaderBlock].maxBlockChars))
+            lost = true
+        }
+        if let items {
+            var left = [ReaderBlock].maxBlockChars
+            var kept: [Item] = []
+            for item in items.prefix([ReaderBlock].maxBlockParts) {
+                if left <= 0 { break }
+                kept.append(Item(runs: Self.clamp(item.runs, &left),
+                                 depth: item.depth, ordered: item.ordered, index: item.index))
+            }
+            if kept.count != items.count { lost = true }
+            copy.items = kept
+        }
+        if let rows {
+            var left = [ReaderBlock].maxBlockChars
+            var parts = 0
+            var keptRows: [[[Run]]] = []
+            for row in rows {
+                if left <= 0 || parts >= [ReaderBlock].maxBlockParts { break }
+                var keptCells: [[Run]] = []
+                for cell in row {
+                    if parts >= [ReaderBlock].maxBlockParts { break }
+                    keptCells.append(Self.clamp(cell, &left))
+                    parts += 1
+                }
+                keptRows.append(keptCells)
+            }
+            if keptRows.count != rows.count { lost = true }
+            copy.rows = keptRows
+        }
+        // A src this long is not a picture anyone meant to publish, and it is
+        // what `ReaderLede.key` would percent-decode on every body pass.
+        if let src, src.count > [ReaderBlock].maxSrcChars {
+            copy.src = nil
+            lost = true
+        }
+
+        if lost { cut += 1 }
+        return copy
+    }
+
+    /// Take runs until the shared character budget runs out, splitting the
+    /// run that crosses it.
+    private static func clamp(_ runs: [Run], _ left: inout Int) -> [Run] {
+        var out: [Run] = []
+        out.reserveCapacity(runs.count)
+        for run in runs {
+            if left <= 0 { break }
+            let length = run.text.count
+            if length > left {
+                out.append(Run(text: String(run.text.prefix(left)), bold: run.bold,
+                               italic: run.italic, code: run.code, href: run.href))
+                left = 0
+                break
+            }
+            left -= length
+            out.append(run)
+        }
+        return out
     }
 }
