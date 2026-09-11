@@ -1475,15 +1475,23 @@ final class NativeReader: @unchecked Sendable {
     /// does not — `<div>` nested 5,000 deep parses and serialises identically
     /// on a dispatch queue and on an 8 MB thread. Real articles are two orders
     /// of magnitude shallower, so the extra machinery bought nothing.
-    /// One queue per extraction, not one shared serial queue.
+    /// **There is no shared queue any more. Each extraction makes its own.**
     ///
-    /// A run that exceeds the budget is abandoned but not stopped — nothing in
-    /// the public JavaScriptCore API can stop a running script — so on a shared
-    /// serial queue every later article queued behind it, timed out in turn,
-    /// and degraded to the WebKit rungs. One hostile page could therefore spoil
-    /// every article opened after it until the run finished.
-    private let queue = DispatchQueue(
-        label: "cc.jorviksoftware.JorvikDailyNews.nativereader.\(UUID().uuidString)")
+    /// An earlier attempt at this appended a UUID to the label of a *stored*
+    /// property on a singleton, and wrote "one queue per extraction" above it.
+    /// A stored property is initialised once, so that was one queue for the
+    /// process with a decorative name, and the head-of-line problem the comment
+    /// described in the past tense still held.
+    ///
+    /// It matters because a run that exceeds the budget is abandoned but not
+    /// stopped — nothing in the public JavaScriptCore API can stop a running
+    /// script — so on a shared serial queue every later article waited behind
+    /// it, timed out in turn, and degraded to the WebKit rungs. Measured: a
+    /// 30 MB nested document blocks for about 12 seconds.
+    private static func makeQueue() -> DispatchQueue {
+        DispatchQueue(label: "cc.jorviksoftware.JorvikDailyNews.nativereader",
+                      qos: .userInitiated)
+    }
 
     /// How long the reader waits for JavaScriptCore before moving on.
     ///
@@ -1499,7 +1507,9 @@ final class NativeReader: @unchecked Sendable {
         let absolute = url.absoluteString
         return await withCheckedContinuation { continuation in
             let slot = Slot(continuation)
-            queue.async { [self] in
+            // A fresh queue for this extraction, so an abandoned run holds up
+            // nothing but itself.
+            Self.makeQueue().async { [self] in
                 slot.finish(run(html: html, url: absolute, readability: readability))
             }
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + Self.budget) {

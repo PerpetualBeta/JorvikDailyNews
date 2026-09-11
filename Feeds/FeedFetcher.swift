@@ -316,6 +316,17 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
     private var flavour: Flavour = .unknown
 
     private var path: [String] = []
+    /// How many `channel` or `feed` elements are currently open.
+    ///
+    /// **`path.contains` per closing tag is quadratic in nesting depth.** At
+    /// depth d every close scanned a d-element array twice, so 20,000 levels
+    /// of nesting cost 0.67s and 100,000 cost 16.60s — exactly 25x for 5x
+    /// depth. libxml2 imposes no nesting limit at all, so a 32 MB body is
+    /// several million levels and `path` holds a String for every one.
+    private var channelDepth = 0
+    /// Deepest nesting any real feed needs. A document past this is not a feed
+    /// with a deep structure, it is a document built to be deep.
+    static let maxPathDepth = 256
     /// The document's outermost element, so a fetch can tell a feed from a web
     /// page. An HTML page is usually well-formed enough to satisfy `XMLParser`,
     /// which then reports a clean parse of a document containing no items.
@@ -448,6 +459,13 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         let name = elementName.lowercased()
         if rootElement == nil { rootElement = name }
         path.append(name)
+        if name == "channel" || name == "feed" { channelDepth += 1 }
+        if path.count > Self.maxPathDepth {
+            jdnLog("fetch: \(feed.url.host ?? "?") nests more than \(Self.maxPathDepth) deep — "
+                   + "stopped parsing, keeping the \(items.count) item(s) so far")
+            parser.abortParsing()
+            return
+        }
         buffer = ""
 
         // **Attribute values count against the same budget as element text.**
@@ -603,8 +621,10 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        let closing = elementName.lowercased()
         defer {
             if !path.isEmpty { path.removeLast() }
+            if closing == "channel" || closing == "feed", channelDepth > 0 { channelDepth -= 1 }
             buffer = ""
         }
 
@@ -613,7 +633,8 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
 
         // Channel / feed title (outside an item/entry)
         if current == nil {
-            let inChannel = path.contains("channel") || path.contains("feed")
+            // A counter, not a scan. See `channelDepth`.
+            let inChannel = channelDepth > 0
             if inChannel && name == "title" && channelTitle.isEmpty {
                 // Capped where it is parsed, not where it is drawn. This one
                 // is written to `feeds.json` and rewritten on every refresh,

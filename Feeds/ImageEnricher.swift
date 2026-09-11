@@ -212,6 +212,47 @@ struct ImageEnricher: Sendable {
     /// trusting. Run through `Standfirst.extract` like any other body text:
     /// a description is usually plain prose but some sites leave entities or a
     /// stray tag in it, and this is the one path that handles both.
+
+    /// Every `<tag …>` of one name, as separate strings.
+    ///
+    /// **Why the patterns are not run over the whole document any more.** They
+    /// are shaped `<meta[^>]+literal`, and ICU backtracks `[^>]+` one character
+    /// at a time from every `<meta` position. Against 32 KB of repeated
+    /// `<meta ` with no `>` anywhere — which a page chooses freely, since the
+    /// Range header is only a request — each pattern measured 1.56 to 1.67
+    /// seconds and the eleven of them 16.14 seconds, for one page. Eight pages
+    /// run concurrently on the cooperative pool, hourly, unattended; eight
+    /// CPU-bound cooperative tasks delayed a 0.5s sleep to 8.25s, so the
+    /// refresh watchdog cannot fire either, because it is on the same pool.
+    ///
+    /// Splitting first means each pattern runs against one short tag, where
+    /// `[^>]+` has nothing to backtrack through.
+    private static func tags(_ name: String, in html: String) -> [String] {
+        /// Longest a single tag may be before it is treated as malformed. A
+        /// real `<meta>` is well under this; the attack has no `>` at all.
+        let maxTag = 4096
+        var out: [String] = []
+        var index = html.startIndex
+        let opener = "<" + name
+        while let start = html.range(of: opener, options: [.caseInsensitive], range: index..<html.endIndex) {
+            let limit = html.index(start.lowerBound, offsetBy: maxTag, limitedBy: html.endIndex) ?? html.endIndex
+            if let close = html.range(of: ">", range: start.upperBound..<limit) {
+                out.append(String(html[start.lowerBound...close.lowerBound]))
+                index = close.upperBound
+            } else {
+                // No closing bracket within a sane distance, so nothing that
+                // starts inside this window can be a tag either. Skipping the
+                // whole window keeps the scan linear; advancing by one made it
+                // quadratic all over again, in the splitter instead of the
+                // pattern.
+                index = limit
+                if limit == html.endIndex { break }
+            }
+            if out.count >= 512 { break }
+        }
+        return out
+    }
+
     private func description(in head: String) -> String? {
         let patterns = [
             "<meta[^>]+property=[\"']og:description[\"'][^>]+content=[\"']([^\"']+)[\"']",
@@ -221,12 +262,19 @@ struct ImageEnricher: Sendable {
             "<meta[^>]+name=[\"']description[\"'][^>]+content=[\"']([^\"']+)[\"']",
             "<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+name=[\"']description[\"']"
         ]
+        let metas = Self.tags("meta", in: head)
         for pattern in patterns {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
-            let range = NSRange(head.startIndex..., in: head)
-            guard let match = regex.firstMatch(in: head, range: range), match.numberOfRanges > 1,
-                  let r = Range(match.range(at: 1), in: head) else { continue }
-            let text = Standfirst.extract(from: String(head[r]))
+            var captured: String?
+            for tag in metas {
+                let range = NSRange(tag.startIndex..., in: tag)
+                guard let match = regex.firstMatch(in: tag, range: range), match.numberOfRanges > 1,
+                      let r = Range(match.range(at: 1), in: tag) else { continue }
+                captured = String(tag[r])
+                break
+            }
+            guard let capture = captured else { continue }
+            let text = Standfirst.extract(from: capture)
             // Non-empty is not enough. A page can declare a description that
             // its own CMS has cut off mid-phrase, and rendering that under a
             // headline looks like our fault rather than theirs: Global Times
@@ -257,15 +305,21 @@ struct ImageEnricher: Sendable {
         ]
 
         var found: [URL] = []
+        let metaTags = Self.tags("meta", in: head)
         for pattern in patterns {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
-            let range = NSRange(head.startIndex..., in: head)
-            guard let match = regex.firstMatch(in: head, range: range) else { continue }
+            var match: NSTextCheckingResult?
+            var tag = ""
+            for candidate in metaTags {
+                let range = NSRange(candidate.startIndex..., in: candidate)
+                if let m = regex.firstMatch(in: candidate, range: range) { match = m; tag = candidate; break }
+            }
+            guard let match else { continue }
             // The content/href capture group is whichever group isn't the
             // optional suffix — last group with any value.
             for g in stride(from: match.numberOfRanges - 1, through: 1, by: -1) {
-                guard let r = Range(match.range(at: g), in: head) else { continue }
-                let raw = String(head[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let r = Range(match.range(at: g), in: tag) else { continue }
+                let raw = String(tag[r]).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard raw.isEmpty == false, !raw.hasPrefix(":") else { continue }
                 if let resolved = Self.absoluteWebURL(raw, relativeTo: url) {
                     if !found.contains(resolved) { found.append(resolved) }
