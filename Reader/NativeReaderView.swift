@@ -483,26 +483,56 @@ private struct InlineSVG<Caption: View>: View {
     @State private var image: NSImage?
     @State private var refused = false
 
-    /// The same ceiling the walker applies, restated because this is the far
-    /// side of a stored boundary.
+    /// The same ceiling the walker applies, restated because the walker is
+    /// JavaScript in a bundled resource and this is Swift: a ceiling enforced
+    /// in only one of them is one edit away from being gone.
     private static var maxSource: Int { 64 * 1024 }
 
+    /// The width this will be drawn at, and the height its own aspect ratio
+    /// asks for. Used for the placeholder so the column does not jump as
+    /// diagrams arrive.
+    private var drawnSize: CGSize {
+        let w = min(NativeReaderView.Style.column,
+                    CGFloat(block.width ?? Double(NativeReaderView.Style.column)))
+        guard let bw = block.width, let bh = block.height, bw > 0, bh > 0 else {
+            return CGSize(width: w, height: w * 0.6)
+        }
+        return CGSize(width: w, height: w * CGFloat(bh / bw))
+    }
+
     var body: some View {
-        Group {
+        // **This must never be empty.** It used to be `Group { if let image … }`
+        // with the parse in the `.task` below, which is a deadlock by
+        // construction: SwiftUI does not run a `.task` attached to a view that
+        // renders as `EmptyView`, so the image was never parsed, so the view
+        // was never non-empty. Inline SVG therefore never drew at all, silently
+        // and without a log line, from the day it was written until 2026-09-11.
+        //
+        // Proven rather than reasoned: a five-line SwiftUI app with two cases,
+        // one `Group` empty until state arrives and one holding a `Color.clear`,
+        // ran the task on the second and not the first.
+        //
+        // The placeholder also reserves the right height, so the column does
+        // not jump as each diagram arrives.
+        VStack(alignment: .leading, spacing: 10) {
             if let image {
-                VStack(alignment: .leading, spacing: 10) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        // Never upscale past its own size, the same rule the
-                        // masonry uses: a small mark drawn large is a blur.
-                        .frame(maxWidth: min(NativeReaderView.Style.column,
-                                             CGFloat(block.width ?? Double(NativeReaderView.Style.column))))
-                    if let runs = block.caption, !runs.isEmpty { caption(runs) }
-                }
-                .padding(.vertical, NativeReaderView.Style.mediaGap)
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    // Never upscale past its own size, the same rule the
+                    // masonry uses: a small mark drawn large is a blur.
+                    .frame(maxWidth: drawnSize.width)
+                if let runs = block.caption, !runs.isEmpty { caption(runs) }
+            } else if refused {
+                // Nothing: a refused diagram is not worth a notice in the
+                // middle of an article, and the reason is in the log.
+                Color.clear.frame(width: 1, height: 1)
+            } else {
+                Color.clear
+                    .frame(width: drawnSize.width, height: drawnSize.height)
             }
         }
+        .padding(.vertical, NativeReaderView.Style.mediaGap)
         .task(id: block.id) {
             guard image == nil, !refused else { return }
             guard let source = block.svg, source.utf8.count <= Self.maxSource else {
@@ -511,9 +541,10 @@ private struct InlineSVG<Caption: View>: View {
                        + " — over the \(Self.maxSource) allowed")
                 return
             }
-            // The walker strips every external reference at capture time, but
-            // editions written before it did are still on disk and still read
-            // every day. Same reason the size ceiling is restated here.
+            // The walker strips every external reference at capture time.
+            // This is the second check, for the same reason the size ceiling
+            // is restated: one rule, two components, and a rule held in only
+            // one half is one edit from being gone.
             if let why = SVGSafety.refusal(for: source) {
                 refused = true
                 jdnLog("reader: refused an inline SVG — \(why)")
@@ -542,6 +573,13 @@ private struct InlineSVG<Caption: View>: View {
                 }
             }
             guard !Task.isCancelled else { return }
+            // A nil parse used to produce nothing at all: no image, no notice,
+            // no log line. That is the failure this app has been bitten by four
+            // times in one day, and it is not repeating here.
+            if parsed == nil {
+                refused = true
+                jdnLog("reader: an inline SVG of \(source.utf8.count) bytes would not parse")
+            }
             image = parsed
         }
     }
