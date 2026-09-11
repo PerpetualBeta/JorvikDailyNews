@@ -45,6 +45,9 @@ final class PDFRenderClient {
     /// rather than hanging on a proxy that will never answer.
     private var stopped = false
 
+    /// The tail of the render chain. See `serialised`.
+    private var renderTail: Task<Void, Never>?
+
     // MARK: - Lifetime
 
     /// The live connection, created on first use.
@@ -80,6 +83,43 @@ final class PDFRenderClient {
         connection = nil
     }
 
+    /// Forgets a helper that stopped, so an explicit retry can start a new one.
+    ///
+    /// **`stopped` used to be write-once.** It was assigned `true` in three
+    /// places and `false` nowhere, and `liveConnection` throws on it — so once
+    /// a deadline fired, Try Again re-downloaded the whole document (up to the
+    /// 256 MB ceiling) and then failed at `open` without reaching XPC at all,
+    /// showing the reader the helper-crashed message for a document that had
+    /// crashed nothing. Escape and reselecting the headline did recover,
+    /// because that built a new client.
+    func reopen() {
+        if stopped { jdnLog("pdf: starting a new helper after the last one stopped") }
+        stopped = false
+        renderTail = nil
+        close()
+    }
+
+    /// Runs `work` after every render already waiting, and makes the next
+    /// caller wait for this one.
+    ///
+    /// **The deadline was measuring queue depth, not the helper.** The helper
+    /// serialises every message on one queue, while the view fires one call
+    /// per visible row and re-keys them on every zoom step, so a document
+    /// whose pages each take a few seconds had later calls timing out for
+    /// time they spent queued — and a timeout invalidates the connection and
+    /// takes the whole document with it. With one call outstanding the
+    /// deadline measures the helper's own work, which is what it is for.
+    private func serialised<T: Sendable>(
+        _ work: @escaping @MainActor () async throws -> T) async throws -> T {
+        let predecessor = renderTail
+        let task = Task { @MainActor () async throws -> T in
+            _ = await predecessor?.value
+            return try await work()
+        }
+        renderTail = Task { @MainActor in _ = try? await task.value }
+        return try await task.value
+    }
+
     /// How long a call may wait before the helper is treated as gone.
     ///
     /// **A reply block that never fires resumes nothing.** The error handler on
@@ -107,6 +147,11 @@ final class PDFRenderClient {
             group.addTask { try await work() }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(seconds * Double(NSEC_PER_SEC)))
+                // `group.cancelAll()` runs only after `group.next()` returns,
+                // so a timeout child that has already woken could otherwise
+                // mark a healthy connection stopped and have the group throw
+                // its error away.
+                try Task.checkCancellation()
                 await MainActor.run { [weak self] in
                     jdnLog("pdf: the helper did not answer within \(Int(seconds))s — giving up on it")
                     self?.stopped = true
@@ -156,8 +201,17 @@ final class PDFRenderClient {
             }
             p.open(handle: handle) { count, sizes, failure in
                 if let failure { once(.failure(Failure.rejected(failure))) }
-                else { once(.success(Document(pageCount: count,
-                                              sizes: PDFPageSizes.unflatten(sizes)))) }
+                else {
+                    // The helper refuses a document past this, so a count over
+                    // it means the helper is not the one this app shipped.
+                    // `ForEach(0..<pageCount)` builds a row per page.
+                    let pages = min(count, PDFPageSizes.maxPages)
+                    if pages != count {
+                        jdnLog("pdf: the helper reported \(count) pages — clamped to \(pages)")
+                    }
+                    once(.success(Document(pageCount: pages,
+                                           sizes: PDFPageSizes.unflatten(sizes))))
+                }
             }
         }
         }
@@ -165,8 +219,9 @@ final class PDFRenderClient {
 
     /// One page as an image, at `width` points and the given scale.
     func render(page: Int, width: CGFloat, scale: CGFloat) async throws -> NSImage {
-        let c = try liveConnection()
-        let png: Data = try await withDeadline(Self.renderDeadline) {
+        let png: Data = try await serialised {
+        let c = try self.liveConnection()
+        return try await self.withDeadline(Self.renderDeadline) {
         try await withCheckedThrowingContinuation { k in
             var answered = false
             func once(_ r: Result<Data, Error>) {
@@ -185,6 +240,7 @@ final class PDFRenderClient {
                 if let png { once(.success(png)) }
                 else { once(.failure(Failure.rejected(failure ?? "page would not render"))) }
             }
+        }
         }
         }
         // **`NSImage(data:)` sniffs, and `NSImage.imageTypes` includes

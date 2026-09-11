@@ -100,6 +100,10 @@ final class IsolatedPDFModel {
     /// Downloads, hands over, and reports what the helper found.
     func load(_ url: URL) async {
         state = .starting
+        // An explicit retry gets a new helper. Without this, a client whose
+        // deadline had fired stayed stopped for good and Try Again
+        // re-downloaded the whole document only to fail before reaching XPC.
+        client.reopen()
         do {
             let data = try await PDFDownload.fetch(url) { [weak self] got, total in
                 Task { @MainActor in
@@ -313,7 +317,10 @@ struct IsolatedPDFPages: View {
     private func pageHeight(_ index: Int, width: CGFloat) -> CGFloat {
         guard index < model.sizes.count else { return width * 1.414 }
         let size = model.sizes[index]
-        guard size.width > 0, size.height > 0 else { return width * 1.414 }
+        // Checked here as well as at both ends of the XPC reply: this is the
+        // value that becomes a frame height, and a `/MediaBox` written with
+        // 400 digits parses to a finite 1e75 — about 7e119 at a 700 pt pane.
+        guard PDFPageSizes.isUsable(size) else { return width * 1.414 }
         return width * (size.height / size.width)
     }
 }

@@ -31,7 +31,6 @@ final class PDFRenderService: NSObject, PDFRenderServiceProtocol, @unchecked Sen
     /// Rendering ceilings, so a malformed page cannot ask for an unbounded
     /// allocation. A page declaring 200,000 points square is a hostile page,
     /// not a poster.
-    private static let maxPages = 5_000
     private static let maxRenderSide: CGFloat = 10_000
     private static let maxRenderPixels: CGFloat = 40_000_000
 
@@ -64,17 +63,31 @@ final class PDFRenderService: NSObject, PDFRenderServiceProtocol, @unchecked Sen
             // doubles per page, so a small file declaring an enormous page tree
             // is a concrete amplification at both ends. No real article PDF is
             // near this; the largest opened during development was 154 pages.
-            guard doc.pageCount <= Self.maxPages else {
+            guard doc.pageCount <= PDFPageSizes.maxPages else {
                 reply(0, [], "this PDF declares \(doc.pageCount) pages, more than the "
-                           + "\(Self.maxPages) this reader will open")
+                           + "\(PDFPageSizes.maxPages) this reader will open")
                 return
             }
             // Flat: width, height, width, height… See the protocol for why
             // this is not [NSValue].
             var boxes: [CGSize] = []
             boxes.reserveCapacity(doc.pageCount)
+            var absurd = 0
             for i in 0..<doc.pageCount {
-                boxes.append(doc.page(at: i)?.bounds(for: .cropBox).size ?? .zero)
+                let size = doc.page(at: i)?.bounds(for: .cropBox).size ?? .zero
+                // A `/MediaBox` height of about 400 digits parses, and this
+                // returns a finite 1e75 for it. Sent as-is it became a frame
+                // height of roughly 7e119 in the app. `.zero` is the value the
+                // app already treats as "no size given".
+                if PDFPageSizes.isUsable(size) {
+                    boxes.append(size)
+                } else {
+                    boxes.append(.zero)
+                    absurd += 1
+                }
+            }
+            if absurd > 0 {
+                NSLog("pdf helper: %d page(s) declare a size no layout can use", absurd)
             }
             let sizes = PDFPageSizes.flatten(boxes)
             reply(doc.pageCount, sizes, nil)

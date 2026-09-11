@@ -53,15 +53,51 @@ import Foundation
 /// The page-size wire format, kept next to the protocol that defines it so the
 /// two ends cannot drift.
 public enum PDFPageSizes {
+    /// Most pages a document may declare.
+    ///
+    /// `open` walks every page's crop box before replying and the reply is two
+    /// doubles per page, so a small file declaring an enormous page tree is an
+    /// amplification at both ends. The largest opened during development was
+    /// 154 pages. Here rather than in the helper because the client checks the
+    /// same number on the way back in.
+    public static let maxPages = 5_000
+
+    /// Largest side a page may declare, in points.
+    ///
+    /// PDF's own maximum page is 14,400 points — 200 inches — so this is
+    /// comfortably above anything a real document carries. It exists because
+    /// a `/MediaBox` height written with about 400 digits parses, and
+    /// `bounds(for: .cropBox).size` then returns a finite 1e75. At a 700 pt
+    /// pane that is about 7e119 as a frame height inside a `LazyVStack`.
+    /// (1e305 is not valid PDF real syntax: `PDFDocument(url:)` returns nil,
+    /// so a non-finite size is not reachable this way. Tested for anyway,
+    /// because both ends of this check exist to not trust the other one.)
+    public static let maxPageSide: Double = 20_000
+
+    /// Whether a declared page size is one a layout can be asked for.
+    public static func isUsable(_ size: CGSize) -> Bool {
+        let w = Double(size.width), h = Double(size.height)
+        return w.isFinite && h.isFinite && w > 0 && h > 0
+            && w <= maxPageSide && h <= maxPageSide
+    }
+
     /// Rebuilds page sizes from the flat width, height, width, height… list.
     ///
     /// A short or odd-length list yields the pairs it can and drops the
     /// remainder. A missing size costs a placeholder of the wrong height and
     /// nothing worse, which is a better failure than refusing the document.
+    ///
+    /// **A size that is not usable becomes `.zero`, which is the same "no
+    /// size" the caller already handles.** The PNG half of the helper's reply
+    /// is checked carefully on arrival and commented at length; the geometry
+    /// half was passed straight to the model and into a frame. Checked at both
+    /// ends: the helper will not send one, and a compromised helper cannot
+    /// make the client draw one.
     public static func unflatten(_ flat: [Double]) -> [CGSize] {
         guard flat.count >= 2 else { return [] }
         return stride(from: 0, to: flat.count - 1, by: 2).map {
-            CGSize(width: flat[$0], height: flat[$0 + 1])
+            let size = CGSize(width: flat[$0], height: flat[$0 + 1])
+            return isUsable(size) ? size : .zero
         }
     }
 
