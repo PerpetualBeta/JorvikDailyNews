@@ -31,6 +31,38 @@ enum FeedBoundsTests {
     }
 
     static func run() {
+        T.suite("Bounds: the entity guard cannot be walked past") {
+            func bomb(prolog: String = "", encoding: String.Encoding = .utf8) -> Data {
+                let xml = "<?xml version=\"1.0\"?>\n" + prolog
+                       + "<!DOCTYPE rss [<!ENTITY a \"" + String(repeating: "x", count: 4000) + "\">]>"
+                       + "<rss><channel><title>&a;</title></channel></rss>"
+                return xml.data(using: encoding) ?? Data()
+            }
+            // The shape that used to work: a comment long enough to push the
+            // declaration past the old 256 KB window. XML's prolog allows
+            // comments of any length before the DOCTYPE.
+            let padding = "<!--" + String(repeating: "p", count: 300 * 1024) + "-->\n"
+            func refused(_ data: Data) -> Bool {
+                do { _ = try FeedFetcher.parse(data, from: feed); return false }
+                catch { return true }
+            }
+            T.expect(refused(bomb(prolog: padding)),
+                     "a 300 KB comment before the DOCTYPE no longer hides it")
+            T.expect(refused(bomb()), "and the plain case still refuses")
+            // The other shape: the same document in UTF-16, where the ASCII
+            // marker matched nothing while XMLParser decoded it happily.
+            for encoding in [String.Encoding.utf16LittleEndian, .utf16BigEndian, .utf16] {
+                T.expect(refused(bomb(encoding: encoding)), "refused in \(encoding)")
+            }
+            T.expect(refused(bomb(prolog: padding, encoding: .utf16)), "and both together")
+            // An ordinary feed must still pass, in either encoding.
+            let plain = "<?xml version=\"1.0\"?><rss><channel><title>Ordinary</title></channel></rss>"
+            for encoding in [String.Encoding.utf8, .utf16LittleEndian, .utf16BigEndian] {
+                T.expect(!refused(plain.data(using: encoding) ?? Data()),
+                         "an ordinary feed passes in \(encoding)")
+            }
+        }
+
         T.suite("Bounds: an entity bomb is refused before parsing") {
             // 1 MB entity, 100,000 references, from a 1.5 MB file. Measured at
             // 61.69s before this guard and 0.00s after. Scaled down here so

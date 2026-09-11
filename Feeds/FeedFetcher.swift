@@ -120,12 +120,59 @@ final class FeedFetcher: Sendable {
     /// `maxEntityValue + 1` bytes for its partner. Not finding one means the
     /// value is longer than that, which is all it needs to know, and the
     /// scan therefore costs the same on a bomb as on a real feed.
+    /// The body as UTF-8 bytes, transcoding when it is not.
+    ///
+    /// **A UTF-16 feed spelled `<!ENTITY` as `3C 00 21 00 …` and matched
+    /// nothing**, while `XMLParser(data:)` decoded it perfectly well and parsed
+    /// the bomb. A byte scan for an ASCII marker is only a scan of documents
+    /// that happen to be ASCII-compatible, and nothing had said so.
+    ///
+    /// Only the scan is transcoded. `XMLParser` still receives the original
+    /// bytes and does its own encoding detection, so nothing about parsing
+    /// changes. UTF-16 feeds are rare, so the cost is paid almost never.
+    private static func utf8Bytes(of data: Data) -> Data {
+        guard data.count >= 2 else { return data }
+        let b = [UInt8](data.prefix(2))
+        let encoding: String.Encoding?
+        switch (b[0], b[1]) {
+        case (0xFF, 0xFE): encoding = .utf16LittleEndian
+        case (0xFE, 0xFF): encoding = .utf16BigEndian
+        default:
+            // No BOM. A UTF-16 document without one still starts with a NUL in
+            // one of the first two bytes of `<?xml` or `<rss`, which UTF-8
+            // never does.
+            if b[0] == 0x00 { encoding = .utf16BigEndian }
+            else if b[1] == 0x00 { encoding = .utf16LittleEndian }
+            else { return data }
+        }
+        guard let encoding,
+              let text = String(data: data, encoding: encoding),
+              let utf8 = text.data(using: .utf8)
+        else {
+            // Undecodable as the encoding its own bytes advertise. Returning the
+            // original means the scan sees something it cannot match, so the
+            // safe answer is to let the caller refuse the feed instead.
+            return data
+        }
+        return utf8
+    }
+
     private static func entityAmplification(in data: Data) -> String? {
         let marker = Array("<!ENTITY".utf8)
-        // An internal DTD can only be in the prolog. This is far more than any
-        // legitimate one needs and bounds the scan on a large feed.
-        let window = min(data.count, 256 * 1024)
-        let bytes = [UInt8](data.prefix(window))
+        // **The whole document, not a prefix.** This used to scan the first
+        // 256 KB, justified by "an internal DTD can only be in the prolog".
+        // That is true and it is not a bound: XML's prolog is
+        // `XMLDecl Misc* doctypedecl Misc*`, and `Misc` is comments and
+        // processing instructions of ANY length. A 300 KB comment before the
+        // `<!DOCTYPE` pushed the declaration past the window, the guard
+        // returned nil, and libxml2 then rescanned the entity value at every
+        // reference. The text ceilings cannot catch it, for the reason this
+        // file already explains: with a 1 MB value and 100,000 references only
+        // 18 bytes reach `foundCharacters`.
+        //
+        // The scan is linear with a bounded look-ahead, so the window bought
+        // nothing but the hole.
+        let bytes = [UInt8](utf8Bytes(of: data))
         guard bytes.count > marker.count else { return nil }
 
         var found = 0
@@ -151,8 +198,7 @@ final class FeedFetcher: Sendable {
             var k = valueStart
             while k < searchEnd, bytes[k] != quote { k += 1 }
             if k >= searchEnd {
-                let over = window == data.count ? "\(k - valueStart)" : "at least \(k - valueStart)"
-                return "an internal entity of \(over) bytes, "
+                return "an internal entity of at least \(k - valueStart) bytes, "
                      + "over the \(maxEntityValue) allowed"
             }
             i = k + 1
