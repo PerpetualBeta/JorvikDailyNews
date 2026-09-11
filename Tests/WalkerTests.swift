@@ -366,6 +366,33 @@ enum WalkerTests {
             T.equal((comment[0]["items"] as? [[String: Any]] ?? []).count, 1, "and it is one item")
         }
 
+        T.suite("Walker: classifying a figure or a list never loses one") {
+            // Both classifiers give up after a node budget, and they have to
+            // give up in opposite directions. For a figure, "container" costs
+            // only the caption pairing. For a list it costs the list itself:
+            // 2,000 nodes is about 1,000 <li> that each wrap a <span>, so an
+            // ordinary changelog or index lost every bullet and every number
+            // and read as undifferentiated prose, with nothing hostile
+            // involved.
+            let wrapped = "<ul>" + String(repeating: "<li><span>q</span></li>", count: 1200) + "</ul>"
+            let out = walk(wrapped)
+            T.equal(kinds(out), ["list"], "a long list of wrapped items is still a list")
+            T.equal((out.first?["items"] as? [[String: Any]] ?? []).count, 1200, "with all its items")
+
+            // A gallery is picture furniture, not prose. Routed to the
+            // container path, `collectItems` calls only `runsOf`, which has no
+            // IMG case, so every picture was discarded without even a drop().
+            let gallery = "<figure><ul><li><img src=\"https://e.com/1.jpg\"></li>"
+                + "<li><img src=\"https://e.com/2.jpg\"></li></ul><figcaption>Cap</figcaption></figure>"
+            T.equal(kinds(walk(gallery)), ["image"], "a gallery figure still yields its picture")
+
+            // And a heading in a figure is a chart title, not an article, so
+            // the caption stays paired with the picture.
+            let chart = "<figure><h2>Chart 1</h2><img src=\"https://e.com/c.png\">"
+                + "<figcaption>C</figcaption></figure>"
+            T.equal(kinds(walk(chart)), ["image"], "a chart figure keeps its pairing")
+        }
+
         T.suite("Walker: block contents have a ceiling too") {
             // The count ceiling above says nothing about what is inside one
             // block, and one <pre> holding megabytes on one line is one
@@ -396,9 +423,15 @@ enum WalkerTests {
 
             // And count is bounded separately, because 30,000 single-character
             // items are well under the character budget and still 30,000 views.
+            // Assert the block is a list BEFORE counting its items. This
+            // assertion used to pass vacuously: 2,500 items tripped the
+            // classifier's node limit, the list was redrawn as 2,500
+            // paragraphs, `items` was nil, and `[].count <= 2000` was true.
             let many = "<ul>" + String(repeating: "<li>q</li>", count: 2500) + "</ul>"
-            T.expect((walk(many).first?["items"] as? [[String: Any]] ?? []).count <= 2000,
-                     "the item count has its own ceiling")
+            let manyOut = walk(many)
+            T.equal(kinds(manyOut), ["list"], "2,500 items is still one list")
+            T.equal((manyOut.first?["items"] as? [[String: Any]] ?? []).count, 2000,
+                    "cut to the item ceiling, not silently re-shaped")
 
             let cells = String(repeating: "<td>\(bulk)</td>", count: 20)
             let table = "<table>" + String(repeating: "<tr>\(cells)</tr>", count: 200) + "</table>"

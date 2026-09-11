@@ -423,7 +423,13 @@
       var seen = 0;
       while (stack.length) {
         var n = stack.pop();
-        if (++seen > FIGURE_SCAN_LIMIT) return true;
+        // **A list too big to classify is still a list.** The opposite answer
+        // is right for a figure, where walking as a container costs only the
+        // caption pairing; here it costs the list. `seen` counts every node,
+        // so 2,000 bare `<li>` — or 1,000 that each wrap a `<span>` — tripped
+        // it with nothing hostile involved, and every bullet and number went,
+        // leaving a changelog or an index reading as undifferentiated prose.
+        if (++seen > LIST_SCAN_LIMIT) return false;
         if (n.nodeType !== 1) continue;
         var tag = n.tagName.toUpperCase();
         if (HEADING[tag]) return true;
@@ -487,9 +493,13 @@
     /// paragraphs and a "Credit:" line, each of them twice over. A paragraph
     /// inside a figure is picture furniture. A list, a table, a heading or a
     /// section is not.
+    /// Headings are not in the set either, for the same reason. A figure of
+    /// `<h2>Chart 1</h2><img><figcaption>` is a chart, and counting the
+    /// heading as prose unpaired the caption from the picture. The shapes that
+    /// really do carry an article all bring a container with them.
     var FIGURE_PROSE = {
       OL: 1, UL: 1, DL: 1, TABLE: 1, BLOCKQUOTE: 1, PRE: 1,
-      SECTION: 1, ARTICLE: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1
+      SECTION: 1, ARTICLE: 1
     };
 
     /// Most nodes looked at before a `<figure>` is called a container anyway.
@@ -500,6 +510,11 @@
     /// hand a page a way to hide its own prose behind a few thousand empty
     /// spans.
     var FIGURE_SCAN_LIMIT = 2000;
+
+    /// The same for a list, and far higher, because exhausting it answers
+    /// "ordinary list" rather than "container": a long reference list is a
+    /// real shape, and the cost of scanning one is linear and paid once.
+    var LIST_SCAN_LIMIT = 200000;
 
     /// Whether this `<figure>` carries prose of its own, outside its caption.
     ///
@@ -516,10 +531,27 @@
         var tag = n.tagName.toUpperCase();
         // Its contents are the caption, and a caption may be a <p>.
         if (tag === 'FIGCAPTION') continue;
+        // A gallery is picture furniture too. `<figure><ul><li><img>` is what
+        // several CMSs emit, and routing it to the container path lost the
+        // pictures outright: `collectItems` only ever calls `runsOf`, which
+        // has no IMG case, so every `<img>` inside an `<li>` contributed
+        // nothing and was discarded without even a `drop()`.
+        if ((tag === 'UL' || tag === 'OL') && isPictureList(n)) continue;
         if (FIGURE_PROSE[tag]) return true;
         for (var k = n.firstChild; k; k = k.nextSibling) stack.push(k);
       }
       return false;
+    }
+
+    /// A list whose items are pictures and nothing else worth reading.
+    function isPictureList(node) {
+      var images = node.getElementsByTagName('img').length
+                 + node.getElementsByTagName('picture').length;
+      if (!images) return false;
+      for (var t in HEADING) {
+        if (node.getElementsByTagName(t.toLowerCase()).length) return false;
+      }
+      return !/\S/.test(node.textContent || '');
     }
 
     /// A `<figure>`: a picture with a caption, or, sometimes, a whole article.
