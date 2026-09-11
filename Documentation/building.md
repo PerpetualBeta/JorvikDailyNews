@@ -16,7 +16,7 @@ gmake test         # the suite; size and rationale below
 
 `gmake build` compiles with `swiftc -O` and ad-hoc-signs for local use. JorvikKit files are compiled in from `JorvikKit/`. Release builds are Developer ID signed and notarized.
 
-`gmake test` runs the suite: **516 checks across 135 suites**. Not XCTest and not `swift test` — this app is one `swiftc` binary with no Xcode project and no `Package.swift`, so `Tests/` is an ordinary executable that asserts and exits non-zero, which is all a human or a CI runner needs. It compiles the model layer plus the harness; the views are excluded because nothing in them is testable without a screen.
+`gmake test` runs the suite: **519 checks across 136 suites**. Not XCTest and not `swift test` — this app is one `swiftc` binary with no Xcode project and no `Package.swift`, so `Tests/` is an ordinary executable that asserts and exits non-zero, which is all a human or a CI runner needs. It compiles the model layer plus the harness; the views are excluded because nothing in them is testable without a screen.
 
 It covers the parts that fail silently: feed parsing from bytes, the block walker (run as the real `Resources/ReaderBlocks.js` through `JavaScriptCore`, so what is tested is the file that ships), URL and scheme handling, `mailto:` decomposition, the edition builder, entity decoding, standfirst extraction, picture fingerprinting and the day rollover. Every one of those suites exists because something in it was wrong: **the first run of the test target found a bug** — the edition builder deduped before it sorted, so which of two syndicated copies of a story reached the page was decided by the completion order of 16 concurrent fetches.
 

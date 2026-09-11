@@ -295,7 +295,11 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
     /// Compiled once per machine and then found on disk, so this costs nothing
     /// after the first article. Returns nil if compilation fails, in which case
     /// extraction proceeds as before rather than not at all.
-    private static func subresourceBlocker() async -> WKContentRuleList? {
+    /// Shared with the reader's own pane, which renders extracted HTML with a
+    /// base URL and therefore invites WebKit to fetch every subresource the
+    /// article names — outside `WebURL`, outside `BoundedFetch` and outside the
+    /// image ceiling. Same list, same reason.
+    static func subresourceBlocker() async -> WKContentRuleList? {
         guard let store = WKContentRuleListStore.default() else {
             jdnLog("extractor: no content rule store — subresources will be fetched")
             return nil
@@ -696,8 +700,17 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         // The scheme-handler and file rungs changed `document.baseURI`, so the
         // `<base href>` injected above is what puts relative links back on the
         // real site. Readability reads `baseURI` and nothing else.
-        let script = readabilityScript
-            + "\n;JSON.stringify(new Readability(document.cloneNode(true)).parse());"
+        // The same guard as rung 1. Without it these rungs are the way round
+        // it, and they have no timeout at all — `evaluateJavaScript` waits as
+        // long as the script takes, in a content process that is not retired
+        // until it returns.
+        let script = readabilityScript + "\n" + NativeReader.readabilityGuard
+            + "\n;(function () {"
+            + "  var doc = document.cloneNode(true);"
+            + "  if (__jdnTooDeep(doc)) { return JSON.stringify({ tooDeep: true }); }"
+            + "  return JSON.stringify(new Readability(doc, "
+            + "    { maxElemsToParse: globalThis.__jdnMaxElements }).parse());"
+            + "})();"
         let result = try? await view.evaluateJavaScript(script)
         retire(view)
         return interpret(result as? String, label: label, minimumLength: minimumLength)
@@ -1451,7 +1464,15 @@ final class NativeReader: @unchecked Sendable {
     /// does not — `<div>` nested 5,000 deep parses and serialises identically
     /// on a dispatch queue and on an 8 MB thread. Real articles are two orders
     /// of magnitude shallower, so the extra machinery bought nothing.
-    private let queue = DispatchQueue(label: "cc.jorviksoftware.JorvikDailyNews.nativereader")
+    /// One queue per extraction, not one shared serial queue.
+    ///
+    /// A run that exceeds the budget is abandoned but not stopped — nothing in
+    /// the public JavaScriptCore API can stop a running script — so on a shared
+    /// serial queue every later article queued behind it, timed out in turn,
+    /// and degraded to the WebKit rungs. One hostile page could therefore spoil
+    /// every article opened after it until the run finished.
+    private let queue = DispatchQueue(
+        label: "cc.jorviksoftware.JorvikDailyNews.nativereader.\(UUID().uuidString)")
 
     /// How long the reader waits for JavaScriptCore before moving on.
     ///
@@ -1523,6 +1544,7 @@ final class NativeReader: @unchecked Sendable {
         if let walker = Self.bundledScript("ReaderBlocks") {
             context.evaluateScript(walker, withSourceURL: URL(string: "jdn:ReaderBlocks.js"))
         }
+        context.evaluateScript(Self.readabilityGuard, withSourceURL: URL(string: "jdn:guard.js"))
         context.evaluateScript(Self.glue, withSourceURL: URL(string: "jdn:glue.js"))
         if let first = thrown.first {
             jdnLog("nativereader: setup failed — \(first)")
@@ -1649,6 +1671,41 @@ final class NativeReader: @unchecked Sendable {
         """)
     }
 
+    /// Refuses a document that would make Readability quadratic, and the limits
+    /// it applies.
+    ///
+    /// `_cleanConditionally` calls `_getInnerText` once per candidate div, so
+    /// the cost is depth x text. Measured with the bundled files over roughly
+    /// 209 KB of prose: depth 200 took 0.99s, depth 500 took 6.01s, depth 1000
+    /// took 24.97s. Nothing in the public JavaScriptCore API can stop a running
+    /// script, so the 8-second budget abandons the work without ending it —
+    /// which is why this refuses BEFORE Readability is constructed rather than
+    /// timing it out afterwards.
+    ///
+    /// Depth rather than element count is the measure that matters: the
+    /// measured document is small and shallow in every other respect.
+    /// `maxElemsToParse` is passed as well, because Mozilla ships the option
+    /// for exactly this and it costs nothing.
+    static let readabilityGuard = """
+    globalThis.__jdnMaxDepth = 200;
+    globalThis.__jdnMaxElements = 60000;
+    globalThis.__jdnTooDeep = function (doc) {
+      var deepest = 0, elements = 0;
+      var walk = function (node, depth) {
+        if (depth > deepest) { deepest = depth; }
+        if (deepest > globalThis.__jdnMaxDepth) { return true; }
+        var kids = node.children || [];
+        for (var i = 0; i < kids.length; i++) {
+          elements += 1;
+          if (elements > globalThis.__jdnMaxElements) { return true; }
+          if (walk(kids[i], depth + 1)) { return true; }
+        }
+        return false;
+      };
+      try { return walk(doc.documentElement || doc, 0); } catch (e) { return true; }
+    };
+    """
+
     /// `documentURI` as well as `baseURI`, because Readability compares the
     /// two: when they match it treats `#fragment` links as same-page and leaves
     /// them alone, which is what a real browser does and what the WebKit rungs
@@ -1662,7 +1719,8 @@ final class NativeReader: @unchecked Sendable {
       // have opened. See `repairHeadBody`.
       var repaired = 0;
       try { if (globalThis.__jdnRepairTree) repaired = __jdnRepairTree(doc); } catch (e) {}
-      var article = new Readability(doc).parse();
+      if (__jdnTooDeep(doc)) { return JSON.stringify({ tooDeep: true }); }
+      var article = new Readability(doc, { maxElemsToParse: globalThis.__jdnMaxElements }).parse();
       if (!article) return null;
       article.repairedNodes = repaired;
       // Blocks are produced in the same pass, from the same DOM, so the

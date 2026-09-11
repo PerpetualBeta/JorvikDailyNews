@@ -280,6 +280,22 @@ enum WalkerTests {
             T.expect(plain.hasPrefix("<svg"), "and the result is still an svg element")
         }
 
+        T.suite("Walker: the block count has a ceiling") {
+            // Every block carrying a link becomes an NSTextView whose layout is
+            // forced synchronously, so an unbounded count is a force-quit a
+            // page can choose. 40,000 short linked paragraphs walk from 3.66 MB
+            // of HTML in under seven seconds — inside the watchdog, so they are
+            // returned rather than abandoned.
+            let many = String(repeating: "<p><a href=\"https://e.com/\">x</a></p>", count: 4200)
+            let out = walk(many)
+            T.expect(out.count <= 4000, "truncated to the ceiling, got \(out.count)")
+            T.expect(out.count > 3900, "and not to something much smaller")
+            // An ordinary article is untouched. The longest this pipeline has
+            // produced from a live page is 563.
+            let ordinary = String(repeating: "<p>Some ordinary prose here.</p>", count: 600)
+            T.equal(walk(ordinary).count, 600, "600 blocks pass through whole")
+        }
+
         T.suite("Walker: nothing to walk") {
             T.expect(walk("").isEmpty, "empty input, no blocks")
             T.expect(walk("<div></div>").isEmpty, "an empty container yields nothing")

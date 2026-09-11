@@ -138,6 +138,10 @@
   /// Longest SVG source that will be drawn, in characters.
   var MAX_SVG_SOURCE = 64 * 1024;
 
+  /// Most blocks one article may produce. See the truncation at the end of
+  /// this file.
+  var MAX_BLOCKS = 4000;
+
   // ── SVG sanitising ────────────────────────────────────────────────────────
   //
   // An inline SVG is drawn by `NSImage(data:)`, which yields AppKit's private
@@ -449,6 +453,19 @@
     }
 
     walk(root);
+    // A ceiling on the block count, for the same reason there is one on SVG
+    // source: the work is proportional to a number the page chooses. Each
+    // block carrying a link becomes an NSTextView whose layout is forced
+    // synchronously, and a page of 40,000 short linked paragraphs — 3.66 MB,
+    // well inside the fetch ceiling — walks in under seven seconds and then
+    // asks the reader to lay all of them out in one pass.
+    //
+    // 4,000 is far above any real article: the longest this pipeline has
+    // produced from a live page is 563.
+    if (blocks.length > MAX_BLOCKS) {
+      dropped['over-block-limit'] = blocks.length - MAX_BLOCKS;
+      blocks = blocks.slice(0, MAX_BLOCKS);
+    }
     return JSON.stringify({ blocks: blocks, dropped: dropped });
   };
 })();

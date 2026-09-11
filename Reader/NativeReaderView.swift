@@ -113,7 +113,12 @@ struct NativeReaderView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            // Lazy, so the cost of drawing is proportional to what is on
+            // screen rather than to a number the page chose. Every block
+            // carrying a link becomes an NSTextView whose layout is forced
+            // synchronously in `sizeThatFits`, and a plain VStack materialised
+            // all of them in one main-thread pass.
+            LazyVStack(alignment: .leading, spacing: 0) {
                 header
                 if let lede {
                     // Above the first block, below the headline, which is where

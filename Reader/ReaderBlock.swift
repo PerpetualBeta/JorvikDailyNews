@@ -121,8 +121,16 @@ extension ReaderBlock.Run {
 
 extension Array where Element == ReaderBlock {
     /// Number each block once, after decoding, so `id` is stable and unique.
+    /// The same ceiling the walker applies, restated because the walker is
+    /// JavaScript in a bundled resource and this is Swift. A rule enforced in
+    /// only one half is one edit away from being gone.
+    static var maxBlocks: Int { 4000 }
+
     func numbered() -> [ReaderBlock] {
-        enumerated().map { index, block in
+        if count > Self.maxBlocks {
+            jdnLog("reader: \(count) blocks is over the \(Self.maxBlocks) allowed — truncated")
+        }
+        return prefix(Self.maxBlocks).enumerated().map { index, block in
             var copy = block
             copy.position = index
             return copy

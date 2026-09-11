@@ -748,7 +748,24 @@ struct ReaderWebView: NSViewRepresentable {
             // otherwise resolve relative links against that.
             let document = baseURL.map { ArticleExtractor.withBaseHref(html, $0) } ?? html
             handler.document = document
-            web.loadHTMLString(html, baseURL: baseURL)
+            // **The rule list goes on before the load, not after.** This pane
+            // renders the article's own HTML with its own base URL, so WebKit
+            // resolves and fetches every `<img>`, stylesheet, font and media
+            // element the article names — outside WebURL, outside BoundedFetch
+            // and outside the image ceiling. The navigation delegate does not
+            // see any of it, because a subresource is not a navigation.
+            //
+            // The extractor has always given its own views this list for
+            // exactly this reason. This pane never got one.
+            Task { @MainActor [weak web] in
+                if let list = await ArticleExtractor.subresourceBlocker() {
+                    web?.configuration.userContentController.add(list)
+                } else {
+                    jdnLog("reader: no subresource blocklist — the pane will fetch what the article names")
+                }
+                guard let web else { return }
+                web.loadHTMLString(html, baseURL: baseURL)
+            }
             check = Task { @MainActor [weak web] in
                 let probe = "document.documentElement.outerHTML.length"
                 // A `WKWebView` starts out holding about 39 characters of empty
