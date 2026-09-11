@@ -80,6 +80,43 @@ final class PDFRenderClient {
         connection = nil
     }
 
+    /// How long a call may wait before the helper is treated as gone.
+    ///
+    /// **A reply block that never fires resumes nothing.** The error handler on
+    /// `remoteObjectProxyWithErrorHandler` covers a connection that fails; it
+    /// does not cover a helper that is alive and silent, which is exactly what
+    /// a document engineered to keep PDFKit busy produces. Without a deadline
+    /// the continuation is never resumed and the pane waits for ever.
+    ///
+    /// Opening walks every page's crop box before replying, so it is allowed
+    /// longer than a single render.
+    static let openDeadline: TimeInterval = 30
+    static let renderDeadline: TimeInterval = 15
+
+    /// Runs `work`, or gives up after `seconds` and treats the helper as gone.
+    ///
+    /// Invalidating on timeout matters: a helper left spinning would otherwise
+    /// outlive the sheet, and `ServiceType Application` gives one helper per
+    /// application rather than one per connection.
+    private func withDeadline<T: Sendable>(_ seconds: TimeInterval,
+                                           _ work: @escaping () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await work() }
+            group.addTask { [weak self] in
+                try await Task.sleep(nanoseconds: UInt64(seconds * Double(NSEC_PER_SEC)))
+                await MainActor.run {
+                    jdnLog("pdf: the helper did not answer within \(Int(seconds))s — giving up on it")
+                    self?.stopped = true
+                    self?.close()
+                }
+                throw Failure.helperStopped
+            }
+            guard let first = try await group.next() else { throw Failure.helperStopped }
+            group.cancelAll()
+            return first
+        }
+    }
+
     // MARK: - Calls
 
     /// Hands the bytes over and reports what the helper found.
@@ -99,7 +136,8 @@ final class PDFRenderClient {
 
         let c = try liveConnection()
         defer { try? handle.close() }
-        return try await withCheckedThrowingContinuation { k in
+        return try await withDeadline(Self.openDeadline) {
+        try await withCheckedThrowingContinuation { k in
             var answered = false
             func once(_ r: Result<Document, Error>) {
                 guard !answered else { return }
@@ -119,12 +157,14 @@ final class PDFRenderClient {
                                               sizes: PDFPageSizes.unflatten(sizes)))) }
             }
         }
+        }
     }
 
     /// One page as an image, at `width` points and the given scale.
     func render(page: Int, width: CGFloat, scale: CGFloat) async throws -> NSImage {
         let c = try liveConnection()
-        let png: Data = try await withCheckedThrowingContinuation { k in
+        let png: Data = try await withDeadline(Self.renderDeadline) {
+        try await withCheckedThrowingContinuation { k in
             var answered = false
             func once(_ r: Result<Data, Error>) {
                 guard !answered else { return }
@@ -142,6 +182,7 @@ final class PDFRenderClient {
                 if let png { once(.success(png)) }
                 else { once(.failure(Failure.rejected(failure ?? "page would not render"))) }
             }
+        }
         }
         guard let image = NSImage(data: png) else {
             throw Failure.rejected("page \(page) came back unreadable")

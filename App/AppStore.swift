@@ -877,18 +877,44 @@ final class AppStore {
 
     // MARK: - OPML import
 
+    /// Where an OPML file is parsed. Its own queue, not the cooperative pool:
+    /// see the comment at the call site.
+    nonisolated static let opmlQueue = DispatchQueue(
+        label: "cc.jorviksoftware.JorvikDailyNews.opml", qos: .userInitiated)
+
     func importOPML(from url: URL) async {
         guard !isImporting else { return }
         isImporting = true
         lastImportSummary = nil
         defer { isImporting = false }
 
-        guard let data = try? Data(contentsOf: url) else {
-            lastImportSummary = "Couldn\u{2019}t read that file."
+        // Off the main actor, and off the cooperative pool.
+        //
+        // `XMLParser.parse()` is a synchronous, blocking call into libxml2, and
+        // this ran it on the main thread: a hostile file froze the window with
+        // no cancel, for as long as libxml2 took. `Task.detached` would not
+        // help — it runs on the cooperative pool, which is exactly as wide as
+        // the core count — so this is the same `withCheckedContinuation` over a
+        // dedicated queue that `InlineSVG` uses for the same reason.
+        let importer = OPMLImporter()
+        let outcome: Result<[OPMLEntry], Error> = await withCheckedContinuation { continuation in
+            AppStore.opmlQueue.async {
+                do { continuation.resume(returning: .success(try importer.read(contentsOf: url))) }
+                catch { continuation.resume(returning: .failure(error)) }
+            }
+        }
+        let entries: [OPMLEntry]
+        switch outcome {
+        case .success(let read):
+            entries = read
+        case .failure(let error):
+            if let failure = error as? OPMLImporter.Failure {
+                lastImportSummary = "Couldn\u{2019}t import: \(failure.description)."
+            } else {
+                lastImportSummary = "Couldn\u{2019}t read that file."
+            }
             return
         }
-        let importer = OPMLImporter()
-        let entries = importer.parse(data: data)
         guard !entries.isEmpty else {
             lastImportSummary = "No feeds found in that OPML file."
             return

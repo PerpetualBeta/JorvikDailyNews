@@ -170,6 +170,7 @@ stamp: xpc-service
 # here is Foundation-only apart from ImageCache, which EditionBuilder consults
 # to ask whether a picture is known to have failed.
 TEST_SOURCES := Reader/VideoLink.swift \
+                Feeds/OPMLImporter.swift \
                 Support/RedirectGuard.swift \
                 Reader/ReaderLede.swift \
                 Reader/VideoPreflight.swift \
@@ -194,6 +195,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Pictures/ImageCache.swift
 
 TEST_HARNESS := Tests/TestRunner.swift \
+                Tests/OPMLImportTests.swift \
                 Tests/RedirectGuardTests.swift \
                 Tests/ReaderLedeTests.swift \
                 Tests/VideoPreflightTests.swift \

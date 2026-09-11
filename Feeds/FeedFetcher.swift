@@ -157,7 +157,9 @@ final class FeedFetcher: Sendable {
         return utf8
     }
 
-    private static func entityAmplification(in data: Data) -> String? {
+    /// Shared with the OPML importer, which parses an untrusted file with the
+    /// same libxml2 and had none of this. One copy, not two.
+    static func entityAmplification(in data: Data) -> String? {
         let marker = Array("<!ENTITY".utf8)
         // **The whole document, not a prefix.** This used to scan the first
         // 256 KB, justified by "an internal DTD can only be in the prolog".

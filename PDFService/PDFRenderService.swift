@@ -21,6 +21,7 @@ final class PDFRenderService: NSObject, PDFRenderServiceProtocol, @unchecked Sen
     /// Rendering ceilings, so a malformed page cannot ask for an unbounded
     /// allocation. A page declaring 200,000 points square is a hostile page,
     /// not a poster.
+    private static let maxPages = 5_000
     private static let maxRenderSide: CGFloat = 10_000
     private static let maxRenderPixels: CGFloat = 40_000_000
 
@@ -48,6 +49,16 @@ final class PDFRenderService: NSObject, PDFRenderServiceProtocol, @unchecked Sen
                 return
             }
             self.document = doc
+            // **A page count is a number the document chooses.** `open` walks
+            // every page's crop box before replying and the reply is two
+            // doubles per page, so a small file declaring an enormous page tree
+            // is a concrete amplification at both ends. No real article PDF is
+            // near this; the largest opened during development was 154 pages.
+            guard doc.pageCount <= Self.maxPages else {
+                reply(0, [], "this PDF declares \(doc.pageCount) pages, more than the "
+                           + "\(Self.maxPages) this reader will open")
+                return
+            }
             // Flat: width, height, width, height… See the protocol for why
             // this is not [NSValue].
             var boxes: [CGSize] = []
