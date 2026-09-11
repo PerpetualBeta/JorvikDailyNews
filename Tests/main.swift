@@ -28,5 +28,6 @@ EmbeddedArticleTests.run()
 WalkerTests.run()
 ReaderBlockTests.run()
 LegacyIDTests.run()
+BaseHrefTests.run()
 
 exit(T.report())

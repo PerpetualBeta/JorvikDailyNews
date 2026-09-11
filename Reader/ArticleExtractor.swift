@@ -679,7 +679,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                         attributes: [.posixPermissions: 0o700])
                 let file = dir.appendingPathComponent("article.html")
-                try Self.withBaseHref(page.html, page.url).write(to: file, atomically: true, encoding: .utf8)
+                try BaseHref.apply(to: page.html, base: page.url).write(to: file, atomically: true, encoding: .utf8)
                 scratchDir = dir
                 view.loadFileURL(file, allowingReadAccessTo: dir)
             } catch {
@@ -1200,36 +1200,6 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         jdnLog("extract: \(html.count) chars fetched, base \(finalURL.absoluteString)")
         return FetchedPage(badStatus: badStatus, data: data, html: html,
                            response: response, url: finalURL)
-    }
-
-    // MARK: - Base URL rewriting
-
-    /// Put a `<base href>` at the top of the document's head.
-    ///
-    /// Rungs 3 and 4 load the article from a private scheme or from a temporary
-    /// file, so `document.baseURI` is no longer the article's own URL, and
-    /// Readability's `_fixRelativeUris` reads exactly that property when it
-    /// makes links and images absolute. The injected tag puts it back.
-    ///
-    /// It goes *first* in the head because the first `<base href>` in document
-    /// order is the one the parser honours, so a page that ships its own base
-    /// tag cannot override ours.
-    static func withBaseHref(_ html: String, _ url: URL) -> String {
-        let escaped = url.absoluteString
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
-        let tag = "<base href=\"\(escaped)\">"
-        // After `<head>` if there is one, otherwise after `<html>`, otherwise
-        // at the very front. Never before the doctype, which would drop the
-        // parser into quirks mode and change the DOM we are trying to read.
-        for opener in ["<head", "<html"] {
-            guard let start = html.range(of: opener, options: .caseInsensitive) else { continue }
-            guard let close = html.range(of: ">", range: start.upperBound..<html.endIndex) else { continue }
-            var out = html
-            out.insert(contentsOf: tag, at: close.upperBound)
-            return out
-        }
-        return tag + html
     }
 
     deinit {

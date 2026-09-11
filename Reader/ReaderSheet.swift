@@ -774,7 +774,7 @@ struct ReaderWebView: NSViewRepresentable {
             // differently. The `<base href>` matters only to the fallback,
             // whose document is served from the private scheme and would
             // otherwise resolve relative links against that.
-            let document = baseURL.map { ArticleExtractor.withBaseHref(html, $0) } ?? html
+            let document = baseURL.map { BaseHref.apply(to: html, base: $0) } ?? html
             handler.document = document
             // **The rule list goes on before the load, not after.** This pane
             // renders the article's own HTML with its own base URL, so WebKit

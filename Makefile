@@ -47,6 +47,7 @@ STANDFIRST_SOURCES := Standfirsts/Standfirst.swift \
 
 # Reading one article: extraction, block rendering, media, links.
 READER_SOURCES := Reader/ArticleExtractor.swift \
+                  Reader/BaseHref.swift \
                   Reader/IsolatedPDFView.swift \
                   Reader/PDFContentType.swift \
                   Reader/PDFRenderClient.swift \
@@ -186,6 +187,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Pictures/PagePictures.swift \
                 App/DayRollover.swift \
                 Reader/ReaderBlock.swift \
+                Reader/BaseHref.swift \
                 Storage/ReadStore.swift \
                 Feeds/ArticleClassifier.swift \
                 Feeds/Feed.swift \
@@ -218,6 +220,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/WalkerTests.swift \
                 Tests/ReaderBlockTests.swift \
                 Tests/LegacyIDTests.swift \
+                Tests/BaseHrefTests.swift \
                 Tests/main.swift
 
 TEST_BIN := .build/tests
