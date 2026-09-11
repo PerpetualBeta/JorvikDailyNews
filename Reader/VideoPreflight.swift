@@ -14,9 +14,21 @@ import Foundation
 /// `.mp4`" into "the response is a video file".
 ///
 /// **Refusing HLS outright is a deliberate trade.** It costs live streams,
-/// which a feed item linking a bare `.mp4` almost never is, and it buys the
-/// only reliable way to stop one checked URL becoming a list of unchecked ones
-/// short of proxying every request the player makes.
+/// which a feed item linking a bare `.mp4` almost never is.
+///
+/// **What it does NOT do, corrected after the second review.** An earlier
+/// version of this comment claimed it "buys the only reliable way to stop one
+/// checked URL becoming a list of unchecked ones". That was wrong. This check
+/// and `AVPlayer` make **two independent requests**: this one through
+/// `URLSession` with a `Range` header, the player's through AVFoundation with
+/// its own user agent moments later. A server can tell them apart trivially and
+/// answer them differently — a real MP4 prefix here, `#EXTM3U` to the player.
+///
+/// So this raises the bar; it does not close the hole. Closing it needs an
+/// `AVAssetResourceLoaderDelegate` serving every byte the player asks for, via
+/// a custom scheme, so the policy sees each request. That is a much larger
+/// piece of work and has not been done. What genuinely limits the exposure is
+/// that nothing is fetched at all until the reader presses play.
 enum VideoPreflight {
 
     /// How much of the body to look at. An HLS playlist announces itself in the
@@ -53,13 +65,20 @@ enum VideoPreflight {
 
         // A playlist by content, whatever the server called it. This is the
         // check that matters: the declared type is the attacker's to choose.
-        let head = bytes.prefix(64)
-        if let text = String(data: head, encoding: .utf8) {
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                              .trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
-            if trimmed.hasPrefix("#EXTM3U") {
-                return .refuse("it is a streaming playlist, not a video file")
-            }
+        //
+        // **Done on bytes, not on a decoded String.** Two faults lived here.
+        // The window was `prefix(64)` — 64 bytes, while `inspectBytes` says
+        // 64 KB and the fetch honours it — so a playlist with a little padding
+        // was never examined. And the test sat inside
+        // `if let text = String(data:encoding:.utf8)`, whose initialiser is
+        // strict: a multi-byte character straddling the last byte of the slice
+        // returns nil and execution fell through to `.play`. The file could be
+        // a perfectly valid playlist; only the slice was invalid.
+        //
+        // A byte scan has neither problem. `#EXTM3U` is seven ASCII bytes and
+        // ASCII cannot straddle anything.
+        if startsWithPlaylistMarker(bytes) {
+            return .refuse("it is a streaming playlist, not a video file")
         }
 
         // Anything else is handed to AVFoundation, which is the only thing that
@@ -67,6 +86,33 @@ enum VideoPreflight {
         // a container format: guessing at one would give false confidence
         // without removing the parse.
         return .play
+    }
+
+    /// Whether the body's first non-blank bytes are `#EXTM3U`.
+    ///
+    /// Leading whitespace and a UTF-8 or UTF-16 byte-order mark are skipped —
+    /// all of them are ways of pushing the marker out of a naive window — and
+    /// the skip is bounded so a body that is nothing but whitespace cannot make
+    /// this loop the length of the response.
+    static func startsWithPlaylistMarker(_ bytes: Data) -> Bool {
+        let marker = Array("#EXTM3U".utf8)
+        let boms: [[UInt8]] = [[0xEF, 0xBB, 0xBF], [0xFF, 0xFE], [0xFE, 0xFF]]
+        var b = [UInt8](bytes.prefix(inspectBytes))
+
+        for bom in boms where b.starts(with: bom) {
+            b.removeFirst(bom.count)
+            break
+        }
+        // UTF-16 spells the marker with a NUL after each byte. Dropping those
+        // makes one scan cover both encodings without decoding anything.
+        if b.count >= 2, b[0] == 0x00 { b = stride(from: 1, to: b.count, by: 2).map { b[$0] } }
+        else if b.count >= 2, b[1] == 0x00 { b = stride(from: 0, to: b.count, by: 2).map { b[$0] } }
+
+        var i = 0
+        let skipLimit = min(b.count, 4096)
+        while i < skipLimit, b[i] == 0x20 || b[i] == 0x09 || b[i] == 0x0A || b[i] == 0x0D { i += 1 }
+        guard b.count - i >= marker.count else { return false }
+        return Array(b[i..<(i + marker.count)]).elementsEqual(marker)
     }
 
     /// Reads a bounded prefix of the response and returns the verdict.

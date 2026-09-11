@@ -58,6 +58,39 @@ enum VideoPreflightTests {
                     "the marker later in the file is not the marker")
         }
 
+        T.suite("Video preflight: the ways past the old window") {
+            // The window was prefix(64) while inspectBytes said 64 KB, and the
+            // test sat inside a STRICT String(data:encoding:.utf8) that
+            // returned nil on a multi-byte character straddling the slice —
+            // falling through to .play on a perfectly valid playlist.
+            let pad = String(repeating: " ", count: 200)
+            T.expect(VideoPreflight.verdict(bytes: bytes(pad + playlist), contentType: "video/mp4") != .play,
+                     "200 bytes of leading whitespace")
+            T.expect(VideoPreflight.verdict(bytes: bytes("\n\n\t  \r\n" + playlist), contentType: "video/mp4") != .play,
+                     "mixed whitespace")
+            // A multi-byte character straddling byte 63 of the old slice.
+            let straddle = String(repeating: "a", count: 62) + "\u{00E9}"
+            T.expect(VideoPreflight.verdict(bytes: bytes(straddle) + bytes(playlist),
+                                            contentType: "video/mp4") == .play,
+                     "junk then a playlist is not a playlist — the marker must be FIRST")
+            let straddleThenMarker = bytes(String(repeating: " ", count: 62) + "\u{00E9}")
+            T.expect(VideoPreflight.verdict(bytes: straddleThenMarker + bytes(playlist),
+                                            contentType: "video/mp4") == .play,
+                     "and a non-space character still means it does not start with one")
+            // UTF-16, both ends.
+            for encoding in [String.Encoding.utf16LittleEndian, .utf16BigEndian, .utf16] {
+                let data = playlist.data(using: encoding) ?? Data()
+                T.expect(VideoPreflight.verdict(bytes: data, contentType: "video/mp4") != .play,
+                         "a UTF-16 playlist in \(encoding)")
+            }
+            // A UTF-8 BOM in front of it.
+            T.expect(VideoPreflight.verdict(bytes: Data([0xEF, 0xBB, 0xBF]) + bytes(playlist),
+                                            contentType: "video/mp4") != .play, "a UTF-8 BOM")
+            // Nothing but whitespace must not spin.
+            T.equal(VideoPreflight.verdict(bytes: bytes(String(repeating: " ", count: 70_000)),
+                                           contentType: "video/mp4"), .play, "whitespace only")
+        }
+
         T.suite("Video preflight: the inspection window") {
             T.equal(VideoPreflight.inspectBytes, 64 * 1024, "64 KB, enough for any playlist")
         }
