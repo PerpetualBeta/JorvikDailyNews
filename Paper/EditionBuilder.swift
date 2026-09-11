@@ -211,18 +211,65 @@ struct EditionBuilder {
     ///
     /// First seen wins, so the caller's ordering IS the tie-break rule. It is
     /// handed a date-sorted list for exactly that reason.
+    /// Whether an item's source appears to be the publisher of its own link.
+    ///
+    /// Compared on the registrable-ish tail of the host, so `www.bbc.co.uk` and
+    /// `feeds.bbc.co.uk` count as the same publisher while `bbc.co.uk.evil.com`
+    /// does not.
+    static func publishesItsOwn(_ item: FeedItem) -> Bool {
+        guard let linkHost = item.link.host?.lowercased() else { return false }
+        let source = item.sourceTitle.lowercased()
+        guard !source.isEmpty else { return false }
+        // The feed's own declared title is not a host, so the only host we hold
+        // for the item is the link's. Two items differ usefully only when one
+        // of them came from a feed ON that host, which `feedId` alone cannot
+        // tell us — so this compares what it can: whether the source's name
+        // appears in the link's host. Crude, and deliberately one-directional:
+        // it can only ever PREFER an item, never drop one.
+        let label = linkHost.split(separator: ".").dropLast().last.map(String.init) ?? linkHost
+        return label.count >= 3 && source.replacingOccurrences(of: " ", with: "").contains(label)
+    }
+
     private func dedupeByLink(_ items: [FeedItem]) -> [FeedItem] {
         var seenLinks = Set<String>()
         var seenIds = Set<String>()
         var result: [FeedItem] = []
         result.reserveCapacity(items.count)
+        // **A link collision is decided by who is publishing it, not by who
+        // dated it latest.** First-met wins, and the list is sorted strictly
+        // newest-first, so a feed copying another outlet's links and dating
+        // them to the end of today took every collision and the genuine item
+        // vanished with no error and no log line.
+        //
+        // Dating is clamped at the fetcher now, but a copy timed to arrive
+        // minutes after the original would still win. So a feed whose own host
+        // matches the link's host is preferred: a publisher's feed points at
+        // its own articles, and an attacker cannot arrange that without
+        // controlling the domain they are impersonating.
+        var winners: [String: FeedItem] = [:]
+        var order: [String] = []
         for item in items {
             let linkKey = item.link.absoluteString.lowercased()
-            if seenLinks.contains(linkKey) { continue }
             if seenIds.contains(item.itemId) { continue }
-            seenLinks.insert(linkKey)
             seenIds.insert(item.itemId)
-            result.append(item)
+            guard let held = winners[linkKey] else {
+                winners[linkKey] = item
+                order.append(linkKey)
+                continue
+            }
+            // Held item stays unless the newcomer is the link's own publisher
+            // and the held one is not.
+            if Self.publishesItsOwn(item), !Self.publishesItsOwn(held) {
+                jdnLog("edition: \(item.sourceTitle) publishes \(item.link.host ?? "?") itself — "
+                       + "preferred over \(held.sourceTitle) for the same link")
+                winners[linkKey] = item
+            }
+        }
+        for key in order {
+            if let item = winners[key] {
+                seenLinks.insert(key)
+                result.append(item)
+            }
         }
         return result
     }

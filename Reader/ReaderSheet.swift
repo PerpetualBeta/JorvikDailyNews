@@ -11,6 +11,10 @@ struct ReaderView: View {
     @Environment(AppStore.self) private var store
 
     @State private var state: ReaderState = .loading
+    /// True once this sheet has already bounced between the PDF route and the
+    /// extractor. See the guard in the `.pdf` arm: both legs consult it, because
+    /// closing only one leaves the loop intact through the other.
+    @State private var handedOff = false
 
     /// The article's current section, shown in (and editable from) the header
     /// re-classify menu. Seeded from the resolved section when the reader opens.
@@ -291,7 +295,11 @@ struct ReaderView: View {
                                // relative link resolves against the article's
                                // own address rather than the feed's version of
                                // it. They differ whenever the link redirects.
-                               baseURL: article.resolvedURL ?? item.link,
+                               // The page's own <base href> first: it
+                               // overrules the document's address for every
+                               // relative link, which is how a site can write
+                               // `_media/…` and mean the site root.
+                               baseURL: article.baseHref ?? article.resolvedURL ?? item.link,
                                // The paper's own hero. Most sites keep their
                                // lede photograph outside the <article> element,
                                // so Readability drops it and the reader opened
@@ -332,6 +340,22 @@ struct ReaderView: View {
             // and wrong as a verdict — GitHub's `…/blob/…/report.pdf` is a web
             // page that displays a PDF, and the file is elsewhere.
             PDFReader(url: url, onNotAPDF: {
+                // Once only. A server can answer one way to the extractor's
+                // user agent and another to the PDF fetch, which had the two
+                // routes handing the link to each other for ever: two requests
+                // a turn, no backoff, each PDF leg allowed 256 MB, and the
+                // backstop never firing because each attempt returned promptly.
+                guard !handedOff else {
+                    jdnLog("reader: the PDF route and the extractor disagree about this link — stopping")
+                    state = .unavailable(Problem(
+                        headline: "This link could not be opened",
+                        advice: "The server describes it as a PDF to one request and as a "
+                              + "web page to the next, so neither view can show it. Opening "
+                              + "it in your browser is the quickest way to see what it is.",
+                        technical: "the server's answer changed between requests"))
+                    return
+                }
+                handedOff = true
                 jdnLog("reader: .pdf path served a web page — re-running extraction")
                 state = .loading
                 Task { await extract(trustingExtension: false) }
@@ -512,7 +536,7 @@ struct ReaderView: View {
             }
             jdnLog("reader: reader view ready")
             state = .ready(article)
-        } catch ArticleExtractor.ExtractionError.isPDF {
+        } catch ArticleExtractor.ExtractionError.isPDF where !handedOff {
             // PDF without a .pdf extension — detected by content-type / magic.
             guard case .loading = state else { return }
             jdnLog("reader: detected a PDF by content — PDF view")

@@ -323,6 +323,17 @@ enum WalkerTests {
                     ["paragraph", "quote", "paragraph"], "a plain quote is untouched")
         }
 
+        T.suite("Walker: relative sources are left for the caller to resolve") {
+            // The walker emits `src` as written. Resolution happens in Swift
+            // against the page's own <base href> when it declares one, which is
+            // what unsung.aresluna.org needed: `<base href="/">` with pictures
+            // written `_media/…/1.avif`. Against the document address those
+            // became `…/the-pc-side/_media/…` and returned 404, three for three.
+            let out = walk("<p>Words.</p><img src=\"_media/pic/1.avif\" alt=\"a\"/>")
+            let src = out.first(where: { ($0["kind"] as? String) == "image" })?["src"] as? String
+            T.equal(src, "_media/pic/1.avif", "passed through unchanged")
+        }
+
         T.suite("Walker: nothing to walk") {
             T.expect(walk("").isEmpty, "empty input, no blocks")
             T.expect(walk("<div></div>").isEmpty, "an empty container yields nothing")

@@ -61,6 +61,17 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         /// have one; callers fall back to the feed's link, which is what the
         /// reader used for everything before this existed.
         var resolvedURL: URL?
+        /// The `<base href>` the page declared, resolved against its own
+        /// address — or nil when it declared none.
+        ///
+        /// **A page's own `<base>` overrules its address for every relative
+        /// link in it, and this was being ignored.** unsung.aresluna.org
+        /// declares `<base href="/">` and writes its pictures as
+        /// `_media/…/1.avif`, which the browser resolves against the site root.
+        /// Resolved against the document URL instead, every one of them 404s,
+        /// which is exactly what the log showed: three images fetched, three
+        /// HTTP 404, an article of pictures with no pictures.
+        var baseHref: URL?
     }
 
     enum ExtractionError: Error, LocalizedError {
@@ -1713,7 +1724,23 @@ final class NativeReader: @unchecked Sendable {
     private static let glue = """
     globalThis.__jdnExtract = function (html, url, minSvgSide) {
       var doc = linkedom.parseHTML(html).document;
-      try { Object.defineProperty(doc, 'baseURI', { value: url, configurable: true }); } catch (e) {}
+      // **The page's own <base href> wins, and it has to be read before
+      // `baseURI` is set.** Readability rewrites every relative URL to an
+      // absolute one using `baseURI`, so forcing `baseURI` to the document's
+      // address overrode the page's declaration and every relative picture
+      // came out wrong. unsung.aresluna.org declares `<base href="/">` and
+      // writes `_media/…/1.avif`; against the document address those became
+      // `…/the-pc-side/_media/…` and returned 404, three for three.
+      var declaredBase = null;
+      try {
+        var baseTag = doc.querySelector && doc.querySelector('base[href]');
+        if (baseTag) { declaredBase = new URL(baseTag.getAttribute('href'), url).toString(); }
+      } catch (e) {}
+      var effectiveBase = declaredBase || url;
+      try { Object.defineProperty(doc, 'baseURI', { value: effectiveBase, configurable: true }); } catch (e) {}
+      // `documentURI` stays the real address: Readability compares the two to
+      // decide whether a `#fragment` link is same-page, and a page that moves
+      // its base has not moved itself.
       try { Object.defineProperty(doc, 'documentURI', { value: url, configurable: true }); } catch (e) {}
       // Before Readability sees it: put back the <body> a spec parser would
       // have opened. See `repairHeadBody`.
@@ -1723,6 +1750,7 @@ final class NativeReader: @unchecked Sendable {
       var article = new Readability(doc, { maxElemsToParse: globalThis.__jdnMaxElements }).parse();
       if (!article) return null;
       article.repairedNodes = repaired;
+      article.baseHref = declaredBase;
       // Blocks are produced in the same pass, from the same DOM, so the
       // native renderer and the WebKit fallback can never disagree about
       // what the article said.

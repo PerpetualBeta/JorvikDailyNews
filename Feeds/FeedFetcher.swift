@@ -206,6 +206,28 @@ final class FeedFetcher: Sendable {
         return nil
     }
 
+    /// A publication date, never in the future.
+    ///
+    /// Nothing clamped this, and the edition sorts strictly newest-first and
+    /// then keeps the FIRST item met per link. So a feed dating its items at
+    /// 23:59 today sorted above everything genuine and won every link
+    /// collision — and the genuine copy was dropped with no error and no log
+    /// line. Copy a major outlet's `<link>`s, put your own headlines and
+    /// standfirsts on them, and the card carries the victim's name, because
+    /// `sourceTitle` prefers the channel title. Clicking it opens the real
+    /// article, which is what makes it credible.
+    ///
+    /// Clamping does not make the dedupe fair on its own — see the tie-break in
+    /// `EditionBuilder.dedupeByLink` — but it removes the half that let an
+    /// attacker sort to the top of every section for free.
+    ///
+    /// A small allowance for clock skew, because a publisher a minute fast is
+    /// ordinary and should not have its items quietly restamped.
+    static func clamped(_ date: Date, now: Date = Date()) -> Date {
+        let allowance: TimeInterval = 5 * 60
+        return date > now.addingTimeInterval(allowance) ? now : date
+    }
+
     static func parse(_ data: Data, from feed: Feed) throws -> FetchedFeed {
         if let amplification = entityAmplification(in: data) {
             jdnLog("fetch: \(feed.url.host ?? "?") declares \(amplification) — refused before parsing")
@@ -643,7 +665,7 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             link: link,
             summary: summary,
             imageURL: imageURL,
-            publishedAt: date,
+            publishedAt: FeedFetcher.clamped(date),
             section: feed.section,
             sourceTitle: sourceTitle,
             legacyItemId: offered
