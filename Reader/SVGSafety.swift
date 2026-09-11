@@ -3,10 +3,17 @@ import Foundation
 /// A last look at an SVG before `NSImage(data:)` is handed it.
 ///
 /// The walker sanitises at capture time, which is where the DOM is and so where
-/// the job is done properly. This is the far side of a stored boundary: an
-/// edition written before that existed still holds raw source, and the app
-/// reads yesterday's editions every day. `InlineSVG` re-checks the size ceiling
-/// for exactly the same reason.
+/// the job is done properly. This is the second check, for the same reason
+/// `InlineSVG` re-checks the size ceiling: the two are separate components, one
+/// JavaScript in a bundled resource and one Swift, and a rule enforced in only
+/// one of them is one edit away from being gone. A security boundary worth
+/// having is worth holding in both halves.
+///
+/// **It is not about stored blocks.** An earlier version of this said editions
+/// on disk carry raw SVG. They do not — checked 2026-09-11, an edition stores
+/// feed items only and holds no blocks — so the second check earns its place on
+/// defence in depth alone, which is a weaker argument than the one first given
+/// and still a sufficient one.
 ///
 /// **It refuses rather than repairs.** Repairing needs a parser, and reaching
 /// for one here would put a second XML parser in the app to defend against the

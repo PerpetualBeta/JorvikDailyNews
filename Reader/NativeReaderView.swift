@@ -466,9 +466,16 @@ private let svgParseQueue = DispatchQueue(label: "cc.jorviksoftware.jdn.svg",
 /// per body pass, from a file smaller than a photograph.
 ///
 /// The walker now refuses a source over 64 KB. This re-checks rather than
-/// trusting it, because the walker's output is persisted in the edition and a
-/// block written by an older build reaches here without ever having passed
-/// the new cap.
+/// trusting it, because the two are separate components — one JavaScript in a
+/// bundled resource, one Swift — and a ceiling enforced in only one of them is
+/// a ceiling one edit away from being gone.
+///
+/// **An earlier version of this comment said the walker's output is persisted
+/// in the edition. It is not.** Checked 2026-09-11: an edition stores feed
+/// items only — title, summary, link, picture — and holds no blocks at all,
+/// so a `kind: svg` block exists only for as long as an article sheet is open.
+/// Nothing on disk carries an un-checked SVG, and any reasoning that depends
+/// on stored blocks is reasoning about something that does not exist.
 private struct InlineSVG<Caption: View>: View {
     let block: ReaderBlock
     @ViewBuilder let caption: ([ReaderBlock.Run]) -> Caption
