@@ -138,6 +138,89 @@
   /// Longest SVG source that will be drawn, in characters.
   var MAX_SVG_SOURCE = 64 * 1024;
 
+  // ── SVG sanitising ────────────────────────────────────────────────────────
+  //
+  // An inline SVG is drawn by `NSImage(data:)`, which yields AppKit's private
+  // `_NSSVGImageRep`. That is closed Apple code, so what it will and will not
+  // resolve is a property of the OS rather than of this app, and ImageIO
+  // behaviour has changed under a major version before.
+  //
+  // Measured on macOS 26.6.2 on 2026-09-10, nothing external resolved: no
+  // request from `<image xlink:href>`, `<image href>`, `<use href>`, CSS
+  // `@import`, `url()`, `<script>` or `onload`, and no local file read via
+  // `file://`. Zero requests reached a listener on 127.0.0.1.
+  //
+  // **That is one OS on one day, and the app supports macOS 14 upwards.**
+  // Rather than re-measure every release, the constructs are removed here so
+  // the OS's behaviour stops mattering. `tools/svg-capability-probe.swift`
+  // stays as a regression check, not as the defence.
+  //
+  // Kept deliberately: fragment references (`#id`) and `data:` URIs. `<use
+  // href="#icon">` is how half of real diagrams are built and a data: image is
+  // self-contained, already covered by the source-size ceiling.
+
+  /// Elements removed whole. Each can carry or execute something that is not
+  /// drawing: `foreignObject` can hold arbitrary HTML including an iframe.
+  var SVG_DROP_ELEMENTS = /^(script|foreignobject|iframe|object|embed|audio|video|link|meta|base)$/i;
+
+  /// A reference that stays inside this document.
+  function svgRefIsLocal(value) {
+    var v = String(value || '').trim();
+    if (!v) return true;
+    return v.charAt(0) === '#' || /^data:/i.test(v);
+  }
+
+  /// True when a CSS fragment reaches outside the document.
+  function svgCSSReachesOut(css) {
+    var text = String(css || '');
+    if (/@import/i.test(text)) return true;
+    var m = text.match(/url\(\s*['"]?([^'")]*)/gi) || [];
+    for (var i = 0; i < m.length; i++) {
+      var ref = m[i].replace(/^url\(\s*['"]?/i, '');
+      if (!svgRefIsLocal(ref)) return true;
+    }
+    return false;
+  }
+
+  /// Strips every way an SVG could reach outside itself, on a COPY, so the
+  /// live DOM the walker is still reading is untouched.
+  function sanitiseSVG(node) {
+    var root = node.cloneNode(true);
+    var all = [root].concat(Array.prototype.slice.call(root.querySelectorAll('*')));
+    for (var i = all.length - 1; i >= 0; i--) {
+      var el = all[i];
+      var tag = (el.tagName || '').toLowerCase();
+      if (el !== root && SVG_DROP_ELEMENTS.test(tag)) {
+        if (el.parentNode) { el.parentNode.removeChild(el); }
+        continue;
+      }
+      if (tag === 'style' && svgCSSReachesOut(el.textContent)) {
+        if (el.parentNode) { el.parentNode.removeChild(el); }
+        continue;
+      }
+      // Copy the names first: removing while iterating skips attributes.
+      var names = [];
+      var attrs = el.attributes || [];
+      for (var a = 0; a < attrs.length; a++) { names.push(attrs[a].name); }
+      for (var n = 0; n < names.length; n++) {
+        var name = names[n];
+        var lower = name.toLowerCase();
+        var value = el.getAttribute(name);
+        // Event handlers: onload, onclick, onbegin, and the rest.
+        if (lower.indexOf('on') === 0) { el.removeAttribute(name); continue; }
+        // href in any namespace.
+        if (lower === 'href' || lower === 'xlink:href' || lower === 'src') {
+          if (!svgRefIsLocal(value)) { el.removeAttribute(name); }
+          continue;
+        }
+        // `style`, and the presentation attributes that take url(): fill,
+        // stroke, filter, mask, clip-path, marker-start and friends.
+        if (svgCSSReachesOut(value)) { el.removeAttribute(name); }
+      }
+    }
+    return root.outerHTML;
+  }
+
   function svgBlock(node, minSide) {
     var box = node.getAttribute('viewBox');
     var w = parseFloat(node.getAttribute('width')) || 0;
@@ -154,7 +237,7 @@
     // carrying a few hundred filter primitives took **31.05 seconds to draw
     // and 1,680 MB of resident memory**, and painted nothing at all. A real
     // diagram is a few KB.
-    var source = node.outerHTML;
+    var source = sanitiseSVG(node);
     if (source.length > MAX_SVG_SOURCE) { return null; }
     return { kind: 'svg', svg: source, width: w, height: h };
   }

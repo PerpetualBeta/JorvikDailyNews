@@ -55,6 +55,7 @@ READER_SOURCES := Reader/ArticleExtractor.swift \
                   Reader/MailtoLink.swift \
                   Reader/NativeReaderView.swift \
                   Reader/ProseText.swift \
+                  Reader/SVGSafety.swift \
                   Reader/ReaderBlock.swift \
                   Reader/ReaderSheet.swift \
                   Reader/VideoLink.swift
@@ -166,6 +167,7 @@ stamp: xpc-service
 # here is Foundation-only apart from ImageCache, which EditionBuilder consults
 # to ask whether a picture is known to have failed.
 TEST_SOURCES := Reader/VideoLink.swift \
+                Reader/SVGSafety.swift \
                 PDFService/PDFRenderProtocol.swift \
                 Reader/PDFContentType.swift \
                 Support/WebURL.swift \
@@ -186,6 +188,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Pictures/ImageCache.swift
 
 TEST_HARNESS := Tests/TestRunner.swift \
+                Tests/SVGSafetyTests.swift \
                 Tests/PDFPageSizesTests.swift \
                 Tests/PDFContentTypeTests.swift \
                 Tests/VideoLinkTests.swift \

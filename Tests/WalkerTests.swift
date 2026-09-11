@@ -214,6 +214,72 @@ enum WalkerTests {
             T.expect(!kinds(walk(small)).contains("svg"), "a 16x16 icon is not")
         }
 
+        // The SVG a feed sends is drawn by AppKit's private `_NSSVGImageRep`,
+        // closed code whose willingness to resolve an external reference is a
+        // property of the OS. It resolved none of these on macOS 26.6.2 —
+        // measured, on one OS, on one day, against a deployment target of
+        // macOS 14. These tests are why that no longer has to be re-measured.
+        T.suite("Walker: an SVG cannot reach outside itself") {
+            func svg(_ inner: String) -> String {
+                "<svg width=\"400\" height=\"300\">\(inner)</svg>"
+            }
+            func source(_ inner: String) -> String {
+                (walk(svg(inner)).first?["svg"] as? String) ?? ""
+            }
+
+            let script = source("<script>fetch('http://127.0.0.1:1/x')</script><rect/>")
+            T.expect(!script.lowercased().contains("<script"), "script is removed")
+            T.expect(script.contains("<rect"), "and the drawing survives it")
+
+            let handler = source("<rect onload=\"fetch('http://127.0.0.1:1/x')\"/>")
+            T.expect(!handler.lowercased().contains("onload"), "an event handler is removed")
+            T.expect(handler.contains("<rect"), "the element itself stays")
+
+            for attribute in ["href", "xlink:href"] {
+                let out = source("<image \(attribute)=\"http://127.0.0.1:1/x.png\" width=\"10\" height=\"10\"/>")
+                T.expect(!out.contains("127.0.0.1"), "\(attribute) to a URL is removed")
+            }
+            let file = source("<image href=\"file:///etc/passwd\" width=\"10\" height=\"10\"/>")
+            T.expect(!file.contains("etc/passwd"), "a file:// reference is removed")
+
+            let imported = source("<style>@import url('http://127.0.0.1:1/x.css');</style><rect/>")
+            T.expect(!imported.lowercased().contains("@import"), "a stylesheet import is removed")
+
+            let external = source("<rect fill=\"url(http://127.0.0.1:1/x)\"/>")
+            T.expect(!external.contains("127.0.0.1"), "an external url() in a presentation attribute goes")
+
+            let styled = source("<rect style=\"fill:url('http://127.0.0.1:1/x')\"/>")
+            T.expect(!styled.contains("127.0.0.1"), "and one in a style attribute")
+
+            let foreign = source("<foreignObject><iframe src=\"http://127.0.0.1:1/\"></iframe></foreignObject><rect/>")
+            T.expect(!foreign.lowercased().contains("foreignobject"), "foreignObject is removed whole")
+            T.expect(!foreign.lowercased().contains("iframe"), "taking its iframe with it")
+        }
+
+        T.suite("Walker: sanitising keeps what a real diagram needs") {
+            func source(_ inner: String) -> String {
+                (walk("<svg width=\"400\" height=\"300\">\(inner)</svg>").first?["svg"] as? String) ?? ""
+            }
+            // `<use href="#id">` is how half of real diagrams are built, and a
+            // data: image is self-contained. Stripping either would make the
+            // sanitiser worse than the problem.
+            let fragment = source("<defs><rect id=\"a\" width=\"10\" height=\"10\"/></defs><use href=\"#a\"/>")
+            T.expect(fragment.contains("#a"), "a fragment reference is kept")
+
+            let data = source("<image href=\"data:image/png;base64,iVBORw0KGgo=\" width=\"10\" height=\"10\"/>")
+            T.expect(data.contains("data:image/png"), "a data: URI is kept")
+
+            let fill = source("<defs><linearGradient id=\"g\"/></defs><rect fill=\"url(#g)\"/>")
+            T.expect(fill.contains("url(#g)"), "a url(#fragment) fill is kept")
+
+            let styles = source("<style>.a{fill:red}</style><rect class=\"a\"/>")
+            T.expect(styles.contains("fill:red"), "a stylesheet with no external reference is kept")
+
+            let plain = source("<rect width=\"10\" height=\"10\" fill=\"blue\"/>")
+            T.expect(plain.contains("fill=\"blue\""), "ordinary attributes are untouched")
+            T.expect(plain.hasPrefix("<svg"), "and the result is still an svg element")
+        }
+
         T.suite("Walker: nothing to walk") {
             T.expect(walk("").isEmpty, "empty input, no blocks")
             T.expect(walk("<div></div>").isEmpty, "an empty container yields nothing")

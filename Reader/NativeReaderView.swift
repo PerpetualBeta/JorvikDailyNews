@@ -504,6 +504,14 @@ private struct InlineSVG<Caption: View>: View {
                        + " — over the \(Self.maxSource) allowed")
                 return
             }
+            // The walker strips every external reference at capture time, but
+            // editions written before it did are still on disk and still read
+            // every day. Same reason the size ceiling is restated here.
+            if let why = SVGSafety.refusal(for: source) {
+                refused = true
+                jdnLog("reader: refused an inline SVG — \(why)")
+                return
+            }
             // Off the main actor, and off the cooperative pool.
             //
             // `Task.detached` was the first version of this and it is the same
