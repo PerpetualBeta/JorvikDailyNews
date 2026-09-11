@@ -286,14 +286,25 @@ final class FeedFetcher: Sendable {
     /// article, which is what makes it credible.
     ///
     /// Clamping does not make the dedupe fair on its own — see the tie-break in
-    /// `EditionBuilder.dedupeByLink` — but it removes the half that let an
-    /// attacker sort to the top of every section for free.
+    /// `EditionBuilder.dedupeByLink`.
     ///
-    /// A small allowance for clock skew, because a publisher a minute fast is
-    /// ordinary and should not have its items quietly restamped.
+    /// **There used to be a five-minute allowance for clock skew, and it was
+    /// worth more to an attacker than to a publisher.** `now + 4m59s` survived
+    /// untouched and is strictly greater than every honestly dated item, so
+    /// the feed was first in the date-descending sort on every refresh for
+    /// free. A publisher whose clock is a minute fast loses a minute of
+    /// apparent freshness by having it removed, which is nothing.
+    ///
+    /// What this does NOT do, and the earlier comment here claimed it did: a
+    /// clamped date becomes `now`, and `now` still sorts above every item
+    /// published earlier today. It closes the gap between "ahead of everything"
+    /// and "as fresh as anything can honestly be" — no further, because
+    /// without state from a previous fetch there is nothing here to tell a
+    /// restamped item from one genuinely published this second. The per-feed
+    /// budget in `EditionBuilder.capped` and the host-based tie-break in
+    /// `publishesItsOwn` are what bound the rest.
     static func clamped(_ date: Date, now: Date = Date()) -> Date {
-        let allowance: TimeInterval = 5 * 60
-        return date > now.addingTimeInterval(allowance) ? now : date
+        date > now ? now : date
     }
 
     static func parse(_ data: Data, from feed: Feed) throws -> FetchedFeed {
@@ -803,7 +814,8 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             // forward day to day. It is read for a lookup and never used as a
             // dictionary key, so clamping does not reintroduce the collision
             // `namespacedID` exists to prevent.
-            legacyItemId: String(offered.prefix(FeedFetcher.maxStoredLegacyID))
+            legacyItemId: String(offered.prefix(FeedFetcher.maxStoredLegacyID)),
+            feedHost: feed.url.host?.lowercased()
         )
     }
 

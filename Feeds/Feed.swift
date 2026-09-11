@@ -101,6 +101,16 @@ struct FeedItem: Codable, Hashable, Identifiable {
     /// across this version.
     var legacyItemId: String?
 
+    /// The host of the subscription this item came from.
+    ///
+    /// The one string on a `FeedItem` a feed cannot choose: it is taken from
+    /// the URL the reader subscribed to, not from anything in the XML. Carried
+    /// because `EditionBuilder.publishesItsOwn` needs to compare a link's host
+    /// against the host that offered it, and `feedId` alone cannot say what
+    /// that was. Optional for editions saved before this field existed; the
+    /// comparison simply declines to prefer when it is nil.
+    var feedHost: String?
+
     /// Title as shown in the paper, with a " [VIDEO]" affordance appended when
     /// the link plays in-app as a video (YouTube / Vimeo / direct media) and
     /// nothing in the title or summary already signals that. Computed at

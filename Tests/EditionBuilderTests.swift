@@ -34,6 +34,79 @@ enum EditionBuilderTests {
             T.expect(smallTotal > 250, "300 items come through, got \(smallTotal)")
         }
 
+        T.suite("Edition: one feed cannot spend the whole day's budget") {
+            // The cap used to be a plain prefix of a date-descending sort, and
+            // the date is a string the feed wrote. One feed serving its 500
+            // per fetch, each stamped at the top of the allowed range, took
+            // every slot — and this runs BEFORE the round-robin, so the
+            // diversity that would otherwise limit it never saw what was
+            // dropped. `performRefresh` then carries the survivors forward
+            // each hour.
+            let now = Date()
+            let loud = UUID()
+            let hostile = (0..<(EditionBuilder.maxEditionItems + 1000)).map {
+                item("Loud \($0)", at: now.addingTimeInterval(-Double($0) / 1000),
+                     link: "https://loud.example/a?r=\($0)", feedId: loud)
+            }
+            // Ten genuine feeds, all dated an hour ago, so every one of them
+            // loses on date to every hostile item.
+            var genuine: [FeedItem] = []
+            for feed in 0..<10 {
+                let id = UUID()
+                genuine += (0..<20).map {
+                    item("Real \(feed)-\($0)", at: now.addingTimeInterval(-3600),
+                         link: "https://real\(feed).example/a?r=\($0)", feedId: id)
+                }
+            }
+            let kept = EditionBuilder.capped((hostile + genuine)
+                .sorted { $0.publishedAt > $1.publishedAt })
+            T.equal(kept.count, EditionBuilder.maxEditionItems, "the ceiling still holds")
+            T.equal(kept.filter { $0.feedId != loud }.count, 200,
+                    "and all 200 genuine items survive it")
+
+            // A quiet day is untouched: under the ceiling, nothing is taken.
+            let small = (0..<300).map {
+                item("Item \($0)", at: now.addingTimeInterval(-Double($0)),
+                     link: "https://e.com/c?r=\($0)")
+            }
+            T.equal(EditionBuilder.capped(small).count, 300, "300 items pass through whole")
+        }
+
+        T.suite("Publisher: compared on hosts, not on a name the feed chose") {
+            let now = Date()
+            // Both sides of this test used to be attacker-supplied: it matched
+            // the link's host against the feed's own declared channel title.
+            let spoof = item("Copied headline", at: now,
+                             link: "https://www.bbc.co.uk/news/story",
+                             sourceTitle: "BBC News", feedHost: "attacker.example")
+            T.expect(!EditionBuilder.publishesItsOwn(spoof),
+                     "calling yourself BBC News no longer makes you the BBC")
+
+            let real = item("Real headline", at: now,
+                            link: "https://www.bbc.co.uk/news/story",
+                            sourceTitle: "anything at all", feedHost: "feeds.bbc.co.uk")
+            T.expect(EditionBuilder.publishesItsOwn(real),
+                     "a feed on the same domain is the publisher, whatever it calls itself")
+
+            // The old label test took the second-to-last, so every .co.uk host
+            // gave "co" and failed its own three-character minimum.
+            T.equal(EditionBuilder.registrable("www.bbc.co.uk"), "bbc.co.uk", "a two-label suffix")
+            T.equal(EditionBuilder.registrable("feeds.bbc.co.uk"), "bbc.co.uk", "and a deeper one")
+            T.equal(EditionBuilder.registrable("www.ft.com"), "ft.com", "an ordinary suffix")
+            T.equal(EditionBuilder.registrable("bbc.co.uk.evil.com"), "evil.com",
+                    "a host that only looks like one")
+
+            let lookalike = item("Copied headline", at: now,
+                                 link: "https://www.bbc.co.uk/news/story",
+                                 feedHost: "bbc.co.uk.evil.com")
+            T.expect(!EditionBuilder.publishesItsOwn(lookalike), "so it is not preferred")
+
+            let old = item("From an older edition", at: now,
+                           link: "https://www.bbc.co.uk/news/story", feedHost: nil)
+            T.expect(!EditionBuilder.publishesItsOwn(old),
+                     "an item saved before the field existed declines to prefer")
+        }
+
         T.suite("Day range: one day, half open") {
             let noon = date("2026-09-09 12:00")
             let range = EditionBuilder.dayRange(for: noon)
@@ -190,7 +263,9 @@ enum EditionBuilderTests {
                              itemId: String? = nil,
                              feedId: UUID = UUID(),
                              image: String? = "https://example.com/hero.jpg",
-                             summary: String = "A standfirst long enough to count.") -> FeedItem {
+                             summary: String = "A standfirst long enough to count.",
+                             sourceTitle: String = "fixture",
+                             feedHost: String? = nil) -> FeedItem {
         let href = link ?? "https://example.com/\(title.replacingOccurrences(of: " ", with: "-"))"
         return FeedItem(
             feedId: feedId,
@@ -201,7 +276,9 @@ enum EditionBuilderTests {
             imageURL: image.flatMap(URL.init(string:)),
             publishedAt: published,
             section: "News",
-            sourceTitle: "fixture"
+            sourceTitle: sourceTitle,
+            legacyItemId: nil,
+            feedHost: feedHost
         )
     }
 }

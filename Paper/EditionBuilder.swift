@@ -48,6 +48,42 @@ struct EditionBuilder {
     /// edition on the main actor is felt.
     static let maxEditionItems = 6000
 
+    /// Keep at most `maxEditionItems`, giving every feed an equal share
+    /// before anything competes on date.
+    ///
+    /// Two passes. The first takes up to `maxEditionItems / feedCount` from
+    /// each feed, in date order, so no feed can be evicted by another's
+    /// arithmetic. The second fills whatever the quiet feeds left over,
+    /// newest-first, so a day with few active sources still fills the paper.
+    ///
+    /// Re-sorted at the end because everything downstream — `dedupeByLink`
+    /// above all, which keeps whichever copy of a syndicated article it meets
+    /// first — depends on this list being newest-first.
+    static func capped(_ sorted: [FeedItem]) -> [FeedItem] {
+        guard sorted.count > maxEditionItems else { return sorted }
+        let feeds = Set(sorted.map(\.feedId)).count
+        let share = max(1, maxEditionItems / max(1, feeds))
+        var taken: [UUID: Int] = [:]
+        var kept: [FeedItem] = []
+        var overflow: [FeedItem] = []
+        kept.reserveCapacity(maxEditionItems)
+        for item in sorted {
+            if kept.count >= maxEditionItems { break }
+            let used = taken[item.feedId, default: 0]
+            if used < share {
+                taken[item.feedId] = used + 1
+                kept.append(item)
+            } else {
+                overflow.append(item)
+            }
+        }
+        if kept.count < maxEditionItems {
+            kept.append(contentsOf: overflow.prefix(maxEditionItems - kept.count))
+            kept.sort { $0.publishedAt > $1.publishedAt }
+        }
+        return kept
+    }
+
     func build(from items: [FeedItem], date: Date) -> Edition {
         // Daily News means: only items whose published date falls inside today
         // (local calendar). Older items never appear, even if they'd otherwise
@@ -84,9 +120,20 @@ struct EditionBuilder {
         //
         // Sorted newest-first already, so truncating keeps the newest — which
         // is what a paper wants anyway.
-        let capped = sorted.count > Self.maxEditionItems
-            ? Array(sorted.prefix(Self.maxEditionItems))
-            : sorted
+        //
+        // **Newest is not the same as trustworthy.** Taking a plain prefix
+        // evicts by `publishedAt`, and `publishedAt` is a string the feed
+        // wrote. One feed serving its per-fetch maximum of 500 items, each
+        // stamped at the top of the allowed range, sorts above every honestly
+        // dated item in the paper and spends the whole 6,000 on itself — and
+        // this runs BEFORE `dedupeByLink` and `roundRobinByFeed`, so the
+        // per-feed diversity that would otherwise limit one source never sees
+        // the items that were dropped. `performRefresh` carries the survivors
+        // forward each hour, so the saved edition converges on that feed and
+        // the reader's own subscriptions stop appearing.
+        //
+        // So the budget is per feed first and global second.
+        let capped = Self.capped(sorted)
         if capped.count < sorted.count {
             jdnLog("edition: \(sorted.count) items is over the \(Self.maxEditionItems) "
                    + "allowed — kept the newest \(capped.count)")
@@ -211,23 +258,57 @@ struct EditionBuilder {
     ///
     /// First seen wins, so the caller's ordering IS the tie-break rule. It is
     /// handed a date-sorted list for exactly that reason.
-    /// Whether an item's source appears to be the publisher of its own link.
+    /// Public suffixes of two labels, so `bbc.co.uk` is not read as `co.uk`.
     ///
-    /// Compared on the registrable-ish tail of the host, so `www.bbc.co.uk` and
-    /// `feeds.bbc.co.uk` count as the same publisher while `bbc.co.uk.evil.com`
-    /// does not.
+    /// A short list rather than the full Public Suffix List, which is 10,000
+    /// lines that change monthly. Getting one wrong costs a comparison that
+    /// declines to prefer, or one that treats two hosts under the same
+    /// registrar's suffix as the same publisher — and reaching that second
+    /// case needs a feed the reader subscribed to by hand.
+    static let twoLabelSuffixes: Set<String> = [
+        "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "sch.uk",
+        "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
+        "com.au", "net.au", "org.au", "edu.au", "gov.au",
+        "co.nz", "net.nz", "org.nz", "govt.nz",
+        "com.br", "com.mx", "com.ar", "com.sg", "com.hk", "com.tw", "com.tr",
+        "co.za", "co.in", "co.kr", "co.il", "co.id", "co.th"
+    ]
+
+    /// The registrable part of a host: `www.bbc.co.uk` and `feeds.bbc.co.uk`
+    /// both give `bbc.co.uk`.
+    static func registrable(_ host: String) -> String {
+        let labels = host.split(separator: ".").map(String.init)
+        guard labels.count > 2 else { return host }
+        let pair = labels.suffix(2).joined(separator: ".")
+        let wanted = twoLabelSuffixes.contains(pair) ? 3 : 2
+        guard labels.count >= wanted else { return host }
+        return labels.suffix(wanted).joined(separator: ".")
+    }
+
+    /// Whether this item came from a feed on the same domain as its own link.
+    ///
+    /// **Both sides of this test used to be attacker-supplied.** It compared
+    /// the link's host against `item.sourceTitle` — the feed's own declared
+    /// channel title, which `AppStore` overwrites from the fetched XML on every
+    /// refresh — so a feed could call itself "BBC News", copy the BBC's links
+    /// verbatim, and satisfy a test whose comment said it could not be
+    /// satisfied "without controlling the domain they are impersonating".
+    ///
+    /// It was also reading the wrong label. `dropLast().last` takes the
+    /// second-to-last, so `www.bbc.co.uk`, `feeds.bbc.co.uk` and `bbc.co.uk`
+    /// all gave `co`, which fails the three-character minimum — the guard
+    /// never fired for any `.co.uk`, `.com.au` or `.co.jp` host, nor for
+    /// `ft.com`. The comment above it said "the registrable-ish tail".
+    ///
+    /// `feedHost` is the host of the subscription the reader added, which is
+    /// the one string on the item no feed can choose. Comparing it against the
+    /// link's host is the check the old comment already claimed. Still
+    /// one-directional: it can only PREFER an item, never drop one, so an
+    /// edition saved before `feedHost` existed simply declines to prefer.
     static func publishesItsOwn(_ item: FeedItem) -> Bool {
-        guard let linkHost = item.link.host?.lowercased() else { return false }
-        let source = item.sourceTitle.lowercased()
-        guard !source.isEmpty else { return false }
-        // The feed's own declared title is not a host, so the only host we hold
-        // for the item is the link's. Two items differ usefully only when one
-        // of them came from a feed ON that host, which `feedId` alone cannot
-        // tell us — so this compares what it can: whether the source's name
-        // appears in the link's host. Crude, and deliberately one-directional:
-        // it can only ever PREFER an item, never drop one.
-        let label = linkHost.split(separator: ".").dropLast().last.map(String.init) ?? linkHost
-        return label.count >= 3 && source.replacingOccurrences(of: " ", with: "").contains(label)
+        guard let feedHost = item.feedHost?.lowercased(), !feedHost.isEmpty,
+              let linkHost = item.link.host?.lowercased() else { return false }
+        return registrable(feedHost) == registrable(linkHost)
     }
 
     private func dedupeByLink(_ items: [FeedItem]) -> [FeedItem] {
@@ -242,10 +323,11 @@ struct EditionBuilder {
         // vanished with no error and no log line.
         //
         // Dating is clamped at the fetcher now, but a copy timed to arrive
-        // minutes after the original would still win. So a feed whose own host
-        // matches the link's host is preferred: a publisher's feed points at
-        // its own articles, and an attacker cannot arrange that without
-        // controlling the domain they are impersonating.
+        // seconds after the original would still win. So an item whose
+        // SUBSCRIPTION host matches its link's host is preferred: a
+        // publisher's feed points at its own articles, and an attacker cannot
+        // arrange that without the reader having subscribed to a feed on the
+        // domain being impersonated.
         var winners: [String: FeedItem] = [:]
         var order: [String] = []
         for item in items {

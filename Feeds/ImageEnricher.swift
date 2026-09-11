@@ -146,9 +146,11 @@ struct ImageEnricher: Sendable {
                 publishedAt: old.publishedAt,
                 section: old.section,
                 sourceTitle: old.sourceTitle,
-                // Rebuilding dropped this, so an enriched item lost its read
-                // mark and its pin at the 1.5.0 upgrade.
-                legacyItemId: old.legacyItemId
+                // Rebuilding dropped these, so an enriched item lost its read
+                // mark and its pin at the 1.5.0 upgrade, and could not be
+                // preferred over a copy of itself in a link collision.
+                legacyItemId: old.legacyItemId,
+                feedHost: old.feedHost
             )
         }
         return Enrichment(items: updated, retryable: retryable)

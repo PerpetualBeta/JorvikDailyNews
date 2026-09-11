@@ -84,5 +84,21 @@ enum FeedFetcherTests {
             T.equal(out.items.count, 0, "no items")
             T.equal(out.title, "A feed with nothing in it", "title still read")
         }
+
+        T.suite("Dates: a feed cannot stamp itself into the future") {
+            // There used to be a five-minute allowance for clock skew, and it
+            // was worth more to an attacker than to a publisher: `now + 4m59s`
+            // survived untouched and is strictly greater than every honestly
+            // dated item, so the feed led the date-descending sort on every
+            // refresh for free.
+            let now = Date()
+            T.equal(FeedFetcher.clamped(now.addingTimeInterval(299), now: now), now,
+                    "four minutes fifty-nine ahead is pulled back")
+            T.equal(FeedFetcher.clamped(now.addingTimeInterval(86_400), now: now), now,
+                    "and so is tomorrow")
+            let past = now.addingTimeInterval(-3600)
+            T.equal(FeedFetcher.clamped(past, now: now), past, "an honest date is left alone")
+            T.equal(FeedFetcher.clamped(now, now: now), now, "and so is one dated this second")
+        }
     }
 }
