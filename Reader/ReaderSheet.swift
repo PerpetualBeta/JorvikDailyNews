@@ -1339,23 +1339,104 @@ struct VideoEmbedView: NSViewRepresentable {
 
 // MARK: - Native video
 
-/// Basic native player for direct media files (`.mp4`, `.mov`, …). Just the
-/// `AVPlayer` transport over a black backdrop — no page chrome. The player is
-/// held in `@State` so it isn't recreated on every redraw, and paused when
-/// the view goes away.
+/// Native player for direct media files (`.mp4`, `.mov`, …), behind two gates.
+///
+/// **Nothing is fetched until the reader asks for it.** It used to build the
+/// player and call `play()` in `onAppear`, so opening an article was enough to
+/// start fetching and decoding whatever a feed had linked. AVFoundation is a
+/// large C and C++ parser running in this process — unlike PDFKit it cannot be
+/// moved into a helper, because `AVPlayer` renders through a view — so the
+/// difference between "a feed can do this" and "a feed can do this if you press
+/// play" is the whole mitigation.
+///
+/// **And the bytes are looked at before the player sees them.** `AVPlayer`
+/// decides what to do from content rather than from the path, and follows an
+/// HLS playlist to URLs the app never checked. `VideoPreflight` reads a bounded
+/// prefix, applies the same scheme and private-host rule as the rest of the
+/// app, and refuses a playlist.
+///
+/// What none of this removes: decoding a genuine video file still happens in
+/// this process. Only handing the URL to the browser would remove that, at the
+/// cost of the player.
 private struct NativeVideoView: View {
     let url: URL
+
+    private enum Stage: Equatable {
+        case waiting
+        case checking
+        case playing
+        case refused(String)
+    }
+
+    @State private var stage: Stage = .waiting
     @State private var player: AVPlayer?
 
     var body: some View {
-        VideoPlayer(player: player)
-            .background(Color.black)
-            .onAppear {
-                let p = AVPlayer(url: url)
-                player = p
-                p.play()
+        ZStack {
+            Color.black
+            switch stage {
+            case .waiting:
+                Button {
+                    Task { await start() }
+                } label: {
+                    VStack(spacing: 12) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 54))
+                            .foregroundStyle(.white.opacity(0.85))
+                        Text("Play video")
+                            .font(.custom("Charter", size: 13))
+                            .foregroundStyle(.white.opacity(0.7))
+                        Text(url.host ?? "")
+                            .font(.custom("Charter", size: 11))
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
+                }
+                .buttonStyle(.plain)
+
+            case .checking:
+                VStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking the file\u{2026}")
+                        .font(.custom("Charter", size: 12))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+
+            case .playing:
+                VideoPlayer(player: player)
+
+            case .refused(let why):
+                // Says what happened rather than showing a black rectangle,
+                // which is indistinguishable from a video that has not started.
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.white.opacity(0.7))
+                    Text("This video was not played")
+                        .font(.custom("Charter", size: 14))
+                        .foregroundStyle(.white.opacity(0.85))
+                    Text(why)
+                        .font(.custom("Charter", size: 11))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 320)
+                }
+                .padding()
             }
-            .onDisappear { player?.pause() }
+        }
+        .onDisappear { player?.pause() }
+    }
+
+    private func start() async {
+        stage = .checking
+        switch await VideoPreflight.check(url) {
+        case .refuse(let why):
+            stage = .refused(why)
+        case .play:
+            let p = AVPlayer(url: url)
+            player = p
+            stage = .playing
+            p.play()
+        }
     }
 }
 

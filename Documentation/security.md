@@ -22,7 +22,11 @@ Article links get the same rule, and that is why they need it. A `webcal:` link 
 
 **An inline SVG cannot reach outside itself.** SVG is drawn by `NSImage(data:)`, which uses AppKit's private SVG representation: closed code, so what it will resolve is a property of the OS rather than of this app, and it was only ever measured on one version. Scripts, `foreignObject`, iframes, event handlers, stylesheet imports, and any reference or `url()` carrying a scheme other than `data:` are stripped when the block is captured, so the question no longer depends on the OS. Fragment references survive, because `<use href="#icon">` is how real diagrams are built. The reader checks again before drawing, because the stripping is done in JavaScript and the drawing in Swift, and a rule held in only one half is one edit from being gone.
 
-**The sandbox remains the backstop.** AVFoundation still parses attacker-chosen bytes in this process: `AVPlayer` renders through a view and cannot be moved out of it, so the helper approach does not apply. An `.mp4` path still goes straight to it, which is the argument for the container.
+**A video is not fetched until you press play, and not played until its bytes have been looked at.** Opening an article used to be enough to start fetching and decoding whatever a feed had linked. Now the pane shows a play button and does nothing until it is pressed; then the address is checked against the same scheme and private-host rule as everything else, and a bounded prefix of the response is read.
+
+That second step is not belt and braces. `AVPlayer` decides what to do from content rather than from the path, and it **follows an HLS playlist to whatever URLs the playlist names**. Measured against a local server: a URL ending `.mp4` that served `#EXTM3U` made the player fetch a segment URL the app had never seen. A check applied only to the link is therefore cosmetic, because the link is the one URL an attacker does not need. A playlist is refused outright, which costs live streams — rare behind a bare `.mp4` link — and buys the only reliable way to stop one checked URL becoming a list of unchecked ones.
+
+**The sandbox remains the backstop, because one thing is left.** Decoding a genuine video file still happens in this process: `AVPlayer` renders through a view and cannot be moved into a helper the way PDFKit was. Nothing above removes that, and it is stated here rather than left for a reader to notice.
 
 ---
 
