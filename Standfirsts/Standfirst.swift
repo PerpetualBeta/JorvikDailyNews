@@ -193,9 +193,74 @@ enum Standfirst {
     /// property the browser supports is , , or the IE proprietary". `pre` is
     /// the block form and takes the whole listing with it, which is what we
     /// want — a code listing is not a standfirst.
+    /// The non-prose elements to drop whole, contents and all.
+    ///
+    /// `code` is deliberately absent — see the note above `removeNonProse`.
+    private static let nonProseTags = ["script", "style", "pre", "figcaption",
+                                       "table", "form", "noscript", "iframe", "svg"]
+
+    /// Drops comments and non-prose blocks, in one linear pass each.
+    ///
+    /// **This used to be two regexes, and both were quadratic.**
+    /// `<!--.*?-->` and `<tag…>.*?</tag>` are lazy, so against an opener that
+    /// never closes the body expands to end of input from every start position.
+    /// Measured on a description of repeated unclosed openers: 0.572s at 16 KB,
+    /// 2.127s at 32 KB, 8.655s at 64 KB, paid per item, on the cooperative pool,
+    /// sixteen feeds at a time. One feed of 128 such items is about nineteen
+    /// minutes of CPU per refresh.
+    ///
+    /// Bounding the lazy body was measured too and only got 64 KB to 1.4s,
+    /// which is still far too slow. A scanner is linear and does the same job:
+    /// find an opener, find its closer, remove the span; an opener with no
+    /// closer takes the rest of the document, which is both cheap and what the
+    /// regex meant.
     private static func removeNonProse(_ html: String) -> String {
-        let noComments = replace(Patterns.comment, in: html, with: " ")
-        return replace(Patterns.nonProse, in: noComments, with: " ")
+        var out = removeSpans(in: html, opener: "<!--", closer: "-->")
+        for tag in nonProseTags {
+            out = removeSpans(in: out, opener: "<" + tag, closer: "</" + tag, needsTagBoundary: true)
+        }
+        return out
+    }
+
+    /// Removes every `opener … closer` span, replacing each with a space.
+    ///
+    /// - Parameter needsTagBoundary: for an element name, so `<form` does not
+    ///   match `<formula`. The character after the name must end it.
+    private static func removeSpans(in html: String, opener: String, closer: String,
+                                    needsTagBoundary: Bool = false) -> String {
+        guard html.range(of: opener, options: .caseInsensitive) != nil else { return html }
+        var out = ""
+        out.reserveCapacity(html.count)
+        var index = html.startIndex
+        while let start = html.range(of: opener, options: .caseInsensitive,
+                                     range: index..<html.endIndex) {
+            if needsTagBoundary, start.upperBound < html.endIndex {
+                let after = html[start.upperBound]
+                // `<form` must be followed by something that ends the name.
+                if after.isLetter || after.isNumber || after == "-" {
+                    out += html[index..<start.upperBound]
+                    index = start.upperBound
+                    continue
+                }
+            }
+            out += html[index..<start.lowerBound]
+            out += " "
+            if let end = html.range(of: closer, options: .caseInsensitive,
+                                    range: start.upperBound..<html.endIndex) {
+                // Past the closer's own `>`, if it has one.
+                if let gt = html.range(of: ">", range: end.upperBound..<html.endIndex),
+                   html.distance(from: end.upperBound, to: gt.lowerBound) < 32 {
+                    index = gt.upperBound
+                } else {
+                    index = end.upperBound
+                }
+            } else {
+                // No closer at all: the rest of the document belongs to it.
+                return out
+            }
+        }
+        out += html[index...]
+        return out
     }
 
     /// One block of markup reduced to a single line of readable text.

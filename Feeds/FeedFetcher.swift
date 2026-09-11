@@ -606,8 +606,21 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             parser.abortParsing()
             return
         }
-        guard buffer.utf8.count < Self.maxElementText else { return }
-        buffer.append(text)
+        // **Truncate the chunk, do not drop it.** This tested the ceiling
+        // BEFORE appending, so the first chunk was always taken whole.
+        // `foundCharacters` is safe because libxml2 chunks character data at
+        // about 300 bytes — but `foundCDATA` hands over the entire block in one
+        // `Data`, so a single multi-megabyte CDATA section left `buffer` at
+        // 4,194,304 bytes against a declared 64 KB ceiling, in one callback.
+        // That oversized string then became `bodyHTML` and was handed to the
+        // pattern matching below, which is where it hurt.
+        let room = Self.maxElementText - buffer.utf8.count
+        guard room > 0 else { return }
+        if text.utf8.count <= room {
+            buffer.append(text)
+        } else {
+            buffer.append(contentsOf: String(decoding: text.utf8.prefix(room), as: UTF8.self))
+        }
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
@@ -883,13 +896,54 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         return firstImageURL(in: bodyHTML)
     }
 
+    /// Compiled once, not once per item.
+    ///
+    /// It used to be built inline on every call, and run over the whole body.
+    /// `<img[^>]+src=…` backtracks `[^>]+` one character at a time from every
+    /// `<img`, so a description of repeated `<img ` with no `>` measured
+    /// 0.498s at 16 KB, 2.013s at 32 KB and 8.007s at 64 KB — a clean 4x per
+    /// doubling, paid per item, on the cooperative pool, sixteen feeds at once.
+    private static let imgPattern = try? NSRegularExpression(
+        pattern: "<img[^>]+src=[\"']([^\"']+)[\"']", options: .caseInsensitive)
+
+    /// The first `<img src>` in a body, or nil.
+    ///
+    /// Tags are split out first so the pattern only ever sees one short tag,
+    /// the same correction the image enricher needed. The splitter skips a
+    /// whole window when it finds no `>`, because advancing one character at a
+    /// time puts the quadratic back in the splitter.
     private func firstImageURL(in html: String) -> URL? {
-        guard let regex = try? NSRegularExpression(pattern: "<img[^>]+src=[\"']([^\"']+)[\"']", options: .caseInsensitive) else { return nil }
-        let range = NSRange(html.startIndex..., in: html)
-        guard let match = regex.firstMatch(in: html, range: range),
-              match.numberOfRanges > 1,
-              let r = Range(match.range(at: 1), in: html) else { return nil }
-        return URL(string: String(html[r]))
+        guard let regex = Self.imgPattern else { return nil }
+        for tag in Self.tags("img", in: html) {
+            let range = NSRange(tag.startIndex..., in: tag)
+            guard let match = regex.firstMatch(in: tag, range: range),
+                  match.numberOfRanges > 1,
+                  let r = Range(match.range(at: 1), in: tag) else { continue }
+            return URL(string: String(tag[r]))
+        }
+        return nil
+    }
+
+    /// Every `<tag …>` of one name, as separate strings. See `firstImageURL`.
+    static func tags(_ name: String, in html: String) -> [String] {
+        let maxTag = 4096
+        var out: [String] = []
+        var index = html.startIndex
+        let opener = "<" + name
+        while let start = html.range(of: opener, options: [.caseInsensitive],
+                                     range: index..<html.endIndex) {
+            let limit = html.index(start.lowerBound, offsetBy: maxTag,
+                                   limitedBy: html.endIndex) ?? html.endIndex
+            if let close = html.range(of: ">", range: start.upperBound..<limit) {
+                out.append(String(html[start.lowerBound...close.lowerBound]))
+                index = close.upperBound
+            } else {
+                index = limit
+                if limit == html.endIndex { break }
+            }
+            if out.count >= 512 { break }
+        }
+        return out
     }
 
 }

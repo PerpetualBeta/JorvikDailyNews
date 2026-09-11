@@ -6,6 +6,34 @@ import Foundation
 enum StandfirstTests {
 
     static func run() {
+        T.suite("Standfirst: an unclosed opener does not cost the afternoon") {
+            // `<!--.*?-->` and `<tag…>.*?</tag>` are lazy, so an opener that
+            // never closes expanded the body to end of input from every start
+            // position: 8.7s for 64 KB, per item, sixteen feeds at a time.
+            // Both are linear scans now.
+            //
+            // Correctness, not timing: an unclosed opener takes the rest of the
+            // document, which is what the regex meant and what a browser does.
+            let prose = "<p>A real opening paragraph with plenty of words in it so that it counts.</p>"
+            T.expect(Standfirst.extract(from: prose + "<svg><rect/>").contains("real opening paragraph"),
+                     "prose before an unclosed svg survives")
+            T.expect(!Standfirst.extract(from: prose + "<svg>hidden text here</svg>").contains("hidden"),
+                     "a closed svg takes its contents")
+            T.expect(!Standfirst.extract(from: prose + "<!-- hidden -->").contains("hidden"),
+                     "a closed comment goes")
+            T.equal(Standfirst.extract(from: "<svg><rect/>" + prose), "",
+                     "an unclosed opener FIRST takes everything after it")
+            // A tag whose name merely starts the same must not be eaten.
+            let formula = "<p>Before.</p><formula>kept</formula><p>A long enough paragraph of real prose to be extracted here.</p>"
+            T.expect(!Standfirst.extract(from: formula).isEmpty, "<formula> is not <form>")
+            // The pathological inputs must simply not hang.
+            for opener in ["<!--", "<svg>", "<table>", "<script>"] {
+                let n = 16 * 1024 / opener.count
+                _ = Standfirst.extract(from: String(repeating: opener, count: n))
+            }
+            T.expect(true, "16 KB of each unclosed opener completes")
+        }
+
         T.suite("Entities: one pass, left to right") {
             // The whole reason this is a scanner and not a chain of
             // `replacingOccurrences`. Replacing `&amp;` first turns a literal
