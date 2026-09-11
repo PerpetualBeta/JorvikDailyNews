@@ -412,6 +412,42 @@ enum WalkerTests {
             T.equal(text(walk(ordinary)[1]), "OneTwo", "with its items whole")
         }
 
+        T.suite("Walker: the ceiling counts UTF-16 and never cuts a pair") {
+            let cap = 64 * 1024
+            // A cut by raw UTF-16 index can end on a lone high surrogate.
+            // `JSON.stringify` emits that happily as a \\ud83d escape, and
+            // Swift's JSONDecoder then rejects the WHOLE article with "Missing
+            // low code point in surrogate pair" — so one emoji landing on the
+            // 65,536th unit turned a page that extracted perfectly into no
+            // article at all. Every other case in this file is BMP ASCII,
+            // which is why they all passed with this open.
+            let onCeiling = String(repeating: "a", count: cap - 1)
+                + String(repeating: "\u{1F600}", count: 10)
+            for (what, html) in [("a paragraph", "<p>" + onCeiling + "</p>"),
+                                 ("a <pre>", "<pre>" + onCeiling + "</pre>"),
+                                 ("a loose text node", "<article>" + onCeiling + "</article>")] {
+                let out = walk(html)
+                T.expect(!out.isEmpty, "\(what) still produces a block")
+                let body = (out[0]["text"] as? String) ?? text(out[0])
+                T.expect(body.utf16.count <= cap, "\(what) is inside the ceiling")
+                T.expect(body.unicodeScalars.allSatisfy { $0.value < 0xD800 || $0.value > 0xDFFF },
+                         "\(what) carries no lone surrogate")
+            }
+        }
+
+        T.suite("Walker: a loose text node is budgeted like everything else") {
+            // The one `blocks.push` that bypassed the budget. A bare text node
+            // is not an element, so the 60,000-element and depth guards are
+            // blind to it too.
+            let bulk = String(repeating: "x", count: 300_000)
+            for parent in ["article", "section", "div"] {
+                let out = walk("<" + parent + "><p>Intro.</p>" + bulk + "<p>Tail.</p></" + parent + ">")
+                let longest = out.map { text($0).utf16.count }.max() ?? 0
+                T.expect(longest <= 64 * 1024,
+                         "loose text under <\(parent)> is cut, longest block \(longest)")
+            }
+        }
+
         T.suite("Walker: an absurd image source is refused") {
             // `ReaderLede.key` percent-decodes every src on every body pass.
             let long = "<img src=\"data:image/png;base64,"

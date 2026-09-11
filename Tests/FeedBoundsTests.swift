@@ -242,6 +242,52 @@ enum FeedBoundsTests {
                      "but an absurd picture address is dropped, not truncated")
         }
 
+        T.suite("Bounds: every ceiling counts the unit its consumer counts") {
+            // A Character is a grapheme cluster with no bounded size, so every
+            // clamp written as `prefix(n)` bounded nothing. Measured on this
+            // toolchain: `String(title.prefix(500))` over combining marks is
+            // ONE Character and 80,000 bytes.
+            let accents = String(repeating: "\u{0301}", count: 40_000)
+            let titled = try parse(rss(item("A" + accents)))
+            let storedTitle = titled.items.first?.title ?? ""
+            T.expect(storedTitle.utf16.count <= FeedFetcher.maxStoredTitle,
+                     "a title is bounded in UTF-16, got \(storedTitle.utf16.count)")
+
+            // And the link ceiling is measured on the value that is stored.
+            // `URL.absoluteString` percent-encodes, so 26 Characters in became
+            // 180,026 characters out, 88x over a ceiling written as 2,048.
+            let comb = String(repeating: "\u{0301}", count: 30_000)
+            let sneaky = try parse(rss(item("A story", link: "https://example.com/a?q=" + comb)))
+            for item in sneaky.items {
+                T.expect(item.link.absoluteString.utf16.count <= FeedFetcher.maxStoredURL,
+                         "a stored link is inside the ceiling, got "
+                         + "\(item.link.absoluteString.utf16.count)")
+            }
+        }
+
+        T.suite("Bounds: UTF-16 that will not decode is refused, not waved through") {
+            // Two trailing bytes of lone surrogate made Foundation refuse the
+            // string, `utf8Bytes` fall back to the raw UTF-16, and the ASCII
+            // `<!ENTITY` scan match nothing — while libxml2 decoded the body
+            // perfectly well and paid the full amplification. Not enough to
+            // trouble the parser, enough to blind the guard.
+            let value = String(repeating: "A", count: 40_000)
+            let refs = String(repeating: "&big;", count: 200)
+            let doc = "<?xml version=\"1.0\"?>\n<!DOCTYPE rss [<!ENTITY big \"" + value + "\">]>"
+                + "<rss><channel><title>" + refs + "</title></channel></rss>"
+            var utf16 = Data([0xFF, 0xFE])
+            utf16.append(contentsOf: Array(doc.utf16).flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] })
+            T.expect(FeedFetcher.entityAmplification(in: utf16) != nil,
+                     "the clean UTF-16 bomb is caught")
+
+            var poisoned = utf16
+            poisoned.append(contentsOf: [0x00, 0xD8])
+            T.expect(FeedFetcher.entityAmplification(in: poisoned) == nil,
+                     "the entity scan alone is blind to the poisoned one — this is the bypass")
+            T.expect(FeedFetcher.scanRefusal(poisoned)?.contains("will not decode") == true,
+                     "so scanRefusal has to be the thing that catches it")
+        }
+
         T.suite("Bounds: an ordinary feed is unaffected") {
             let out = try parse(rss(item("Harry Kane nominated for the Ballon d'Or",
                                          summary: "The England captain is one of thirty "

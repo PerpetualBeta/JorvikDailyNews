@@ -89,6 +89,17 @@ enum BaseHref {
                 }
             }
             out += html[index..<start.lowerBound]
+            // **A space, not nothing.** Deleting the span joined what was
+            // before it onto what came after, and the join manufactured the
+            // element this function exists to delete:
+            // `<bas` + `<base x>` + `e href="https://evil.example/">` removed to
+            // `<base href="https://evil.example/">`, first in tree order, which
+            // is the exact invariant `apply` above claims to hold. It built any
+            // tag the same way — `<scr<base x>ipt>` came out as `<script>`,
+            // inert only because scripting is off on every rung that reaches
+            // here. `Standfirst.removeSpans` has always substituted a space for
+            // this reason.
+            out += " "
             guard let gt = html.range(of: ">", range: start.upperBound..<html.endIndex) else {
                 // No `>` anywhere after it: the rest of the document is inside
                 // this tag, and a parser would lose it too.

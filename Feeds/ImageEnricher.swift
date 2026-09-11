@@ -130,11 +130,12 @@ struct ImageEnricher: Sendable {
             // `Standfirst.extract` does not truncate when no paragraph reaches
             // its word minimum: it returns the flattened lot.
             var image = old.imageURL ?? meta.image
-            if let picture = image, picture.absoluteString.count > FeedFetcher.maxStoredURL {
+            if let picture = image,
+               picture.absoluteString.storedLength > FeedFetcher.maxStoredURL {
                 image = old.imageURL
             }
             let offered = old.summary.isEmpty ? (meta.description ?? "") : old.summary
-            let summary = String(offered.prefix(FeedFetcher.maxStoredSummary))
+            let summary = offered.clamped(toUTF16: FeedFetcher.maxStoredSummary)
             guard image != old.imageURL || summary != old.summary else { continue }
             updated[idx] = FeedItem(
                 feedId: old.feedId,

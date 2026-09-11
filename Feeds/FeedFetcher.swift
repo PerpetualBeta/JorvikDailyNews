@@ -165,9 +165,11 @@ final class FeedFetcher: Sendable {
               let text = String(data: data, encoding: encoding),
               let utf8 = text.data(using: .utf8)
         else {
-            // Undecodable as the encoding its own bytes advertise. Returning the
-            // original means the scan sees something it cannot match, so the
-            // safe answer is to let the caller refuse the feed instead.
+            // Undecodable as the encoding its own bytes advertise.
+            // `scanRefusal` refuses this before anything reaches here, so the
+            // scan is never handed bytes it cannot read. Kept as a total
+            // function rather than a trap, because `entityAmplification` is
+            // also called by `OPMLImporter`.
             return data
         }
         return utf8
@@ -204,9 +206,25 @@ final class FeedFetcher: Sendable {
         if !isReadableEncoding(data) {
             return "is in an encoding this reader will not scan"
         }
-        if utf16Encoding(of: data) != nil, data.count > maxTranscodedBody {
-            return "is \(data.count) bytes of UTF-16, over the \(maxTranscodedBody) "
-                 + "this reader will transcode to scan"
+        if let encoding = utf16Encoding(of: data) {
+            if data.count > maxTranscodedBody {
+                return "is \(data.count) bytes of UTF-16, over the \(maxTranscodedBody) "
+                     + "this reader will transcode to scan"
+            }
+            // **The third branch of this hole, and `utf8Bytes` already named
+            // it.** Its comment says "the safe answer is to let the caller
+            // refuse the feed instead", and no caller did: it returned the raw
+            // UTF-16, the ASCII `<!ENTITY` scan matched nothing in
+            // `3C 00 21 00 …`, `parse` read nil as clean, and `XMLParser`
+            // decoded the body perfectly well and paid the full amplification.
+            //
+            // Two trailing bytes of lone surrogate were the whole attack:
+            // enough to make Foundation refuse the string, not enough to
+            // trouble libxml2. Measured: the same bomb was refused in 0.00 s
+            // without them and parsed in 193 s with them.
+            if String(data: data, encoding: encoding) == nil {
+                return "declares UTF-16 that will not decode, so it cannot be scanned"
+            }
         }
         return nil
     }
@@ -722,7 +740,7 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
                 // is written to `feeds.json` and rewritten on every refresh,
                 // so an unbounded value is a permanent cost rather than a
                 // passing one.
-                channelTitle = String(text.prefix(FeedFetcher.maxStoredTitle))
+                channelTitle = text.clamped(toUTF16: FeedFetcher.maxStoredTitle)
             }
         }
 
@@ -771,15 +789,10 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
     // MARK: - Finalisation
 
     private func finalise(_ b: ItemBuilder) -> FeedItem? {
-        let title = String(Standfirst.decodeEntities(b.title).trimmed
-            .prefix(FeedFetcher.maxStoredTitle))
+        let title = Standfirst.decodeEntities(b.title).trimmed
+            .clamped(toUTF16: FeedFetcher.maxStoredTitle)
         guard !title.isEmpty else { return nil }
         let rawLink = b.link.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard rawLink.count <= FeedFetcher.maxStoredURL else {
-            jdnLog("fetch: \(feed.url.host ?? "?") offered a \(rawLink.count)-character "
-                   + "link — item refused")
-            return nil
-        }
         guard let originalLink = URL(string: rawLink),
               // **`hasPrefix` is not a scheme test.** It admitted `httpx:`,
               // `http-custom:` and `https.zoommtg:`, all of which parse, and it
@@ -801,18 +814,33 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         // away. `firstExternalURL` tested only the scheme, with no private-host
         // half at all.
         let resolved = resolveTargetURL(originalLink, in: bodyHTML)
-        let usable = WebURL.isAllowed(resolved)
-            && resolved.absoluteString.count <= FeedFetcher.maxStoredURL
-        let link = usable ? resolved : originalLink
-        let summary = String(cleanSummary(Standfirst.extract(from: bodyHTML))
-            .prefix(FeedFetcher.maxStoredSummary))
+        let link = WebURL.isAllowed(resolved) ? resolved : originalLink
+        // **Measured once, on the value that is actually stored.**
+        //
+        // This used to be two tests and neither bound anything. The first
+        // counted `Character`s of the raw element text, and a `Character` is a
+        // grapheme cluster: `https://e.example/?q=a` plus 30,000 U+0301 is 26
+        // `Character`s in and an `absoluteString` of 180,026 out, because the
+        // toolchain percent-encodes. The second did look at `absoluteString`,
+        // but its failure branch fell back to `originalLink` — and for every
+        // non-aggregator feed `resolveTargetURL` returns the link unchanged,
+        // so the fallback was the identical oversized URL. It could only ever
+        // reject the aggregator substitution.
+        guard link.absoluteString.storedLength <= FeedFetcher.maxStoredURL else {
+            jdnLog("fetch: \(feed.url.host ?? "?") offered a "
+                   + "\(link.absoluteString.storedLength)-unit link — item refused")
+            return nil
+        }
+        let summary = cleanSummary(Standfirst.extract(from: bodyHTML))
+            .clamped(toUTF16: FeedFetcher.maxStoredSummary)
         // Clamped like the link above. A picture address has no ceiling of its
         // own anywhere: an `og:image` padded to the element limit would be
         // stored, re-encoded on every save and decoded before the window
         // appears. Dropped rather than truncated, because half an address is
         // a request to somewhere nobody meant.
         var imageURL = pickBestImage(candidates: b.imageCandidates, bodyHTML: bodyHTML)
-        if let picture = imageURL, picture.absoluteString.count > FeedFetcher.maxStoredURL {
+        if let picture = imageURL,
+           picture.absoluteString.storedLength > FeedFetcher.maxStoredURL {
             imageURL = nil
         }
 
@@ -859,7 +887,7 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             // earlier comment here said otherwise. Both migrations now consume
             // the key as they carry it, so a copied guid can claim a mark or a
             // pin at most once and only if it gets there first.
-            legacyItemId: String(offered.prefix(FeedFetcher.maxStoredLegacyID)),
+            legacyItemId: offered.clamped(toUTF16: FeedFetcher.maxStoredLegacyID),
             feedHost: feed.url.host?.lowercased()
         )
     }

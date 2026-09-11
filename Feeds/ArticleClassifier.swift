@@ -119,7 +119,7 @@ final class ArticleClassifier {
         // A headline and a standfirst are a few hundred characters. 4,096 is
         // generous, and the top-N cap keeps one correction's contribution
         // proportionate to what a correction actually means.
-        let freqs = Self.trim(Self.tokenFrequencies(Self.tokenise(String(text.prefix(Self.maxTrainingText)))))
+        let freqs = Self.trim(Self.tokenFrequencies(Self.tokenise(text.clamped(toUTF16: Self.maxTrainingText))))
         apply(tokens: freqs, section: section)
         state.corrections[itemId] = .init(tokens: freqs, section: section)
         state.pins[itemId] = section

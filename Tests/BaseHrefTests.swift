@@ -45,13 +45,44 @@ enum BaseHrefTests {
                      "a comment holding <head does not lose ours")
         }
 
+        T.suite("Base href: removal cannot manufacture the tag it removes") {
+            // Deleting the span joined what came before it onto what came
+            // after, and the join built the element this function exists to
+            // delete. Measured on the shipped file before the fix:
+            // `<bas` + `<base x>` + `e href="https://evil.example/">` stripped
+            // to a live `<base href="https://evil.example/">`, first in tree
+            // order, which is the exact invariant `apply` claims to hold.
+            let spliced = "<bas<base x>e href=\"https://evil.example/\">"
+                + "<html><head></head><body>hi</body></html>"
+            let out = BaseHref.stripped(spliced)
+            T.expect(!out.lowercased().contains("<base href"),
+                     "no base tag is manufactured, got \(out.prefix(40))")
+
+            // Two of them work the same way, so the shape is not fragile.
+            let twice = "<ba<base a>s<base b>e href=\"https://evil.example/\"><html></html>"
+            T.expect(!BaseHref.stripped(twice).lowercased().contains("<base href"),
+                     "nor by two removals meeting")
+
+            // And the splice was not specific to <base>: it built any tag.
+            T.expect(!BaseHref.stripped("<scr<base x>ipt>alert(1)</scr<base y>ipt>")
+                        .contains("<script>"), "nor a script tag")
+
+            // Ours is the only base left, and it is first.
+            let applied = BaseHref.apply(to: spliced, base: base)
+            let first = applied.range(of: "<base", options: .caseInsensitive)
+            T.expect(first != nil, "ours is present")
+            T.expect(applied[first!.lowerBound...].hasPrefix("<base href=\"https://example.com"),
+                     "and it is the first base in the document")
+        }
+
         T.suite("Base href: stripping is linear and knows its own tag name") {
             T.equal(BaseHref.stripped("<p>x</p>"), "<p>x</p>", "a document with none is untouched")
             T.expect(BaseHref.stripped("<basefont color=\"red\">").contains("basefont"),
                      "<basefont> is a different element")
             T.expect(BaseHref.stripped("<p>baseball</p>").contains("baseball"),
                      "and <baseball> is not one at all")
-            T.equal(BaseHref.stripped("a<base href=\"x\">b"), "ab", "the tag and nothing else")
+            // A space, not nothing: see the splice case below.
+            T.equal(BaseHref.stripped("a<base href=\"x\">b"), "a b", "the tag becomes a space")
 
             // `<base\b[^>]*>` is quadratic on this: every start position
             // rescans to the end looking for a `>` that is not there. A

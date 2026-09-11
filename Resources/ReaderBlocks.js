@@ -65,10 +65,7 @@
     function push(text, s) {
       if (!text) return;
       if (left.chars <= 0) { charsTruncated += text.length; return; }
-      if (text.length > left.chars) {
-        charsTruncated += text.length - left.chars;
-        text = text.slice(0, left.chars);
-      }
+      if (text.length > left.chars) { text = cutToLimit(text, left.chars); }
       left.chars -= text.length;
       var last = out[out.length - 1];
       if (last && last.bold === s.bold && last.italic === s.italic
@@ -182,6 +179,25 @@
   /// Counts what the two ceilings above threw away, reported to the caller as
   /// part of `dropped`. Reset at the top of every `__jdnBlocks` call.
   var charsTruncated = 0;
+
+  /// `text` cut to at most `limit` UTF-16 units, never between a surrogate
+  /// pair.
+  ///
+  /// **A raw `slice` here cost the whole article, not one block.** The kept
+  /// string could end on a lone high surrogate, `JSON.stringify` emitted it
+  /// happily as `\ud83d`, and Swift's `JSONDecoder` then rejected the entire
+  /// payload with "Missing low code point in surrogate pair" — so one emoji
+  /// landing on the 65,536th unit turned a page that extracted perfectly into
+  /// no article at all, and in the steady state (rung 1 locked after two wins)
+  /// there was no WebKit rung left to fall through to.
+  function cutToLimit(text, limit) {
+    if (text.length <= limit) { return text; }
+    var cut = limit;
+    var last = text.charCodeAt(cut - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) { cut -= 1; }
+    charsTruncated += text.length - cut;
+    return text.slice(0, cut);
+  }
 
   /// Largest side a declared SVG size may claim, in points. Far above any
   /// diagram and far below the point where a layout is asked for something
@@ -548,8 +564,18 @@
       for (var n = node.firstChild; n; n = n.nextSibling) {
         if (n.nodeType === 3) {
           // Loose text between blocks. Real on some feeds.
+          //
+          // **The one `blocks.push` that used to bypass the budget.** Every
+          // other emitter routes its text through `runsOf`, or cuts it
+          // explicitly as the `<pre>` case does; this arm took `nodeValue`
+          // verbatim. A bare text node is not an element, so neither the
+          // 60,000-element ceiling nor the depth guard can see it either:
+          // `<article><p>a</p>` + 300,000 characters + `<p>b</p>` emitted a
+          // 300,000-character block with `dropped` empty, while the same bulk
+          // inside a `<p>` was cut to 65,536.
           if (!isBlank(n.nodeValue)) {
-            blocks.push({ kind: 'paragraph', runs: [{ text: n.nodeValue.replace(/\s+/g, ' ').trim(),
+            var loose = cutToLimit(n.nodeValue.replace(/\s+/g, ' ').trim(), MAX_BLOCK_CHARS);
+            blocks.push({ kind: 'paragraph', runs: [{ text: loose,
                                                       bold: false, italic: false, code: false, href: null }] });
           }
           continue;
@@ -605,11 +631,7 @@
             // One <pre> is one element, so MAX_BLOCKS never saw it. This is
             // the cleanest way to hand the layout engine a megabyte on one
             // line, and so the one that has to be clamped here.
-            var code = n.textContent || '';
-            if (code.length > MAX_BLOCK_CHARS) {
-              charsTruncated += code.length - MAX_BLOCK_CHARS;
-              code = code.slice(0, MAX_BLOCK_CHARS);
-            }
+            var code = cutToLimit(n.textContent || '', MAX_BLOCK_CHARS);
             if (!isBlank(code)) blocks.push({ kind: 'code', text: code.replace(/\s+$/, '') });
             break;
           }

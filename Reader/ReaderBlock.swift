@@ -127,7 +127,16 @@ extension Array where Element == ReaderBlock {
     /// reason `InlineSVG.maxSource` restates the SVG ceiling.
     static var maxBlocks: Int { 4000 }
 
-    /// Characters one block may carry, summed over every run, cell or item.
+    /// UTF-16 code units one block may carry, summed over every run, cell or
+    /// item.
+    ///
+    /// **Counted in the unit the walker counts and the layout engine lays
+    /// out.** This used to be `String.count`, which is grapheme clusters, so
+    /// the two halves were not restatements of one rule — they were two
+    /// different rules that agreed only on ASCII. 65,000 clusters of `a` plus
+    /// 200 combining accents is 65,000 `Character`s and 13,065,000 UTF-16
+    /// units: it passed a ceiling written as 65,536 and reached
+    /// `NSLayoutManager`, measured at about 3 s on the main thread.
     static var maxBlockChars: Int { 64 * 1024 }
 
     /// List items, or table cells, one block may hold.
@@ -189,8 +198,8 @@ extension ReaderBlock {
             var left = [ReaderBlock].maxBlockChars
             copy.caption = Self.clamp(caption, &left)
         }
-        if let text, text.count > [ReaderBlock].maxBlockChars {
-            copy.text = String(text.prefix([ReaderBlock].maxBlockChars))
+        if let text, text.storedLength > [ReaderBlock].maxBlockChars {
+            copy.text = text.clamped(toUTF16: [ReaderBlock].maxBlockChars)
             lost = true
         }
         if let items {
@@ -223,7 +232,7 @@ extension ReaderBlock {
         }
         // A src this long is not a picture anyone meant to publish, and it is
         // what `ReaderLede.key` would percent-decode on every body pass.
-        if let src, src.count > [ReaderBlock].maxSrcChars {
+        if let src, src.storedLength > [ReaderBlock].maxSrcChars {
             copy.src = nil
             lost = true
         }
@@ -239,9 +248,9 @@ extension ReaderBlock {
         out.reserveCapacity(runs.count)
         for run in runs {
             if left <= 0 { break }
-            let length = run.text.count
+            let length = run.text.storedLength
             if length > left {
-                out.append(Run(text: String(run.text.prefix(left)), bold: run.bold,
+                out.append(Run(text: run.text.clamped(toUTF16: left), bold: run.bold,
                                italic: run.italic, code: run.code, href: run.href))
                 left = 0
                 break
