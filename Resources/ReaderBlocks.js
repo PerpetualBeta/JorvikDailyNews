@@ -408,8 +408,26 @@
           case 'UL': emitList(n, false); break;
           case 'OL': emitList(n, true); break;
           case 'BLOCKQUOTE': {
+            // Text first, then any pictures inside it.
+            //
+            // A quote used to be text and nothing else, so **every image
+            // inside a blockquote was silently lost**. thedailywtf.com puts
+            // each of its screenshots in
+            // `<blockquote><p><a href="#id"><img></a></p></blockquote>`, which
+            // is the whole point of the article, and the reader showed the
+            // captions with no pictures. Found by Jonathan comparing the
+            // reader against Safari.
+            //
+            // Emitted after the quote rather than in document order, because a
+            // quote's text is its own block and splitting it around a picture
+            // would read worse than following it.
             var qr = runsOf(n);
             if (qr.length) blocks.push({ kind: 'quote', runs: qr });
+            var quoted = n.querySelectorAll ? n.querySelectorAll('img') : [];
+            for (var qi = 0; qi < quoted.length; qi++) {
+              var qb = imageBlock(quoted[qi]);
+              if (qb) { blocks.push(qb); }
+            }
             break;
           }
           case 'PRE': {

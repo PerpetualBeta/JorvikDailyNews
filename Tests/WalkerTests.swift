@@ -296,6 +296,33 @@ enum WalkerTests {
             T.equal(walk(ordinary).count, 600, "600 blocks pass through whole")
         }
 
+        T.suite("Walker: a quote keeps its pictures") {
+            // Every image inside a blockquote used to be dropped: a quote was
+            // text and nothing else. thedailywtf.com puts each screenshot in
+            // `<blockquote><p><a href="#id"><img></a></p></blockquote>`, so
+            // the reader showed that article's captions with no pictures at
+            // all while Safari showed six.
+            let img = "<img src=\"https://cdn.example.com/shot.png\" alt=\"a\"/>"
+            func kindsFor(_ inner: String) -> [String] {
+                kinds(walk("<p>Lead in.</p>" + inner + "<p>Tail.</p>"))
+            }
+            T.expect(kindsFor("<blockquote>\(img)</blockquote>").contains("image"),
+                     "an image directly in a quote")
+            T.expect(kindsFor("<blockquote><p>\(img)</p></blockquote>").contains("image"),
+                     "wrapped in a paragraph")
+            T.expect(kindsFor("<blockquote><p><a href=\"#x\">\(img)</a></p><p> </p></blockquote>")
+                        .contains("image"), "the shape thedailywtf.com actually uses")
+            // The quote's own text still comes through, and still first.
+            let both = kindsFor("<blockquote><p>Said the thing.</p>\(img)</blockquote>")
+            T.expect(both.contains("quote"), "the quote text survives")
+            if let q = both.firstIndex(of: "quote"), let i = both.firstIndex(of: "image") {
+                T.expect(q < i, "text before picture")
+            }
+            // A quote with no picture is unchanged.
+            T.equal(kindsFor("<blockquote><p>Just words.</p></blockquote>"),
+                    ["paragraph", "quote", "paragraph"], "a plain quote is untouched")
+        }
+
         T.suite("Walker: nothing to walk") {
             T.expect(walk("").isEmpty, "empty input, no blocks")
             T.expect(walk("<div></div>").isEmpty, "an empty container yields nothing")
