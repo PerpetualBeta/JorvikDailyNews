@@ -92,6 +92,24 @@ final class FeedFetcher: Sendable {
 
     static let maxStoredTitle = 500
     static let maxStoredSummary = 4000
+
+    /// Longest link or picture address an item may carry, in characters.
+    ///
+    /// Every other stored string is clamped where it is parsed; these two were
+    /// not, and `URL(string:)` accepts a 65,561-character https URL and reports
+    /// its host correctly, so `WebURL.isAllowed` passes it and it is written to
+    /// the edition verbatim. The element ceiling is 64 KB and the per-document
+    /// text budget is 8 MB, so about 128 such items fit in one fetch.
+    ///
+    /// That matters because `maxEditionItems` justifies its 6,000 by the cost
+    /// of re-encoding the edition on the main actor, which is a claim about
+    /// bytes resting on a count. Both ends are on the main actor:
+    /// `EditionStore.save` pretty-prints at the end of every refresh, and
+    /// `loadToday` decodes inside `App.init()`, before any Scene exists.
+    ///
+    /// 2 KB is well past the longest real link this app has seen. The longest
+    /// in the subscribed set is 312 characters.
+    static let maxStoredURL = 2048
     /// Items taken from one feed.
     static let maxItemsPerFeed = 500
 
@@ -705,7 +723,13 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         let title = String(Standfirst.decodeEntities(b.title).trimmed
             .prefix(FeedFetcher.maxStoredTitle))
         guard !title.isEmpty else { return nil }
-        guard let originalLink = URL(string: b.link.trimmingCharacters(in: .whitespacesAndNewlines)),
+        let rawLink = b.link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard rawLink.count <= FeedFetcher.maxStoredURL else {
+            jdnLog("fetch: \(feed.url.host ?? "?") offered a \(rawLink.count)-character "
+                   + "link — item refused")
+            return nil
+        }
+        guard let originalLink = URL(string: rawLink),
               // **`hasPrefix` is not a scheme test.** It admitted `httpx:`,
               // `http-custom:` and `https.zoommtg:`, all of which parse, and it
               // carried no private-host half at all — so a feed could persist a
@@ -726,10 +750,20 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         // away. `firstExternalURL` tested only the scheme, with no private-host
         // half at all.
         let resolved = resolveTargetURL(originalLink, in: bodyHTML)
-        let link = WebURL.isAllowed(resolved) ? resolved : originalLink
+        let usable = WebURL.isAllowed(resolved)
+            && resolved.absoluteString.count <= FeedFetcher.maxStoredURL
+        let link = usable ? resolved : originalLink
         let summary = String(cleanSummary(Standfirst.extract(from: bodyHTML))
             .prefix(FeedFetcher.maxStoredSummary))
-        let imageURL = pickBestImage(candidates: b.imageCandidates, bodyHTML: bodyHTML)
+        // Clamped like the link above. A picture address has no ceiling of its
+        // own anywhere: an `og:image` padded to the element limit would be
+        // stored, re-encoded on every save and decoded before the window
+        // appears. Dropped rather than truncated, because half an address is
+        // a request to somewhere nobody meant.
+        var imageURL = pickBestImage(candidates: b.imageCandidates, bodyHTML: bodyHTML)
+        if let picture = imageURL, picture.absoluteString.count > FeedFetcher.maxStoredURL {
+            imageURL = nil
+        }
 
         // Undated items rank LAST on the front page rather than masquerading
         // as "newest" (Date()) which would dominate anything correctly dated.

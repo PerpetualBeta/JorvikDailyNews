@@ -123,8 +123,18 @@ struct ImageEnricher: Sendable {
             let old = items[idx]
             // Never overwrite what the feed supplied. The page's own metadata
             // is a fallback for what is missing, not a better source.
-            let image = old.imageURL ?? meta.image
-            let summary = old.summary.isEmpty ? (meta.description ?? "") : old.summary
+            // Clamped to the same ceilings the feed path applies in
+            // `finalise`, because this is the second place a `FeedItem` is
+            // built and both of them write to the edition JSON. A page's
+            // `og:description` is bounded only by the 32 KB head slice, and
+            // `Standfirst.extract` does not truncate when no paragraph reaches
+            // its word minimum: it returns the flattened lot.
+            var image = old.imageURL ?? meta.image
+            if let picture = image, picture.absoluteString.count > FeedFetcher.maxStoredURL {
+                image = old.imageURL
+            }
+            let offered = old.summary.isEmpty ? (meta.description ?? "") : old.summary
+            let summary = String(offered.prefix(FeedFetcher.maxStoredSummary))
             guard image != old.imageURL || summary != old.summary else { continue }
             updated[idx] = FeedItem(
                 feedId: old.feedId,
@@ -135,7 +145,10 @@ struct ImageEnricher: Sendable {
                 imageURL: image,
                 publishedAt: old.publishedAt,
                 section: old.section,
-                sourceTitle: old.sourceTitle
+                sourceTitle: old.sourceTitle,
+                // Rebuilding dropped this, so an enriched item lost its read
+                // mark and its pin at the 1.5.0 upgrade.
+                legacyItemId: old.legacyItemId
             )
         }
         return Enrichment(items: updated, retryable: retryable)

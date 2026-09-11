@@ -189,6 +189,34 @@ enum FeedBoundsTests {
                      "clamped to \(FeedFetcher.maxStoredTitle), got \(out.title.count)")
         }
 
+        T.suite("Bounds: a link is a link, and a picture address too") {
+            // The item cap bounds count, not bytes. `URL(string:)` accepts a
+            // 65,561-character https URL and reports its host correctly, so
+            // every check downstream passed it and it went into the edition
+            // verbatim — which is re-encoded on the main actor at the end of
+            // every refresh and decoded before any window exists.
+            let padded = "https://example.com/a?q=" + String(repeating: "p", count: 60_000)
+            let out = try parse(rss(item("A story", link: padded)))
+            T.equal(out.items.count, 0, "an item with an absurd link is refused outright")
+
+            // 2 KB is far past any real link. The longest in the subscribed
+            // set is 312 characters.
+            let long = "https://example.com/a?q=" + String(repeating: "p", count: 1800)
+            T.equal(try parse(rss(item("A story", link: long))).items.count, 1,
+                    "a long but plausible link still arrives")
+
+            // Under the 8 KB attribute ceiling, so the parse succeeds and it
+            // is this clamp being tested rather than that one.
+            let bigPicture = "https://example.com/p.jpg?x=" + String(repeating: "z", count: 5_000)
+            let withImage = "<item><title>A story</title><link>https://example.com/a</link>"
+                + "<description>Words.</description>"
+                + "<enclosure url=\"\(bigPicture)\" type=\"image/jpeg\"/></item>"
+            let pictured = try parse(rss(withImage))
+            T.equal(pictured.items.count, 1, "the item itself survives")
+            T.expect(pictured.items.first?.imageURL == nil,
+                     "but an absurd picture address is dropped, not truncated")
+        }
+
         T.suite("Bounds: an ordinary feed is unaffected") {
             let out = try parse(rss(item("Harry Kane nominated for the Ballon d'Or",
                                          summary: "The England captain is one of thirty "
