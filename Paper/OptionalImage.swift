@@ -264,13 +264,29 @@ struct OptionalImage: View {
         guard width > 0, img.size.width > 0, img.size.height > 0 else {
             // First layout pass, before the column has been measured. Reserve
             // the cap so the page doesn't lurch, and draw nothing yet.
+            //
+            // **With no cap there is nothing to reserve, so this is a box of
+            // height zero — an invisible picture.** That is correct only if a
+            // later pass measures the width and redraws. It is logged because a
+            // picture that silently occupies no height is indistinguishable
+            // from one that was never there, and that is the failure this app
+            // keeps meeting.
+            jdnLog("picture: \(url.host ?? "?") not drawn yet — width \(Int(width)),"
+                   + " natural \(Int(img.size.width))x\(Int(img.size.height)),"
+                   + " cap \(maxHeight.map { String(Int($0)) } ?? "none")")
             return Draw(width: 0, full: 0, shown: maxHeight ?? 0)
         }
         let pixels = CGFloat(img.representations.map(\.pixelsWide).max() ?? Int(img.size.width))
         let native = displayScale > 0 ? pixels / displayScale : img.size.width
         let w = min(width, native)
         let full = w * img.size.height / img.size.width
-        return Draw(width: w, full: full, shown: min(full, maxHeight ?? full))
+        let d = Draw(width: w, full: full, shown: min(full, maxHeight ?? full))
+        if d.shown < 1 {
+            jdnLog("picture: \(url.host ?? "?") computed a height of \(d.shown) —"
+                   + " column \(Int(width)), native \(Int(native)), drawn \(Int(w)),"
+                   + " natural \(Int(img.size.width))x\(Int(img.size.height))")
+        }
+        return d
     }
 
     /// How far to slide the picture up so the crop window lands on the

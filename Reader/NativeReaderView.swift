@@ -18,6 +18,9 @@ struct NativeReaderView: View {
     let blocks: [ReaderBlock]
     let sourceTitle: String
     let baseURL: URL
+    /// The picture the paper already holds for this item, drawn above the
+    /// article when the extracted text opens with none. See `ReaderLede`.
+    var hero: URL? = nil
 
     /// The email link awaiting the reader's decision, if any.
     @State private var pendingEmail: MailtoLink?
@@ -112,6 +115,16 @@ struct NativeReaderView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
+                if let lede {
+                    // Above the first block, below the headline, which is where
+                    // a newspaper puts it. Uncapped, like every other picture in
+                    // the reader, so it keeps its own shape.
+                    VStack(alignment: .leading, spacing: 10) {
+                        OptionalImage(url: lede, maxHeight: nil, onFailure: nil)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .padding(.vertical, Style.mediaGap)
+                }
                 ForEach(blocks) { block in
                     view(for: block)
                 }
@@ -139,6 +152,13 @@ struct NativeReaderView: View {
     }
 
     // MARK: Header
+
+    /// The paper's own hero, when the extracted article opens without one.
+    private var lede: URL? {
+        ReaderLede.hero(hero,
+                        blockKinds: blocks.map { $0.kind.rawValue },
+                        blockSources: blocks.map { $0.src })
+    }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 0) {

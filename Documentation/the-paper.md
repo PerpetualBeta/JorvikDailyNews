@@ -46,6 +46,16 @@ An even share of the line index still is not an even share of the drawn column: 
 
 Every item is stored at the lead's length, because any item can be promoted to lead when the paper reflows and the body HTML is not kept in the edition to re-extract from. Re-extracting the real feeds at each candidate length puts the share of leads filling 14 of the deck's 16 lines at 67% for 150 words, 72% for 180 and 75% for 210, after which the feeds have no more to give; the target sits at 200, just under that plateau. Overshooting costs only disk, since the fitter cuts whatever will not fit. The knobs are `summaryMinParagraphWords`, `summaryLeadTargetWords` and `standfirstIdealColumnWidth`.
 
+## The reader's lede picture
+
+**An article opens with the paper's own hero when the extracted text has none.** A site's lede photograph usually sits outside the `<article>` element, so Readability treats it as furniture and drops it — while its *caption* often survives as a paragraph, which is what makes the absence read as a fault rather than a choice.
+
+Measured over 24 items from one day's paper, every one of which had a hero on its card: 8 articles opened with a picture, 7 had their first image at block 5, 7, 15, 23, 23, 27 or 29, and 8 had no images at all. So most articles opened with nothing while the app already held the right photograph, usually already decoded for the front page.
+
+The hero is used only when no picture appears in the first four blocks — enough for a heading, a standfirst and a first paragraph — and is withheld if the same file turns up anywhere in the article, compared without scheme or query so a CDN's sizing parameters do not make one photograph look like two.
+
+This is a product decision rather than a repair: the reader now shows one thing the extracted article did not contain.
+
 ---
 
 [← Back to the README](../README.md)

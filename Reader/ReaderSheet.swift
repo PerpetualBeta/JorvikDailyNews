@@ -287,7 +287,12 @@ struct ReaderView: View {
                                // relative link resolves against the article's
                                // own address rather than the feed's version of
                                // it. They differ whenever the link redirects.
-                               baseURL: article.resolvedURL ?? item.link)
+                               baseURL: article.resolvedURL ?? item.link,
+                               // The paper's own hero. Most sites keep their
+                               // lede photograph outside the <article> element,
+                               // so Readability drops it and the reader opened
+                               // with nothing while the card had the picture.
+                               hero: item.imageURL)
                   .task(id: "native-\(item.itemId)") {
                       jdnLog("reader: drawn natively — \(blocks.count) block(s), no web view")
                   }
