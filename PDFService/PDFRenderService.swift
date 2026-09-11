@@ -8,9 +8,19 @@ import PDFKit
 /// PDFKit memory-safety bug can do here is kill a process that launchd will
 /// restart on the next request.
 ///
-/// One document per connection. A new PDF is a new connection, so there is no
-/// state to confuse between documents and nothing an earlier document can leave
-/// behind for a later one.
+/// One document per connection, and **one process per document as well, but
+/// only because this asks for it.**
+///
+/// An earlier version of this comment claimed the process was per-connection
+/// because of `ServiceType = Application`. `man 5 xpcservice.plist` says the
+/// opposite in as many words: each *application* gets one instance, and a later
+/// connection reaches the existing service. There is no per-connection service
+/// type. What is genuinely per-connection is this Swift object — so the state
+/// claim held and the address-space claim did not, which is the half that
+/// matters for the C parser this process exists to contain.
+///
+/// `ServiceDelegate` therefore exits when its connection goes, so a document
+/// cannot leave anything behind in a process the next one will reuse.
 final class PDFRenderService: NSObject, PDFRenderServiceProtocol, @unchecked Sendable {
 
     /// Serialises PDFKit. `PDFDocument` is not documented thread-safe and the
@@ -143,6 +153,10 @@ final class ServiceDelegate: NSObject, NSXPCListenerDelegate {
             for: #selector(PDFRenderServiceProtocol.open(handle:reply:)),
             argumentIndex: 0, ofReply: false)
         connection.exportedObject = exported
+        // Die with the document. See the note on PDFRenderService: the service
+        // type does not give a process per connection, so this does.
+        connection.invalidationHandler = { exit(0) }
+        connection.interruptionHandler = { exit(0) }
         connection.resume()
         return true
     }

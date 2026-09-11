@@ -90,6 +90,9 @@ final class PDFRenderClient {
     ///
     /// Opening walks every page's crop box before replying, so it is allowed
     /// longer than a single render.
+    /// The eight bytes every PNG begins with.
+    static let pngSignature = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
     static let openDeadline: TimeInterval = 30
     static let renderDeadline: TimeInterval = 15
 
@@ -183,6 +186,19 @@ final class PDFRenderClient {
                 else { once(.failure(Failure.rejected(failure ?? "page would not render"))) }
             }
         }
+        }
+        // **`NSImage(data:)` sniffs, and `NSImage.imageTypes` includes
+        // `com.adobe.pdf`.** Given PDF bytes it returns an image backed by
+        // `NSPDFImageRep` — in a process that deliberately does not link
+        // PDFKit. So a compromised helper could put CoreGraphics' PDF parser
+        // straight back inside the app, with no second memory-safety bug
+        // needed, defeating the one thing this boundary exists to do.
+        //
+        // The protocol says the reply is a PNG. This is where that is true
+        // rather than assumed.
+        guard png.starts(with: Self.pngSignature) else {
+            jdnLog("pdf: the helper returned \(png.count) bytes that are not a PNG — refused")
+            throw Failure.rejected("page \(page) came back in the wrong format")
         }
         guard let image = NSImage(data: png) else {
             throw Failure.rejected("page \(page) came back unreadable")

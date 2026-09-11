@@ -20,8 +20,11 @@
     <string>14.0</string>
     <key>XPCService</key>
     <dict>
-        <!-- One process per connection, so a hostile document cannot outlive
-             its own sheet or observe the next one. -->
+        <!-- Application: one instance per client application. NOT one per
+             connection — man 5 xpcservice.plist is explicit, and there is no
+             per-connection type. The helper exits when its connection goes
+             (see ServiceDelegate) so that a document still dies with its
+             process. -->
         <key>ServiceType</key>
         <string>Application</string>
         <key>RunLoopType</key>

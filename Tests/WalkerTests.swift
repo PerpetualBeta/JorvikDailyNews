@@ -256,6 +256,19 @@ enum WalkerTests {
             T.expect(!foreign.lowercased().contains("iframe"), "taking its iframe with it")
         }
 
+        T.suite("Walker: a namespace prefix does not survive sanitising") {
+            func source(_ inner: String) -> String {
+                (walk("<svg width=\"400\" height=\"300\">\(inner)</svg>").first?["svg"] as? String) ?? ""
+            }
+            // tagName keeps the prefix, so the drop-list matched nothing and a
+            // prefixed script came through verbatim.
+            let prefixed = source("<svg:script>fetch('http://127.0.0.1:1/')</svg:script><rect/>")
+            T.expect(!prefixed.lowercased().contains("script"), "a prefixed script is removed")
+            T.expect(prefixed.contains("<rect"), "and the drawing survives")
+            let fo = source("<s:foreignObject><iframe src=\"http://x/\"></iframe></s:foreignObject><rect/>")
+            T.expect(!fo.lowercased().contains("foreignobject"), "a prefixed foreignObject too")
+        }
+
         T.suite("Walker: sanitising keeps what a real diagram needs") {
             func source(_ inner: String) -> String {
                 (walk("<svg width=\"400\" height=\"300\">\(inner)</svg>").first?["svg"] as? String) ?? ""

@@ -29,7 +29,29 @@ final class IsolatedPDFModel {
     /// Rendered pages, keyed by page index and the width they were drawn for.
     /// Keyed by width as well as index because a zoom change must not show the
     /// previous zoom's image scaled up.
-    private var rendered: [String: NSImage] = [:]
+    ///
+    /// **An `NSCache` with a cost, not a dictionary.** This was a plain
+    /// dictionary that was written and read and never evicted, while the zoom
+    /// control offers fifteen steps and pages render at twice the layout width
+    /// — so the ceiling was fifteen full-resolution bitmaps per page, roughly
+    /// 14 MB each for A4 in an 800-point pane. The helper's ceilings bound one
+    /// render, not the set.
+    ///
+    /// The cost is the decoded size, not the PNG's, for the reason this app
+    /// already learned once: a count limit is not a memory limit, and
+    /// `NSImage(data:)` holds the decoded bitmap.
+    private let rendered: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.totalCostLimit = 256 * 1024 * 1024
+        return cache
+    }()
+
+    /// What one rendered page costs in memory: four bytes a pixel at the scale
+    /// it was drawn.
+    private static func cost(of image: NSImage) -> Int {
+        let pixels = image.representations.reduce(0) { $0 + $1.pixelsWide * $1.pixelsHigh }
+        return max(pixels, Int(image.size.width * image.size.height)) * 4
+    }
     private(set) var sizes: [CGSize] = []
 
     /// Pages already asked for, so a `.task` that re-fires on scroll does not
@@ -50,7 +72,7 @@ final class IsolatedPDFModel {
     }
 
     func image(page: Int, width: CGFloat) -> NSImage? {
-        rendered[key(page, width)]
+        rendered.object(forKey: key(page, width) as NSString)
     }
 
     /// Called when the download turns out to be a web page. The reader takes
@@ -91,12 +113,13 @@ final class IsolatedPDFModel {
     /// Renders one page, once.
     func render(page: Int, width: CGFloat) async {
         let k = key(page, width)
-        guard rendered[k] == nil, !inFlight.contains(k) else { return }
+        guard rendered.object(forKey: k as NSString) == nil, !inFlight.contains(k) else { return }
         inFlight.insert(k)
         defer { inFlight.remove(k) }
         do {
-            rendered[k] = try await client.render(page: page, width: width,
-                                                  scale: Self.renderScale)
+            let image = try await client.render(page: page, width: width,
+                                                scale: Self.renderScale)
+            rendered.setObject(image, forKey: k as NSString, cost: Self.cost(of: image))
         } catch let failure as PDFRenderClient.Failure {
             // A helper that has died takes the whole document with it, and the
             // reader must say so rather than leaving grey rectangles.

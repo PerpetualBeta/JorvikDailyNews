@@ -193,7 +193,12 @@
     var all = [root].concat(Array.prototype.slice.call(root.querySelectorAll('*')));
     for (var i = all.length - 1; i >= 0; i--) {
       var el = all[i];
-      var tag = (el.tagName || '').toLowerCase();
+      // The LOCAL name. `tagName` keeps any namespace prefix, so `<svg:script>`
+      // matched nothing and survived verbatim into the emitted block — which
+      // made the claim above, that removing these makes the OS's behaviour stop
+      // mattering, false as written.
+      var qualified = (el.tagName || '').toLowerCase();
+      var tag = qualified.indexOf(':') >= 0 ? qualified.split(':').pop() : qualified;
       if (el !== root && SVG_DROP_ELEMENTS.test(tag)) {
         if (el.parentNode) { el.parentNode.removeChild(el); }
         continue;

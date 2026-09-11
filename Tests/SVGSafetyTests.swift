@@ -38,6 +38,26 @@ enum SVGSafetyTests {
                      "an uppercase href and scheme")
         }
 
+        T.suite("SVG safety: a namespace prefix is not a way past") {
+            for prefixed in ["<svg:script>x()</svg:script>",
+                             "<SVG:SCRIPT>x()</SVG:SCRIPT>",
+                             "<s:foreignObject><p>x</p></s:foreignObject>",
+                             "<html:iframe src=\"https://x/\"></html:iframe>"] {
+                T.expect(SVGSafety.refusal(for: svg(prefixed)) != nil, "refused: \(prefixed.prefix(28))")
+            }
+            // A protocol-relative reference carries no scheme, so the scheme
+            // tests miss it entirely while it still fetches.
+            T.expect(SVGSafety.refusal(for: svg("<rect fill=\"url(//evil/x)\"/>")) != nil,
+                     "a protocol-relative url()")
+            T.expect(SVGSafety.refusal(for: svg("<image href=\"//evil/x.png\"/>")) != nil,
+                     "a protocol-relative href")
+            // And the words alone are still not enough to refuse a drawing.
+            T.expect(SVGSafety.refusal(for: svg("<text>describe the script</text>")) == nil,
+                     "the word script in text is not a script element")
+            T.expect(SVGSafety.refusal(for: svg("<rect id=\"iframe-like\"/>")) == nil,
+                     "nor an id that contains iframe")
+        }
+
         T.suite("SVG safety: what a real diagram keeps") {
             let fine: [(String, String)] = [
                 ("a plain rectangle", "<rect width=\"10\" height=\"10\" fill=\"blue\"/>"),

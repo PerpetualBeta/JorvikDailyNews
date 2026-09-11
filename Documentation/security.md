@@ -42,6 +42,8 @@ That second step is not belt and braces. `AVPlayer` decides what to do from cont
 
 **That raises the bar rather than closing the hole, and it is worth being exact about why.** The inspection and the player make two independent requests, so a server can answer them differently: a real video prefix to the check, a playlist to the player. Closing it properly needs the player's every request routed through the app's own loader, which has not been done. What actually limits the exposure is that nothing is fetched until you press play.
 
+**The boundary with the PDF helper is treated as untrusted in both directions.** The helper's reply is checked to be a PNG before it is decoded: `NSImage` sniffs, and its accepted types include PDF, so a compromised helper could otherwise hand CoreGraphics' PDF parser straight back into the app that deliberately does not link PDFKit. Calls have deadlines, because a helper that is alive and silent resumes nothing. And the helper exits when its connection goes — `ServiceType = Application` gives one instance per application rather than one per connection, which an earlier comment in this project had backwards.
+
 **The sandbox remains the backstop, because one thing is left.** Decoding a genuine video file still happens in this process: `AVPlayer` renders through a view and cannot be moved into a helper the way PDFKit was. Nothing above removes that, and it is stated here rather than left for a reader to notice.
 
 ---

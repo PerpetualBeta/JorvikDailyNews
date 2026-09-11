@@ -27,9 +27,20 @@ enum SVGSafety {
     static func refusal(for source: String) -> String? {
         let s = source.lowercased()
 
-        if s.contains("<script") { return "it contains a script element" }
-        if s.contains("<foreignobject") { return "it contains a foreignObject" }
-        if s.contains("<iframe") { return "it contains an iframe" }
+        // **A namespace prefix must not be a way past this.** `<svg:script>`
+        // matched none of the substring tests these replaced, and matched
+        // nothing in the walker's drop-list either, so a prefixed script
+        // survived both halves.
+        //
+        // `<` then an optional `prefix:` then the local name.
+        for (name, description) in [("script", "it contains a script element"),
+                                    ("foreignobject", "it contains a foreignObject"),
+                                    ("iframe", "it contains an iframe")] {
+            if s.range(of: "<([a-z0-9_.-]+:)?" + name + "\\b",
+                       options: .regularExpression) != nil {
+                return description
+            }
+        }
         if s.contains("@import") { return "its stylesheet imports another" }
 
         // An event handler: `onload=`, `onclick=`, `onbegin=`, with any amount
@@ -50,6 +61,14 @@ enum SVGSafety {
                                options: .regularExpression) {
             let scheme = String(s[range])
             if !scheme.contains("data:") { return "a url() references \(trimScheme(scheme))" }
+        }
+        // A protocol-relative reference has no scheme, so the tests above miss
+        // it entirely: `url(//evil/x.css)` and `href="//evil/x.png"` both fetch.
+        if s.range(of: #"url\(\s*['"]?\s*//"#, options: .regularExpression) != nil {
+            return "a url() references another host"
+        }
+        if s.range(of: #"(href|src)\s*=\s*['"]?\s*//"#, options: .regularExpression) != nil {
+            return "it references another host"
         }
         return nil
     }
