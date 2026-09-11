@@ -10,7 +10,9 @@ struct OPMLEntry {
     let section: String
 }
 
-final class OPMLImporter {
+/// Stateless, and `Sendable` so the parse can be handed to its own queue
+/// without capturing a class across a concurrency boundary.
+struct OPMLImporter: Sendable {
 
     /// Largest OPML file worth reading.
     ///
