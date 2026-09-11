@@ -86,6 +86,7 @@ STORAGE_SOURCES := Storage/EditionStore.swift \
 
 # Small things with no home of their own.
 SUPPORT_SOURCES := Support/BoundedFetch.swift \
+                   Support/RedirectGuard.swift \
                    Support/Log.swift \
                    Support/WebURL.swift
 
@@ -169,6 +170,7 @@ stamp: xpc-service
 # here is Foundation-only apart from ImageCache, which EditionBuilder consults
 # to ask whether a picture is known to have failed.
 TEST_SOURCES := Reader/VideoLink.swift \
+                Support/RedirectGuard.swift \
                 Reader/ReaderLede.swift \
                 Reader/VideoPreflight.swift \
                 Reader/SVGSafety.swift \
@@ -192,6 +194,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Pictures/ImageCache.swift
 
 TEST_HARNESS := Tests/TestRunner.swift \
+                Tests/RedirectGuardTests.swift \
                 Tests/ReaderLedeTests.swift \
                 Tests/VideoPreflightTests.swift \
                 Tests/SVGSafetyTests.swift \

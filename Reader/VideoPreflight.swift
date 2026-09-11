@@ -91,7 +91,10 @@ enum VideoPreflight {
         request.setValue("bytes=0-\(inspectBytes - 1)", forHTTPHeaderField: "Range")
 
         do {
-            let (stream, response) = try await URLSession.shared.bytes(for: request)
+            // This sink does not go through BoundedFetch, so it installs the
+            // redirect guard itself.
+            let (stream, response) = try await URLSession.shared.bytes(
+                for: request, delegate: RedirectGuard())
             if let http = response as? HTTPURLResponse,
                !(200..<300).contains(http.statusCode) {
                 jdnLog("video: \(url.host ?? "?") returned HTTP \(http.statusCode)")

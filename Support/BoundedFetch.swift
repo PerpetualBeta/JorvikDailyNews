@@ -65,7 +65,18 @@ enum BoundedFetch {
             throw Failure.schemeNotAllowed(url.scheme ?? "(none)")
         }
 
-        let (stream, response) = try await session.bytes(for: request, delegate: delegate)
+        // Every hop, not just the first. Without this the check above is
+        // cosmetic: URLSession follows up to 20 redirects on its own and a
+        // `Location` header pointing at the local network was followed.
+        let guarded = RedirectGuard(wrapping: delegate)
+        let (stream, response) = try await session.bytes(for: request, delegate: guarded)
+
+        // Belt and braces. The delegate refuses a hop it is asked about; this
+        // catches anything that arrives at a disallowed address by a route the
+        // delegate never saw.
+        if let final = response.url, !WebURL.isAllowed(final) {
+            throw Failure.schemeNotAllowed(final.host ?? final.scheme ?? "(none)")
+        }
 
         // A declared length over the ceiling is refused before a byte of body
         // is read. It is only a hint — a hostile host can understate or omit
