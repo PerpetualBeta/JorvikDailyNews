@@ -82,10 +82,20 @@ final class ReadStore {
     /// Inheriting a read mark only hides the attacker's own item, which is
     /// harmless on its own. The pin half of the same trick, in
     /// `ArticleClassifier`, is not.
+    ///
+    /// **"Whichever item reaches it first" was decided by a date the feed
+    /// writes.** Page order comes from `roundRobinByFeed`, seeded by first
+    /// appearance in a date-descending list, so a feed dating its items to the
+    /// present was `all[0]` and claimed every contested key — and because the
+    /// key is then consumed, the genuine item could never claim it on any
+    /// later launch either. So a contested key is awarded to nobody: two items
+    /// offering one guid is evidence of a copy, not of a migration.
     func migrateLegacyIDs(for items: [FeedItem]) {
         var carried = 0
+        let uncontested = FeedItem.uncontestedLegacyKeys(in: items)
         for item in items {
             guard let legacy = item.legacyItemId, legacy != item.itemId,
+                  uncontested.contains(legacy),
                   readIds.contains(legacy), !readIds.contains(item.itemId)
             else { continue }
             readIds.insert(item.itemId)

@@ -70,6 +70,38 @@ enum LegacyIDTests {
                      "and the old key is gone")
         }
 
+        T.suite("Legacy ids: a contested key is awarded to nobody") {
+            // "Whichever item reaches it first" was decided by a date the feed
+            // writes: page order comes from roundRobinByFeed, seeded by first
+            // appearance in a date-descending list, so a feed dating its items
+            // to the present was all[0]. And because the key is consumed, the
+            // genuine item could never claim it on a later launch either.
+            //
+            // The hostile item is first here, which is the order an attacker
+            // would arrange and the one this suite never used to test.
+            let dir = scratch()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let classifier = ArticleClassifier(directory: dir)
+            classifier.move(itemId: "guid-from-their-feed", text: "Markets and money.",
+                            to: "Business")
+
+            classifier.migrateLegacyIDs(for: [
+                item("hash-attacker", legacy: "guid-from-their-feed"),
+                item("hash-genuine", legacy: "guid-from-their-feed"),
+            ])
+            T.expect(classifier.pinnedSection(itemId: "hash-attacker") == nil,
+                     "the first claimant does not get it")
+            T.expect(classifier.pinnedSection(itemId: "hash-genuine") == nil,
+                     "and neither does the second")
+            T.equal(classifier.pinnedSection(itemId: "guid-from-their-feed"), "Business",
+                    "the key is left alone, not consumed by the contest")
+
+            // An uncontested key still migrates.
+            classifier.migrateLegacyIDs(for: [item("hash-only", legacy: "guid-from-their-feed")])
+            T.equal(classifier.pinnedSection(itemId: "hash-only"), "Business",
+                    "so a genuine migration still works afterwards")
+        }
+
         T.suite("Legacy ids: an ordinary upgrade is unaffected") {
             let dir = scratch()
             defer { try? FileManager.default.removeItem(at: dir) }

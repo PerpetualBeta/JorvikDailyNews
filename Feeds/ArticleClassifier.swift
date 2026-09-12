@@ -174,8 +174,13 @@ final class ArticleClassifier {
     /// public XML could put its own story there. Each key is claimable once.
     func migrateLegacyIDs(for items: [FeedItem]) {
         var carried = 0
+        // See `ReadStore.migrateLegacyIDs`: a key two items claim is evidence
+        // of a copied guid, and this is the half that pays, because a pin puts
+        // a story on a section page the reader curated.
+        let uncontested = FeedItem.uncontestedLegacyKeys(in: items)
         for item in items {
-            guard let legacy = item.legacyItemId, legacy != item.itemId else { continue }
+            guard let legacy = item.legacyItemId, legacy != item.itemId,
+                  uncontested.contains(legacy) else { continue }
             if let section = state.pins[legacy], state.pins[item.itemId] == nil {
                 state.pins[item.itemId] = section
                 state.pins[legacy] = nil

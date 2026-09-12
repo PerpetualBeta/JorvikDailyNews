@@ -362,8 +362,24 @@ final class FeedFetcher: Sendable {
     /// restamped item from one genuinely published this second. The per-feed
     /// budget in `EditionBuilder.capped` and the host-based tie-break in
     /// `publishesItsOwn` are what bound the rest.
-    static func clamped(_ date: Date, now: Date = Date()) -> Date {
-        date > now ? now : date
+    /// **And clamped against the feed's own previous fetch, not against
+    /// `now`.** Clamping to `now` still handed a future-dated feed the top of
+    /// every date-descending sort, because `now` is newer than everything
+    /// published earlier today — and the feed can do it again on every
+    /// refresh. That one lever is what made three separate findings work: the
+    /// legacy-key claim goes to whoever appears first in page order, the
+    /// link-collision tie-break falls through to first-met when neither side
+    /// can be shown to publish the link, and the front-page round robin is
+    /// seeded by first appearance.
+    ///
+    /// A feed cannot honestly publish something later than the last time this
+    /// reader successfully read it, so that is the ceiling. Only future dates
+    /// are touched; an honest past date is never moved, and a genuinely fresh
+    /// item published since the last fetch is dated honestly and still wins.
+    static func clamped(_ date: Date, now: Date = Date(), since lastFetch: Date? = nil) -> Date {
+        guard date > now else { return date }
+        guard let lastFetch, lastFetch < now else { return now }
+        return lastFetch
     }
 
     static func parse(_ data: Data, from feed: Feed) throws -> FetchedFeed {
@@ -884,7 +900,7 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             link: link,
             summary: summary,
             imageURL: imageURL,
-            publishedAt: FeedFetcher.clamped(date),
+            publishedAt: FeedFetcher.clamped(date, since: feed.lastSuccessfulFetchAt),
             section: feed.section,
             sourceTitle: sourceTitle,
             // Clamped like `title` and `summary` beside it, which are held to

@@ -99,6 +99,22 @@ enum FeedFetcherTests {
             let past = now.addingTimeInterval(-3600)
             T.equal(FeedFetcher.clamped(past, now: now), past, "an honest date is left alone")
             T.equal(FeedFetcher.clamped(now, now: now), now, "and so is one dated this second")
+
+            // Clamping to `now` still handed the feed the top of every
+            // date-descending sort, on every refresh. A feed cannot honestly
+            // publish something later than the last time this reader read it.
+            let lastFetch = now.addingTimeInterval(-3600)
+            T.equal(FeedFetcher.clamped(now.addingTimeInterval(86_400), now: now, since: lastFetch),
+                    lastFetch, "a future date falls back to the last successful fetch")
+            T.equal(FeedFetcher.clamped(past, now: now, since: lastFetch), past,
+                    "an honest date is still untouched")
+            // An item published since that fetch is dated honestly and still
+            // beats the restamped one.
+            let fresh = now.addingTimeInterval(-60)
+            T.expect(FeedFetcher.clamped(fresh, now: now, since: lastFetch) > lastFetch,
+                     "so a genuinely fresh item still sorts above it")
+            T.equal(FeedFetcher.clamped(now.addingTimeInterval(86_400), now: now), now,
+                    "a feed never read before still clamps to now")
         }
     }
 }

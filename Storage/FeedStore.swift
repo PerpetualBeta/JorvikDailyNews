@@ -33,6 +33,7 @@ final class FeedStore {
     /// Append a feed to the list, ignoring it if a feed with the same
     /// normalised URL is already present. Returns true if the feed was
     /// added, false if it was a duplicate.
+
     @discardableResult
     func add(_ feed: Feed) -> Bool {
         let key = Self.normalisedKey(feed.url)
@@ -94,6 +95,19 @@ final class FeedStore {
         save()
     }
 
+    /// Subscriptions one host may contribute in a single import.
+    ///
+    /// **An OPML file is untrusted input, and its dedupe is on the normalised
+    /// URL**, so 5,000 distinct paths on one host are 5,000 distinct
+    /// subscriptions. `OPMLImporter.maxEntries` is 5,000 and nothing here
+    /// capped the total. The edition budget is keyed on the publisher now
+    /// rather than on the subscription, so that no longer decides the paper —
+    /// this is the second line, and it means the reader is told.
+    ///
+    /// Far above any real import: the largest single host in this reader's own
+    /// 247 subscriptions contributes 7.
+    static let maxPerHostOnImport = 50
+
     /// Bulk import: appends feeds whose URL isn't already in the store
     /// **and** isn't a duplicate of an earlier candidate within the same
     /// batch. The inner `seen` set is what makes the within-batch dedup
@@ -103,17 +117,33 @@ final class FeedStore {
     @discardableResult
     func importFeeds(_ candidates: [Feed]) -> (added: Int, skipped: Int) {
         var seen = Set(feeds.map { Self.normalisedKey($0.url) })
+        var perHost: [String: Int] = [:]
+        for feed in feeds {
+            perHost[feed.url.host?.lowercased() ?? "", default: 0] += 1
+        }
         var added = 0
         var skipped = 0
+        var refusedHosts: [String: Int] = [:]
         for candidate in candidates {
             let key = Self.normalisedKey(candidate.url)
             if seen.contains(key) {
                 skipped += 1
                 continue
             }
+            let host = candidate.url.host?.lowercased() ?? ""
+            if perHost[host, default: 0] >= Self.maxPerHostOnImport {
+                refusedHosts[host, default: 0] += 1
+                skipped += 1
+                continue
+            }
+            perHost[host, default: 0] += 1
             seen.insert(key)
             feeds.append(candidate)
             added += 1
+        }
+        for (host, count) in refusedHosts.sorted(by: { $0.value > $1.value }) {
+            jdnLog("import: refused \(count) further feed(s) from \(host) — "
+                   + "more than \(Self.maxPerHostOnImport) from one host")
         }
         if added > 0 { save() }
         return (added, skipped)

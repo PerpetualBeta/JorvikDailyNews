@@ -90,8 +90,25 @@ final class ImageCache: @unchecked Sendable {
                                    diskCapacity: diskCacheBytes,
                                    directory: dir)
         config.requestCachePolicy = .useProtocolCachePolicy
+        // **`timeoutInterval` is an idle timeout, and this session had no
+        // wall-clock ceiling at all.** `BoundedFetch`'s own header says it in
+        // as many words: "a server dribbling one byte every few seconds keeps
+        // the connection alive indefinitely". Measured against a loopback
+        // server sending one byte every 2 to 3 seconds: the transfer survived
+        // 45 s with one byte delivered and did not throw, and a second copy
+        // was still connected at 16 minutes 26 seconds.
+        //
+        // `timeoutInterval` was set at six sites in this app and
+        // `timeoutIntervalForResource` at none.
+        config.timeoutIntervalForResource = resourceCeiling
         return URLSession(configuration: config)
     }()
+
+    /// Longest any one picture transfer may take, however it is paced.
+    ///
+    /// Generous for a large photograph on a slow line and far below the point
+    /// where a refresh is at risk: the whole refresh is abandoned at 300 s.
+    static let resourceCeiling: TimeInterval = 60
 
     /// 256 MB of compressed pictures on disk. A full edition's images run to
     /// tens of megabytes, so this holds several days and evicts by itself.
@@ -392,6 +409,13 @@ final class ImageCache: @unchecked Sendable {
             if case .image(let decoded) = outcome { return decoded.image }
             return nil
         }
+        // `finish` clears `inFlight`, and it is only reached when the download
+        // returns. A transfer that never returns therefore left its entry in
+        // place for ever, so every later refresh found the stuck entry and
+        // joined it rather than trying again — which is how one dribbling
+        // server stopped the paper publishing for the whole session.
+        // `timeoutIntervalForResource` above bounds the transfer; this is the
+        // belt for anything that still does not come back.
         inFlight[url] = task
         return task
     }

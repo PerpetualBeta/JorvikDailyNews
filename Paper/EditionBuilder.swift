@@ -59,19 +59,39 @@ struct EditionBuilder {
     /// Re-sorted at the end because everything downstream — `dedupeByLink`
     /// above all, which keeps whichever copy of a syndicated article it meets
     /// first — depends on this list being newest-first.
+    /// The publisher a budget is counted against.
+    ///
+    /// **Not `feedId`, which is one per subscription URL and therefore a
+    /// number the attacker chooses.** Both defences keyed on it, and nothing
+    /// caps how many subscriptions one host may hold: `OPMLImporter` accepts
+    /// 5,000 entries and `FeedStore.importFeeds` appends every non-duplicate,
+    /// deduping on the normalised URL, so 5,000 distinct paths on one host are
+    /// 5,000 distinct feeds. Measured against a 254-genuine-subscription
+    /// fixture: 300 hostile subscriptions of 30 items each took 3,460 of 4,730
+    /// slots and all 16 front-page places including the lead; 5,000 of 2 items
+    /// each left 254 genuine articles in the whole paper.
+    ///
+    /// Falls back to the feed id when an item predates `feedHost`, which keeps
+    /// an edition saved by an older build working.
+    static func publisherKey(_ item: FeedItem) -> String {
+        if let host = item.feedHost?.lowercased(), !host.isEmpty { return registrable(host) }
+        return item.feedId.uuidString
+    }
+
     static func capped(_ sorted: [FeedItem]) -> [FeedItem] {
         guard sorted.count > maxEditionItems else { return sorted }
-        let feeds = Set(sorted.map(\.feedId)).count
+        let feeds = Set(sorted.map(publisherKey)).count
         let share = max(1, maxEditionItems / max(1, feeds))
-        var taken: [UUID: Int] = [:]
+        var taken: [String: Int] = [:]
         var kept: [FeedItem] = []
         var overflow: [FeedItem] = []
         kept.reserveCapacity(maxEditionItems)
         for item in sorted {
             if kept.count >= maxEditionItems { break }
-            let used = taken[item.feedId, default: 0]
+            let key = publisherKey(item)
+            let used = taken[key, default: 0]
             if used < share {
-                taken[item.feedId] = used + 1
+                taken[key] = used + 1
                 kept.append(item)
             } else {
                 overflow.append(item)
@@ -274,13 +294,44 @@ struct EditionBuilder {
         "co.za", "co.in", "co.kr", "co.il", "co.id", "co.th"
     ]
 
+    /// Suffixes where the second label is a hosting platform, not a
+    /// publisher.
+    ///
+    /// **Without these, every tenant of one platform read as the same
+    /// publisher.** Measured against the shipped file:
+    /// `registrable("attacker.substack.com")` and
+    /// `registrable("victim.substack.com")` both gave `substack.com`, and the
+    /// same for github.io, blogspot.com, wordpress.com, medium.com, pages.dev,
+    /// netlify.app and amazonaws.com — so an attacker's Substack satisfied
+    /// `publishesItsOwn` against another Substack's links, and the log
+    /// recorded the substitution as a legitimate preference.
+    ///
+    /// The old comment said reaching that "needs a feed the reader subscribed
+    /// to by hand". Every feed in this app arrives by hand, so that clause
+    /// excluded nothing, and hand-subscribed Substacks are exactly the feeds
+    /// in question.
+    static let multiTenantSuffixes: Set<String> = [
+        "substack.com", "github.io", "gitlab.io", "blogspot.com", "wordpress.com",
+        "medium.com", "tumblr.com", "pages.dev", "workers.dev", "netlify.app",
+        "vercel.app", "web.app", "firebaseapp.com", "herokuapp.com",
+        "azurewebsites.net", "cloudfront.net", "amazonaws.com", "appspot.com",
+        "ghost.io", "bearblog.dev", "micro.blog", "neocities.org", "sourceforge.net",
+        "readthedocs.io", "notion.site", "typepad.com", "livejournal.com",
+    ]
+
     /// The registrable part of a host: `www.bbc.co.uk` and `feeds.bbc.co.uk`
     /// both give `bbc.co.uk`.
     static func registrable(_ host: String) -> String {
         let labels = host.split(separator: ".").map(String.init)
         guard labels.count > 2 else { return host }
         let pair = labels.suffix(2).joined(separator: ".")
-        let wanted = twoLabelSuffixes.contains(pair) ? 3 : 2
+        var wanted = twoLabelSuffixes.contains(pair) || multiTenantSuffixes.contains(pair) ? 3 : 2
+        if wanted == 3, labels.count > 3 {
+            // A ccTLD suffix that is ALSO multi-tenant, e.g. a.b.co.uk, needs
+            // one more label still.
+            let triple = labels.suffix(3).joined(separator: ".")
+            if multiTenantSuffixes.contains(triple) { wanted = 4 }
+        }
         guard labels.count >= wanted else { return host }
         return labels.suffix(wanted).joined(separator: ".")
     }
@@ -328,6 +379,27 @@ struct EditionBuilder {
         // publisher's feed points at its own articles, and an attacker cannot
         // arrange that without the reader having subscribed to a feed on the
         // domain being impersonated.
+        //
+        // **What that does NOT cover, stated rather than claimed away.** The
+        // premise "a publisher's feed points at its own articles" fails for
+        // every feed-host-served publication, and that is the common case, not
+        // the exception. Measured against this reader's own saved edition: of
+        // 60 items, 8 would satisfy `publishesItsOwn` and 52 would not —
+        // hnrss.org to ycombinator.com, feedpress.me to sixcolors.com,
+        // medium.com, substack.com, github.com and the rest. The app
+        // manufactures the mismatch itself, because `resolveTargetURL`
+        // replaces an aggregator's discussion URL with the external target by
+        // design.
+        //
+        // When neither side can be shown to publish the link, nothing swaps
+        // and first-met wins, which means the date decides. That is why the
+        // date clamp is measured against the feed's own previous successful
+        // fetch rather than against `now`: a feed cannot restamp itself to the
+        // present on every refresh any more, so an honestly dated item
+        // published since that fetch still sorts above a copy. The residual is
+        // the first refresh after the reader subscribes to a feed, when there
+        // is no previous fetch to clamp against — which requires the reader to
+        // have just added the attacker's feed by hand.
         var winners: [String: FeedItem] = [:]
         var order: [String] = []
         for item in items {
@@ -360,14 +432,19 @@ struct EditionBuilder {
     /// Feed order is seeded by first-seen (i.e. whichever feed has the newest
     /// item goes first); within each feed, items stay in date-desc order.
     private func roundRobinByFeed(_ items: [FeedItem]) -> [FeedItem] {
-        var buckets: [UUID: [FeedItem]] = [:]
-        var order: [UUID] = []
+        // Keyed on the publisher, not the subscription. See `publisherKey`:
+        // `order` is seeded by first appearance across the whole list, so with
+        // one bucket per subscription the front page was the first sixteen of
+        // a list an attacker holding most of the feed ids mostly owned.
+        var buckets: [String: [FeedItem]] = [:]
+        var order: [String] = []
         for item in items {
-            if buckets[item.feedId] == nil {
-                buckets[item.feedId] = []
-                order.append(item.feedId)
+            let key = Self.publisherKey(item)
+            if buckets[key] == nil {
+                buckets[key] = []
+                order.append(key)
             }
-            buckets[item.feedId]!.append(item)
+            buckets[key]!.append(item)
         }
 
         // Walked with an index rather than rebuilt.
@@ -378,7 +455,7 @@ struct EditionBuilder {
         // per refresh and again on every filter toggle. At a few hundred items
         // it is invisible; it is the accumulation in `build` that could have
         // made it matter.
-        var taken: [UUID: Int] = [:]
+        var taken: [String: Int] = [:]
         var result: [FeedItem] = []
         result.reserveCapacity(items.count)
         var placed = 0

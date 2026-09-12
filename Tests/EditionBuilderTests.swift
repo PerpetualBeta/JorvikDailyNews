@@ -107,6 +107,71 @@ enum EditionBuilderTests {
                      "an item saved before the field existed declines to prefer")
         }
 
+        T.suite("Publisher: a platform is not a publisher") {
+            // Every tenant of a hosting suffix used to read as the same
+            // publisher, so an attacker's Substack satisfied publishesItsOwn
+            // against another Substack's links — and the log recorded the
+            // substitution as a legitimate preference.
+            T.equal(EditionBuilder.registrable("attacker.substack.com"),
+                    "attacker.substack.com", "a Substack is its own publisher")
+            T.expect(EditionBuilder.registrable("attacker.substack.com")
+                     != EditionBuilder.registrable("victim.substack.com"),
+                     "and two of them are not the same one")
+            for host in ["github.io", "blogspot.com", "wordpress.com", "medium.com",
+                         "pages.dev", "netlify.app", "amazonaws.com"] {
+                T.expect(EditionBuilder.registrable("a." + host)
+                         != EditionBuilder.registrable("b." + host),
+                         "two tenants of \(host) are different publishers")
+            }
+            // Ordinary hosts are unchanged.
+            T.equal(EditionBuilder.registrable("www.bbc.co.uk"), "bbc.co.uk", "a ccTLD suffix")
+            T.equal(EditionBuilder.registrable("www.ft.com"), "ft.com", "and a plain one")
+        }
+
+        T.suite("Publisher: a feed served off the publisher's domain") {
+            // The common case, not the exception: 52 of the 60 items in the
+            // reader's own paper are served from a host that is not the
+            // article's. Neither side can earn the preference, so the tie-break
+            // never fires and first-met wins.
+            let now = Date()
+            let victim = item("Genuine headline", at: now.addingTimeInterval(-600),
+                              link: "https://sixcolors.com/post/2026/09/a-story/",
+                              feedHost: "feedpress.me")
+            T.expect(!EditionBuilder.publishesItsOwn(victim),
+                     "a FeedBurner-style victim cannot earn the preference either")
+            // Which is why the date clamp is the load-bearing guard here, and
+            // it is tested in FeedFetcherTests.
+        }
+
+        T.suite("Edition: the budget's unit is the publisher, not the subscription") {
+            // feedId is one per subscription URL, and nothing caps how many
+            // subscriptions one host may hold: an OPML file may carry 5,000
+            // distinct paths on one host, which is 5,000 feed ids.
+            let now = Date()
+            var items: [FeedItem] = []
+            for n in 0..<300 {
+                let id = UUID()
+                items += (0..<30).map {
+                    item("Loud \(n)-\($0)", at: now.addingTimeInterval(-Double($0) / 100),
+                         link: "https://loud.example/\(n)/a?r=\($0)", feedId: id,
+                         feedHost: "loud.example")
+                }
+            }
+            var genuine: [FeedItem] = []
+            for n in 0..<10 {
+                let id = UUID()
+                genuine += (0..<20).map {
+                    item("Real \(n)-\($0)", at: now.addingTimeInterval(-3600),
+                         link: "https://real\(n).example/a?r=\($0)", feedId: id,
+                         feedHost: "real\(n).example")
+                }
+            }
+            let kept = EditionBuilder.capped((items + genuine)
+                .sorted { $0.publishedAt > $1.publishedAt })
+            T.equal(kept.filter { $0.feedHost != "loud.example" }.count, 200,
+                    "300 subscriptions on one host do not evict the genuine feeds")
+        }
+
         T.suite("Day range: one day, half open") {
             let noon = date("2026-09-09 12:00")
             let range = EditionBuilder.dayRange(for: noon)

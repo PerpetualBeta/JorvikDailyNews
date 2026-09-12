@@ -127,3 +127,20 @@ struct FeedItem: Codable, Hashable, Identifiable {
         return alreadyFlagged ? title : title + " [VIDEO]"
     }
 }
+
+extension FeedItem {
+    /// Legacy identities exactly one item in this edition claims.
+    ///
+    /// A guid is printed in a feed's own public XML, so two items offering the
+    /// same one means somebody copied it. Awarding such a key by position
+    /// handed it to whichever feed sorted first, and the sort is on a date the
+    /// feed writes.
+    static func uncontestedLegacyKeys(in items: [FeedItem]) -> Set<String> {
+        var claimants: [String: Int] = [:]
+        for item in items {
+            guard let legacy = item.legacyItemId, legacy != item.itemId else { continue }
+            claimants[legacy, default: 0] += 1
+        }
+        return Set(claimants.filter { $0.value == 1 }.keys)
+    }
+}

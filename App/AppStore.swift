@@ -586,8 +586,34 @@ final class AppStore {
     /// loaded — `image(for:)` caches it on success and records failure on
     /// timeout/error, which is exactly what the lead picker keys off.
     private nonisolated static func validateImage(_ url: URL) async -> Bool {
-        await ImageCache.shared.image(for: url) != nil
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await ImageCache.shared.image(for: url) != nil }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(leadCandidateDeadline * 1e9))
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
     }
+
+    /// How long one lead candidate may hold the refresh.
+    ///
+    /// **`performRefresh` awaits this for up to eight candidates with no
+    /// deadline of its own.** The download runs in an unstructured `Task`
+    /// created inside a nonisolated method, so it does not inherit
+    /// cancellation, and `await task.value` on a `Task<NSImage?, Never>` is
+    /// non-throwing, so cancelling the awaiting task did not interrupt the
+    /// await either: `work.cancel()` at the 300 s watchdog neither stopped the
+    /// transfer nor released the waiter. A picture server dribbling one byte
+    /// every few seconds therefore spent the entire refresh budget, the paper
+    /// did not publish, and because the URL was never recorded as failed
+    /// nothing was learned — every later refresh joined the same stuck entry.
+    ///
+    /// Racing the await means one slow candidate costs this and then the next
+    /// candidate is tried, which is what the eight attempts were always for.
+    private nonisolated static let leadCandidateDeadline: TimeInterval = 20
 
     func addFeed(url: URL, section: String) async {
         let feed = Feed(url: url, section: section.trimmingCharacters(in: .whitespaces))
