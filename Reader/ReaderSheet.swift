@@ -979,8 +979,8 @@ struct LiveWebView: NSViewRepresentable {
     /// fetch, because the navigation delegate never sees them.
     ///
     /// `WKNavigationAction` is raised for main-frame and sub-frame navigations
-    /// only — never for images, stylesheets, scripts, fonts, media or
-    /// `fetch`/XHR. Compiled once and reused.
+    /// only — never for images, stylesheets, scripts, fonts, media,
+    /// `fetch`/XHR or WebSockets. Compiled once and reused.
     ///
     /// **Two failures the third review measured in a real web view, both of
     /// which this now covers.** The `if-domain` clause blocked no name, as
@@ -997,7 +997,7 @@ struct LiveWebView: NSViewRepresentable {
     /// returns whatever was compiled before: without it, a machine that
     /// compiled the old rules would keep them for ever.
     static func privateAddressBlocker() async -> WKContentRuleList? {
-        let identifier = "cc.jorviksoftware.JorvikDailyNews.liveprivate.v3"
+        let identifier = "cc.jorviksoftware.JorvikDailyNews.liveprivate.v4"
         guard let store = WKContentRuleListStore.default() else { return nil }
         if let found = await withCheckedContinuation({ (c: CheckedContinuation<WKContentRuleList?, Never>) in
             store.lookUpContentRuleList(forIdentifier: identifier) { list, _ in c.resume(returning: list) }
@@ -1031,8 +1031,20 @@ struct LiveWebView: NSViewRepresentable {
             }
             for form in forms {
                 for prefix in ["", "[^/]*@"] {
-                    triggers.append(["trigger": ["url-filter": "^https?://\(prefix)\(form)"],
-                                     "action": ["type": "block"]])
+                    // **`ws://` as well as `http://`.** Every filter was
+                    // anchored `^https?://`, so no pattern in the list could
+                    // match a WebSocket, the navigation delegate never sees
+                    // one either, and `WebURL.isAllowed` is never asked. With
+                    // the app's own 518 filters attached, a page opened
+                    // `ws://127.0.0.1:9005/`, **read a payload back** and sent
+                    // it to a host of its choosing — WebSocket is cross-origin
+                    // by design, so no CORS header is involved and the service
+                    // decides. The identical address over `http://` was
+                    // blocked. The scheme is the only thing that differed.
+                    for scheme in ["https?", "wss?"] {
+                        triggers.append(["trigger": ["url-filter": "^\(scheme)://\(prefix)\(form)"],
+                                         "action": ["type": "block"]])
+                    }
                 }
             }
         }
