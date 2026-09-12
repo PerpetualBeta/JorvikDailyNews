@@ -412,8 +412,35 @@ struct ReaderView: View {
                     link: item.link,
                     retry: { state = .loading; Task { await extract() } })
               } else {
-              LiveWebView(url: item.link, onBlank: {
+              LiveWebView(url: item.link, onBlank: { silence in
                 guard case .failed = state else { return }
+                // **A page that draws itself, with scripting off.** Not a
+                // failure and not the reader's fault: the site arrived whole
+                // and renders nothing without its own scripts, which this app
+                // declines to run unless asked. Saying "it would not open" and
+                // pointing at macOS would be a lie the reader cannot act on,
+                // and leaving them on an empty pane says nothing at all.
+                if case .needsScripts = silence {
+                    jdnLog("reader: the live page needs its own scripts — explaining the choice")
+                    state = .unavailable(Problem(
+                        headline: "This page draws itself with scripts",
+                        advice: "The page arrived in full but puts nothing on "
+                              + "screen until its own scripts have run, and "
+                              + "Jorvik Daily News does not run them here by "
+                              + "default. That is a privacy choice you can "
+                              + "reverse: a script on a page can read a reply "
+                              + "and pass it on, and this view is the one place "
+                              + "the app shows somebody else's page. Your "
+                              + "browser will show it properly, and the "
+                              + "Terminal command below turns scripts on for "
+                              + "good if you would rather have working pages.",
+                        technical: "defaults write cc.jorviksoftware.JorvikDailyNews "
+                                 + "allowScriptsOnLivePage -bool YES",
+                        // Trying again does the same thing with the same
+                        // setting, so offering it would be offering nothing.
+                        canRetry: false))
+                    return
+                }
                 jdnLog("reader: the live page did not render either — giving up with an explanation")
                 // The advice used to end "quitting and reopening Jorvik Daily
                 // News clears it". It was written from the assumption that a
@@ -891,12 +918,28 @@ final class ReaderBytesHandler: NSObject, WKURLSchemeHandler {
 /// has to leave for a browser. Ephemeral data store: nothing persists between
 /// sessions; back/forward swipe gestures are enabled for normal browsing.
 struct LiveWebView: NSViewRepresentable {
+
+    /// Why the live page has nothing to show.
+    enum Silence {
+        /// No document arrived at all. WebKit, the network, or the site.
+        case nothingArrived
+        /// A document arrived and laid out nothing, with scripting off.
+        ///
+        /// Its own case because the advice is completely different and the
+        /// reader can act on it. A page of 21,438 characters that renders zero
+        /// characters of text is not broken; it is a site that draws itself
+        /// with its own scripts, and this app now declines to run those unless
+        /// asked. Telling somebody their article "would not open" and pointing
+        /// at macOS would be a lie they cannot act on.
+        case needsScripts
+    }
+
     let url: URL
     /// Called when the live page rendered nothing at all. This view is the end
     /// of every fallback chain in the reader, and it draws through the same
     /// WebKit as the routes that already failed, so it is the one place a
     /// blank sheet could still reach the reader with no explanation.
-    var onBlank: () -> Void = {}
+    var onBlank: (Silence) -> Void = { _ in }
     /// Called once the live page has actually drawn something. The caller keeps
     /// a cover over this view until then, because the page has to be in the
     /// hierarchy to load at all and an empty web view is exactly the blank
@@ -1135,7 +1178,7 @@ struct LiveWebView: NSViewRepresentable {
         /// the page had not finished arriving.
         private static let settle: TimeInterval = 5
 
-        func watch(_ web: WKWebView, onBlank: @escaping () -> Void,
+        func watch(_ web: WKWebView, onBlank: @escaping (Silence) -> Void,
                    onDrew: @escaping () -> Void) {
             check?.cancel()
             // Poll rather than wait out the whole grace period. A page that
@@ -1166,7 +1209,7 @@ struct LiveWebView: NSViewRepresentable {
                         jdnLog("reader: live page never began — still \(drawn.markup) chars "
                                + "of empty document after \(waited)s, so waiting longer "
                                + "cannot help; \(ArticleExtractor.webKitVerdict)")
-                        onBlank()
+                        onBlank(.nothingArrived)
                         return
                     }
                     // Still arriving. Nothing has failed, so nothing is
@@ -1209,14 +1252,32 @@ struct LiveWebView: NSViewRepresentable {
         /// is revealed, and only an empty document is called a failure.
         @MainActor
         private static func finish(_ drawn: Drawn, after started: Date, why: String,
-                                   onBlank: @escaping () -> Void,
+                                   onBlank: @escaping (Silence) -> Void,
                                    onDrew: @escaping () -> Void) {
             let waited = String(format: "%.1f", Date().timeIntervalSince(started))
             guard drawn.hasDocument else {
                 jdnLog("reader: live page held nothing at all after \(waited)s "
                        + "(it \(why)) — reporting a blank page; "
                        + ArticleExtractor.webKitVerdict)
-                onBlank()
+                onBlank(.nothingArrived)
+                return
+            }
+            // **A whole document that lays out nothing, with scripting off, is
+            // a site that draws itself.** Revealing it shows an empty pane and
+            // says nothing, which is the exact failure the rest of this file
+            // is built to avoid. Measured on the page that prompted this:
+            // jeffbaumes.github.io/all-decks/ serves 21,438 characters of
+            // markup, one `<script>`, and **zero** characters of body text
+            // without it.
+            //
+            // Only claimed when scripting is off. With it on, a page that
+            // paints nothing is the pre-existing case below, and is still
+            // shown rather than called a failure.
+            if !drawn.hasDrawn, !LivePagePolicy.allowsScripts {
+                jdnLog("reader: live page laid out nothing from \(drawn.markup) chars of "
+                       + "markup after \(waited)s (it \(why)) and scripting is off — "
+                       + "saying so rather than revealing an empty pane")
+                onBlank(.needsScripts)
                 return
             }
             jdnLog("reader: live page never reported any laid-out content after "
@@ -1262,11 +1323,33 @@ struct LiveWebView: NSViewRepresentable {
             var hasDocument: Bool { markup > 39 }
         }
 
-        private static let paintProbe =
-            "(function(){var b=document.body;if(!b){return [0,0,0];}"
-            + "var t=(b.innerText||'').trim().length;"
-            + "var m=b.querySelectorAll('img,svg,canvas,video,iframe').length;"
-            + "return [t,m,document.documentElement.outerHTML.length];})()"
+        /// **Counting an element is not counting paint.**
+        ///
+        /// `jeffbaumes.github.io/all-decks/` is one `<canvas id="c">` and a
+        /// script that draws playing cards into it. With scripting off the
+        /// canvas is still in the DOM, still counts as one media element, and
+        /// has nothing in it — so the reader called the page drawn and revealed
+        /// a blank pane. Measured: text 0, media 1, markup 724 with scripting
+        /// off against 21,485 with it on, and the canvas carries no `width` or
+        /// `height` at all until the script sets them.
+        ///
+        /// So a canvas counts only when something could have painted it.
+        /// Nothing but script can: there is no declarative way to fill one.
+        /// `<svg>`, `<video>` and `<iframe>` all draw themselves and are
+        /// counted either way.
+        ///
+        /// And an `<img>` counts only once it has loaded. A broken one has
+        /// `naturalWidth === 0` and occupies its alt text, which is not the
+        /// article arriving.
+        private static var paintProbe: String {
+            let canvas = LivePagePolicy.allowsScripts ? ",canvas" : ""
+            return "(function(){var b=document.body;if(!b){return [0,0,0];}"
+                + "var t=(b.innerText||'').trim().length;"
+                + "var m=0;"
+                + "b.querySelectorAll('img').forEach(function(i){if(i.naturalWidth>0)m++;});"
+                + "m+=b.querySelectorAll('svg,video,iframe\(canvas)').length;"
+                + "return [t,m,document.documentElement.outerHTML.length];})()"
+        }
 
         private static func measure(_ web: WKWebView) async -> Drawn {
             guard let values = (try? await web.evaluateJavaScript(paintProbe)) as? [Int],

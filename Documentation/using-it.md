@@ -62,6 +62,8 @@ defaults write cc.jorviksoftware.JorvikDailyNews allowScriptsOnLivePage -bool YE
 
 That is the whole trade, and it is a small risk against a real cost, which is why it is yours to make rather than ours. [The security notes](security.md) go through it properly.
 
+**You will be told when it happens rather than left on an empty page.** A page that arrives in full and puts nothing on screen gets an explanation naming the reason and the command, with **Open in Browser** beside it. The first one found in ordinary use was `jeffbaumes.github.io/all-decks/`, which is a single `<canvas>` and a script that draws playing cards into it: 21,438 characters of markup and not one character of text without its script.
+
 ---
 
 [← Back to the README](../README.md)
