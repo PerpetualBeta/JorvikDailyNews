@@ -1153,7 +1153,7 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
         do {
             jdnLog("fetch: requesting \(url.absoluteString) (timeout \(request.timeoutInterval)s)")
             (data, response) = try await BoundedFetch.data(for: request,
-                                                          on: .shared,
+                                                          on: BoundedFetch.session,
                                                           limit: BoundedFetch.markupLimit)
         } catch {
             jdnLog("fetch: FAILED — \(error.localizedDescription)")

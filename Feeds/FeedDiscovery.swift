@@ -67,7 +67,7 @@ final class FeedDiscovery: Sendable {
             // unbounded fetches per hourly refresh for every feed that stops
             // parsing, and `ImageEnricher` already uses exactly this pair.
             let (data, response) = try await BoundedFetch.data(
-                for: request, on: .shared, limit: BoundedFetch.headLimit, truncating: true)
+                for: request, on: BoundedFetch.session, limit: BoundedFetch.headLimit, truncating: true)
             if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
                 throw FeedDiscoveryError.fetchFailed("HTTP \(http.statusCode)")
             }

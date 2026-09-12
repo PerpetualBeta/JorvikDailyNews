@@ -28,7 +28,7 @@ enum QuadraticTests {
         T.expect(took < budget, "\(what) took \(String(format: "%.2f", took))s, budget \(budget)s")
     }
 
-    static func run() {
+    static func run() async {
         T.suite("Quadratic: the tag splitter skips a window it cannot close") {
             // 128 KB of openers with no `>` anywhere. The pattern this
             // replaced measured 27.9 s on exactly this shape.
@@ -63,6 +63,40 @@ enum QuadraticTests {
             T.equal(found.count, 1, "one feed discovered")
             T.equal(found.first?.url.absoluteString, "https://example.com/feed.xml",
                     "resolved against the page")
+        }
+
+        // Measured before the suite, because `T.suite` takes a synchronous
+        // closure and these have to await.
+        //
+        // `withTaskGroup` does not return until every child completes, so
+        // `group.cancelAll()` bounds nothing when the losing child is not
+        // cancellation-aware — and `await someTask.value` on a
+        // `Task<T, Never>` is exactly that. Measured before the fix: the
+        // watchdog fired at 2.07 s and the group returned at 10.23 s, so
+        // `isRefreshing = false` ran only once the hang had ended.
+        let slowStart = Date()
+        let slow = Task { @MainActor () -> Bool in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            return true
+        }
+        let abandoned = await FirstAnswer.of(0.5, fallback: false) {
+            _ = await slow.value
+            return true
+        }
+        let waited = Date().timeIntervalSince(slowStart)
+        slow.cancel()
+        let quick = await FirstAnswer.of(5, fallback: false) { true }
+        var fallbacks = 0
+        for _ in 0..<200 {
+            if await FirstAnswer.of(0.001, fallback: false, work: { true }) == false { fallbacks += 1 }
+        }
+
+        T.suite("Races: the deadline abandons rather than waiting") {
+            T.expect(!abandoned, "the deadline wins against a stuck worker")
+            T.expect(waited < 1.5, "and returns at the deadline, not at the worker "
+                     + "(\(String(format: "%.2f", waited))s)")
+            T.expect(quick, "a worker that answers first is not replaced by the fallback")
+            T.expect(fallbacks <= 200, "200 tight races complete without a double resume")
         }
 
         T.suite("Tags: the splitter's edges") {

@@ -74,6 +74,29 @@ enum BoundedFetch {
     ///   alternative is either buffering a body it will discard, or failing on
     ///   every page longer than the ceiling. Real pages measured today run to
     ///   693 KB, so failing would have been a regression dressed as a fix.
+    /// The session every caller that used to pass `.shared` now passes.
+    ///
+    /// **`URLSession.shared` has a `timeoutIntervalForResource` of 604,800
+    /// seconds — seven days**, measured on this machine. This file's own
+    /// header already explains that `timeoutInterval` is an idle timeout and
+    /// that "a server dribbling one byte every few seconds keeps the
+    /// connection alive indefinitely", so on the shared session there was no
+    /// wall-clock bound at all behind that sentence.
+    ///
+    /// Four call sites passed `.shared`: the feed fetch, feed discovery, the
+    /// page enricher and the article extractor. The picture cache, the PDF
+    /// download and the video preflight already had their own bounded
+    /// sessions; these had none.
+    ///
+    /// Two minutes is far past any of these reads — the largest is a 32 MB
+    /// markup limit and the enricher asks for 32 KB — and far inside the
+    /// 300 s refresh watchdog.
+    static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 120
+        return URLSession(configuration: config)
+    }()
+
     static func data(for request: URLRequest,
                      on session: URLSession,
                      limit: Int,

@@ -287,6 +287,20 @@ final class AppStore {
     /// in there. Abandoning a refresh does not stop it, so it is also
     /// cancelled, and it checks for that before it publishes: that is what
     /// stops a late arrival overwriting an edition built after it.
+    ///
+    /// **The race used to be a `withTaskGroup`, and that could not abandon
+    /// anything.** A group does not return until every child completes, and
+    /// the child here is `await work.value` on a `Task<Void, Never>`: not
+    /// throwing, never observing its own cancellation, and unstructured so it
+    /// never inherited the group's. `group.cancelAll()` therefore bounded
+    /// nothing, and every line after the group — `isRefreshing = false`
+    /// included — ran only once the hang had ended on its own. Measured with a
+    /// 10 s worker and a 2 s watchdog: the watchdog fired at 2.07 s and the
+    /// group returned at 10.23 s.
+    ///
+    /// One dribbling page was enough: `isRefreshing` stayed true for the life
+    /// of the process and every later refresh logged "SKIPPED", so the paper
+    /// stopped changing and the watchdog that exists to say so could not.
     func refreshAndPublish() async {
         guard !isRefreshing else {
             jdnLog("refresh: SKIPPED — one is already in flight")
@@ -297,15 +311,9 @@ final class AppStore {
         refreshStarted = Date()
 
         let work = Task { @MainActor [weak self] in await self?.performRefresh() }
-        let finished = await withTaskGroup(of: Bool.self) { group in
-            group.addTask { _ = await work.value; return true }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: Self.refreshTimeoutNanoseconds)
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
+        let finished = await FirstAnswer.of(Self.refreshTimeout, fallback: false) {
+            _ = await work.value
+            return true
         }
         isRefreshing = false
         if !finished {
@@ -586,15 +594,15 @@ final class AppStore {
     /// loaded — `image(for:)` caches it on success and records failure on
     /// timeout/error, which is exactly what the lead picker keys off.
     private nonisolated static func validateImage(_ url: URL) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { await ImageCache.shared.image(for: url) != nil }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(leadCandidateDeadline * 1e9))
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
+        // Same correction as `refreshAndPublish`: a task group waits for the
+        // child it cancelled, and `ImageCache.image(for:)` ends in
+        // `await sharedTask.value` on a `Task<NSImage?, Never>`, which never
+        // observes cancellation. Measured against a dribbling server, this
+        // returned at **60.4 s** rather than at the 20 s it claims — because
+        // `timeoutIntervalForResource` ended it, not the deadline. Eight
+        // candidates at that rate is 483 s against a 300 s watchdog.
+        await FirstAnswer.of(leadCandidateDeadline, fallback: false) {
+            await ImageCache.shared.image(for: url) != nil
         }
     }
 

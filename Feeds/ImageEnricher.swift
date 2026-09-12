@@ -172,7 +172,7 @@ struct ImageEnricher: Sendable {
 
         let fetched: Data
         do {
-            (fetched, _) = try await BoundedFetch.data(for: request, on: .shared, limit: BoundedFetch.headLimit,
+            (fetched, _) = try await BoundedFetch.data(for: request, on: BoundedFetch.session, limit: BoundedFetch.headLimit,
                                                   truncating: true)
         } catch {
             return PageMeta(failure: "fetch failed: \(error.localizedDescription)")
