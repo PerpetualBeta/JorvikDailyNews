@@ -201,6 +201,10 @@ enum Standfirst {
 
     /// Drops comments and non-prose blocks, in one linear pass each.
     ///
+    /// It is linear now. The scanner replaced two quadratic patterns and then
+    /// carried a quadratic of its own for a sweep and a half, in the
+    /// look-ahead below.
+    ///
     /// **This used to be two regexes, and both were quadratic.**
     /// `<!--.*?-->` and `<tag…>.*?</tag>` are lazy, so against an opener that
     /// never closes the body expands to end of input from every start position.
@@ -248,8 +252,23 @@ enum Standfirst {
             if let end = html.range(of: closer, options: .caseInsensitive,
                                     range: start.upperBound..<html.endIndex) {
                 // Past the closer's own `>`, if it has one.
-                if let gt = html.range(of: ">", range: end.upperBound..<html.endIndex),
-                   html.distance(from: end.upperBound, to: gt.lowerBound) < 32 {
+                //
+                // **Searched within 32 characters, not to the end of the
+                // document.** The test below only ever accepted a `>` inside
+                // 32, but the search that fed it ran to `html.endIndex` — so
+                // against a body with no `>` after the closer it read the
+                // whole remaining document once per span, and a 64 KB item of
+                // `<svg</svg` holds 7,281 spans. Measured a clean 4x per
+                // doubling: 0.403 s at 16 KB, 1.356 s at 32 KB, **5.705 s at
+                // 64 KB**, against 0.058 s for the same body with one `>`
+                // after each closer. That is one character of difference and
+                // it isolates this line.
+                //
+                // Sixteen feeds at a time, unattended, and `String.range(of:)`
+                // polls no cancellation.
+                let lookAhead = html.index(end.upperBound, offsetBy: 32,
+                                           limitedBy: html.endIndex) ?? html.endIndex
+                if let gt = html.range(of: ">", range: end.upperBound..<lookAhead) {
                     index = gt.upperBound
                 } else {
                     index = end.upperBound

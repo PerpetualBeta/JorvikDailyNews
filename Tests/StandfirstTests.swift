@@ -26,12 +26,26 @@ enum StandfirstTests {
             // A tag whose name merely starts the same must not be eaten.
             let formula = "<p>Before.</p><formula>kept</formula><p>A long enough paragraph of real prose to be extracted here.</p>"
             T.expect(!Standfirst.extract(from: formula).isEmpty, "<formula> is not <form>")
-            // The pathological inputs must simply not hang.
-            for opener in ["<!--", "<svg>", "<table>", "<script>"] {
-                let n = 16 * 1024 / opener.count
-                _ = Standfirst.extract(from: String(repeating: opener, count: n))
+            // **A real time bound, at the size and the shape that cost.**
+            //
+            // This used to be four openers at 16 KB followed by
+            // `T.expect(true, "…completes")`, an unconditional pass — and the
+            // openers were spelled `<svg>`, with the `>` that makes them
+            // cheap. The expensive shape has no `>` anywhere after the closer,
+            // which sent `removeSpans`' look-ahead to the end of the document
+            // once per span: 5.705 s at 64 KB, a clean 4x per doubling, while
+            // this suite reported a pass.
+            //
+            // Twice now a `T.expect(true, …)` in this file has certified
+            // nothing while a quadratic sat behind it.
+            for filler in ["<svg</svg", "<table</table", "<script</script", "<!--"] {
+                let body = String(repeating: filler, count: 64 * 1024 / filler.count)
+                let started = Date()
+                _ = Standfirst.extract(from: body)
+                let took = Date().timeIntervalSince(started)
+                T.expect(took < 1.0,
+                         "64 KB of \(filler) in \(String(format: "%.3f", took))s, budget 1.0s")
             }
-            T.expect(true, "16 KB of each unclosed opener completes")
         }
 
         T.suite("Entities: one pass, left to right") {
