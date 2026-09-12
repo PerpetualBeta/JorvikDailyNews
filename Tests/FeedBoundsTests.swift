@@ -327,5 +327,41 @@ enum FeedBoundsTests {
                         .isSilentlyFailing(asOf: now),
                      "the boundary itself counts")
         }
+
+        T.suite("Feeds: the notice agrees with how many there are") {
+            func named(_ title: String) -> Feed {
+                // The host is a slug of the title: a real title has spaces in
+                // it, and `URL(string:)` answers nil to those.
+                let host = title.lowercased().replacingOccurrences(of: " ", with: "-")
+                return Feed(url: URL(string: "https://\(host).example/f.xml")!,
+                            section: "News", title: title)
+            }
+            let one = [named("Don Melton")]
+            let two = [named("Don Melton"), named("Adrian Holovaty")]
+            let three = two + [named("Newton Poetry")]
+            let nine = (0..<9).map { named("Feed \($0)") }
+
+            T.equal(one.silentFailureSentence,
+                    "Don Melton has not been reachable for over a day.", "one is named")
+            T.equal(one.silentFailureAction, "Review it", "and the action is singular")
+
+            T.expect(two.silentFailureSentence.hasPrefix("Don Melton, Adrian Holovaty have"),
+                     "two are both named, with a plural verb")
+            T.equal(two.silentFailureAction, "Review them", "and the action is plural")
+            T.expect(three.silentFailureSentence.contains("Newton Poetry have not been"),
+                     "three are still named")
+
+            T.equal(nine.silentFailureSentence,
+                    "9 feeds have not been reachable for over a day.",
+                    "beyond three it is a count")
+            T.equal(nine.silentFailureAction, "Review them", "still plural")
+
+            // A feed with no title falls back to its host, never to nothing.
+            let hostOnly = [Feed(url: URL(string: "https://donmelton.com/rss.xml")!,
+                                 section: "Tech", title: nil)]
+            T.expect(hostOnly.silentFailureSentence.hasPrefix("donmelton.com has"),
+                     "an untitled feed is named by its host")
+            T.equal([Feed]().silentFailureSentence, "", "and none says nothing at all")
+        }
     }
 }

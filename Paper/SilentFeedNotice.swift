@@ -18,23 +18,11 @@ struct SilentFeedNotice: View {
     let feeds: [Feed]
     let onReview: () -> Void
 
-    private var sentence: String {
-        let names = feeds.compactMap { $0.title ?? $0.url.host }
-        switch feeds.count {
-        case 1:
-            return "\(names.first ?? "One feed") has not been reachable for over a day."
-        case 2, 3:
-            return "\(names.joined(separator: ", ")) have not been reachable for over a day."
-        default:
-            return "\(feeds.count) feeds have not been reachable for over a day."
-        }
-    }
-
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.circle")
                 .font(.system(size: 10))
-            Text(sentence)
+            Text(feeds.silentFailureSentence)
                 .font(.custom("Charter", size: 11))
                 .italic()
             // Underlined rather than coloured. A blue link would be the only
@@ -42,7 +30,7 @@ struct SilentFeedNotice: View {
             // running text and is clickable is the fault this project has
             // already fixed once in the reader.
             Button(action: onReview) {
-                Text("Review them")
+                Text(feeds.silentFailureAction)
                     .font(.custom("Charter", size: 11))
                     .underline()
             }

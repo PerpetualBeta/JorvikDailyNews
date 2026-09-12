@@ -169,3 +169,31 @@ extension FeedItem {
         return Set(claimants.filter { $0.value == 1 }.keys)
     }
 }
+
+extension Array where Element == Feed {
+
+    /// What the paper says when these feeds have quietly stopped working.
+    ///
+    /// Here rather than in the view so the suite can read it. The wording
+    /// agrees with the count in two places — the sentence and the action — and
+    /// getting one of them wrong is the sort of thing that survives a build,
+    /// a test run and a review, because it only looks wrong to a person.
+    var silentFailureSentence: String {
+        let names = compactMap { $0.title ?? $0.url.host }
+        switch count {
+        case 0:
+            return ""
+        case 1:
+            return "\(names.first ?? "One feed") has not been reachable for over a day."
+        case 2, 3:
+            return "\(names.joined(separator: ", ")) have not been reachable for over a day."
+        default:
+            return "\(count) feeds have not been reachable for over a day."
+        }
+    }
+
+    /// The action beside it, which has to agree with the sentence.
+    var silentFailureAction: String {
+        count == 1 ? "Review it" : "Review them"
+    }
+}
