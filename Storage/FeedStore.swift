@@ -152,10 +152,27 @@ final class FeedStore {
     /// Mark a feed as having just succeeded a fetch. Updates the
     /// successful-fetch timestamp and clears the failure timestamp so the
     /// status pill flips back to green even if the feed had been red.
-    func recordFetchSuccess(feedId: UUID, at date: Date = Date()) {
+    ///
+    /// `newestItemAt` is the newest publication date the fetch actually saw,
+    /// or nil when the feed dated nothing. Passing nil leaves any previously
+    /// recorded date alone rather than erasing it, because "this fetch carried
+    /// no dates" is not evidence that the earlier one did not.
+    func recordFetchSuccess(feedId: UUID, newestItemAt newest: Date? = nil,
+                            siteLink: String? = nil, at date: Date = Date()) {
         guard let idx = feeds.firstIndex(where: { $0.id == feedId }) else { return }
-        feeds[idx].lastSuccessfulFetchAt = date
-        feeds[idx].lastFailedFetchAt = nil
+        feeds[idx].recordSuccess(newestItemAt: newest, siteLink: siteLink, at: date)
+        save()
+    }
+
+    /// Record that the reader has now been told these feeds have gone quiet.
+    ///
+    /// Written once per feed. `Feed.dormancyAnnouncedAt` carries why.
+    func markDormancyAnnounced(_ ids: [UUID], at date: Date = Date()) {
+        guard !ids.isEmpty else { return }
+        let wanted = Set(ids)
+        for idx in feeds.indices where wanted.contains(feeds[idx].id) {
+            feeds[idx].dormancyAnnouncedAt = date
+        }
         save()
     }
 

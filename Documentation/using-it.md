@@ -28,6 +28,22 @@
 
 Manage Feeds (`shift` `command` `F`) → pause icon on any row. The feed's items vanish from today's paper immediately (no network round-trip); un-pausing triggers a refresh so they come back. Useful when a feed is too noisy on a given day and you want to mute it without deleting the subscription.
 
+## When a feed goes quiet
+
+A line under the dateline says so, and it says which of two things has happened.
+
+*"... has not been reachable for over a day"* means the fetch itself is failing. A publisher being down overnight is not worth mentioning, so the threshold is a day.
+
+*"... has published nothing for over a year"* means the opposite: the feed answers perfectly and nobody is writing it any more. Nothing in the app could see this before, because every health signal it had was about the fetch rather than about the contents.
+
+Both name the feeds while there are three or fewer and count them after that, and both link straight to Manage Feeds.
+
+**Each quiet feed is mentioned once.** On a long subscription list this is not a rare event: of 238 active feeds on one real list, 89 had published nothing for over a year and 72 nothing for over two, the oldest since December 2005. A line saying so every morning would be a nag rather than a note, so the paper says it as each feed crosses the line and then leaves it alone. If the feed starts publishing again and later stops again, it is mentioned again.
+
+The standing truth lives in Manage Feeds instead, where a grey **QUIET** badge marks every such feed and its tooltip gives the date it last published. That is the list to work through when you want to prune.
+
+Every row there also carries a compass button that opens the **site** in your browser, not the feed. Opening a feed's own address gives a page of XML, which tells you nothing about whether the subscription is worth keeping; the button uses the site link the feed itself publishes, falling back to its host when it publishes none.
+
 ## Unread only
 
 Toggle in the toolbar. When on, read items are removed from the paper and the front page reflows — the next unread story takes the lead slot, secondaries refill, etc. When off, read items stay visible at 55% opacity as a "you've been here" affordance.

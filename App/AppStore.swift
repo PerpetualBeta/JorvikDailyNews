@@ -389,7 +389,16 @@ final class AppStore {
                 if !outcome.fetched.title.isEmpty && feed.title != outcome.fetched.title {
                     feedStore.updateTitle(feedId: feed.id, title: outcome.fetched.title)
                 }
-                feedStore.recordFetchSuccess(feedId: feed.id)
+                // The newest date this feed is currently offering, which is
+                // what dormancy is measured against. `distantPast` is the
+                // fetcher's stand-in for an undated item, so a feed whose
+                // every item is undated records nothing rather than reading
+                // as two thousand years old.
+                let newest = outcome.fetched.items.map(\.publishedAt).max()
+                feedStore.recordFetchSuccess(
+                    feedId: feed.id,
+                    newestItemAt: newest == Date.distantPast ? nil : newest,
+                    siteLink: outcome.fetched.siteLink)
             case .failure(let error):
                 errors.append("\(feed.url.host ?? feed.url.absoluteString): \(error.localizedDescription)")
                 feedStore.recordFetchFailure(feedId: feed.id)
@@ -418,6 +427,11 @@ final class AppStore {
         if failed > Self.loggedFetchErrors {
             jdnLog("refresh: feed failed — and \(failed - Self.loggedFetchErrors) more not listed")
         }
+
+        // Feeds that answered, parsed, and had nothing newer than a year to
+        // offer. Snapshotted and marked in the same breath, so the front page
+        // says it once and the manage-feeds sheet keeps it for good.
+        noteDormantFeeds()
 
         // Carry over the previously-saved today edition so items accumulate
         // through the day. Feeds expose a rolling window of recent items; an
@@ -594,6 +608,44 @@ final class AppStore {
     var silentlyFailingFeeds: [Feed] {
         feedStore.feeds.filter { !$0.isPaused && $0.isSilentlyFailing() }
     }
+
+    /// Feeds just found dormant, held for the front page until the next
+    /// refresh replaces them.
+    ///
+    /// **Not computed, unlike the one above.** Dormancy is a standing
+    /// condition rather than a change of state — 89 of 238 feeds here are in
+    /// it — so recomputing it on every draw would put the same sentence under
+    /// the dateline every morning for ever. This holds the feeds from the most
+    /// recent refresh that had not been mentioned before, and mentioning them
+    /// is what empties it.
+    var newlyDormantFeeds: [Feed] = []
+
+    /// Find the dormant feeds nobody has been told about, hold them for the
+    /// front page, and write down that they have now been told.
+    private func noteDormantFeeds() {
+        let found = feedStore.feeds.filter { $0.isUnannouncedDormant() }
+        newlyDormantFeeds = found
+        guard !found.isEmpty else { return }
+        feedStore.markDormancyAnnounced(found.map(\.id))
+        jdnLog("refresh: \(found.count) feed(s) answer normally and have published "
+               + "nothing for over a year — said once here, then left to the "
+               + "manage-feeds sheet")
+        let oldestFirst = found.sorted {
+            ($0.newestItemAt ?? .distantPast) < ($1.newestItemAt ?? .distantPast)
+        }
+        for feed in oldestFirst.prefix(Self.loggedFetchErrors) {
+            let name = feed.title ?? feed.url.host ?? feed.url.absoluteString
+            let last = feed.newestItemAt.map { Self.dormancyDayFormatter.string(from: $0) } ?? "never"
+            jdnLog("refresh: dormant — \(name), last published \(last)")
+        }
+    }
+
+    private static let dormancyDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_GB")
+        return f
+    }()
 
     private func validatedLeadEdition(_ edition: Edition, from items: [FeedItem]) async -> Edition {
         var current = edition

@@ -313,6 +313,26 @@ private struct FeedRow: View {
                             .padding(.vertical, 1)
                             .background(Color.orange.opacity(0.15), in: Capsule())
                     }
+                    // The other axis entirely. The pill to the left says
+                    // whether the feed can be reached; this says whether
+                    // anyone is still writing it. A feed can be green and
+                    // eight years quiet, and until now nothing in the app
+                    // could tell you so.
+                    //
+                    // Grey rather than orange: the feed is not broken and its
+                    // author owes nobody anything. It is here to be scanned
+                    // while pruning, which is the only reason anyone opens
+                    // this sheet with 247 subscriptions in it.
+                    if feed.isDormant() {
+                        Text("QUIET")
+                            .font(.caption2)
+                            .kerning(1.2)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.secondary.opacity(0.15), in: Capsule())
+                            .help(lastPublishedTooltip)
+                    }
                 }
                 Text(feed.url.absoluteString)
                     .font(.caption)
@@ -339,6 +359,19 @@ private struct FeedRow: View {
             .fixedSize()
             .help("Move to section")
 
+            // Opening the feed's own address gives a page of XML, which
+            // tells nobody whether the site is worth keeping. This opens the
+            // site: the channel link the feed published, or its host when it
+            // published none. Absent entirely when neither is a web address,
+            // rather than offering a button that goes nowhere.
+            if let site = feed.reviewURL {
+                Link(destination: site) {
+                    Image(systemName: "safari")
+                }
+                .buttonStyle(.borderless)
+                .help("Open \(site.host ?? site.absoluteString) in your browser")
+            }
+
             Button(action: onTogglePause) {
                 Image(systemName: feed.isPaused ? "play.fill" : "pause.fill")
             }
@@ -354,6 +387,21 @@ private struct FeedRow: View {
         .padding(.vertical, 8)
         .opacity(feed.isPaused ? 0.55 : 1.0)
     }
+
+    /// Said as a date rather than "8 years ago", because pruning is a
+    /// judgement about a particular blog and the year is what makes it.
+    private var lastPublishedTooltip: String {
+        guard let newest = feed.newestItemAt else { return "Has published nothing recently." }
+        return "Last published \(Self.publishedFormatter.string(from: newest)). "
+             + "The feed itself is working."
+    }
+
+    private static let publishedFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .long
+        f.timeStyle = .none
+        return f
+    }()
 
     private var statusColor: Color {
         switch feed.fetchStatus {

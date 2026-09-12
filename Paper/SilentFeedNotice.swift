@@ -14,15 +14,44 @@ import SwiftUI
 /// fact when the fact is true, and it is not there the rest of the time.
 /// A publisher being down overnight is not an announcement — `Feed`'s
 /// threshold is a day.
+///
+/// Two feeds can be silent for opposite reasons, and the note says which.
+/// `unreachable` is a feed that cannot be fetched at all. `dormant` is a feed
+/// that fetches perfectly and has published nothing for over a year, which no
+/// health signal in this app could see, because every one of them was about
+/// the fetch rather than about the contents.
 struct SilentFeedNotice: View {
+    enum Kind {
+        case unreachable
+        case dormant
+    }
+
+    var kind: Kind = .unreachable
     let feeds: [Feed]
     let onReview: () -> Void
 
+    private var sentence: String {
+        switch kind {
+        case .unreachable: feeds.silentFailureSentence
+        case .dormant: feeds.dormantSentence
+        }
+    }
+
+    /// A fault gets the warning glyph. Dormancy is not a fault — the feed is
+    /// working exactly as it should and its author has stopped writing — so it
+    /// gets a clock instead.
+    private var glyph: String {
+        switch kind {
+        case .unreachable: "exclamationmark.circle"
+        case .dormant: "clock"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.circle")
+            Image(systemName: glyph)
                 .font(.system(size: 10))
-            Text(feeds.silentFailureSentence)
+            Text(sentence)
                 .font(.custom("Charter", size: 11))
                 .italic()
             // Underlined rather than coloured. A blue link would be the only

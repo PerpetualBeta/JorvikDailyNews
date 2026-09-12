@@ -25,6 +25,14 @@ enum FeedFetchError: Error, LocalizedError {
 struct FetchedFeed {
     let title: String
     let items: [FeedItem]
+    /// The site the feed says it belongs to — RSS `<channel><link>`, Atom's
+    /// channel-level `<link rel="alternate">`.
+    ///
+    /// Not the feed's own address. `images.apple.com/main/rss/hotnews/…` in a
+    /// browser is a page of XML; the channel link is where the publisher says
+    /// their site actually is, which is what somebody deciding whether to keep
+    /// a subscription needs to look at.
+    let siteLink: String
 }
 
 final class FeedFetcher: Sendable {
@@ -432,6 +440,7 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
     private let feed: Feed
 
     private var channelTitle = ""
+    private var channelLink = ""
     private var items: [FeedItem] = []
 
     private enum Flavour { case unknown, rss, atom }
@@ -554,7 +563,7 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             jdnLog("fetch: \(feed.url.host ?? "?") is malformed at line "
                    + "\(parser.lineNumber) — keeping the \(items.count) item(s) "
                    + "that parsed before it")
-            return FetchedFeed(title: channelTitle, items: items)
+            return FetchedFeed(title: channelTitle, items: items, siteLink: channelLink)
         }
         // A clean parse is not the same as a feed.
         //
@@ -567,7 +576,7 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         guard let rootElement, Self.isFeedRoot(rootElement) else {
             return nil
         }
-        return FetchedFeed(title: channelTitle, items: items)
+        return FetchedFeed(title: channelTitle, items: items, siteLink: channelLink)
     }
 
     // MARK: - XMLParserDelegate
@@ -647,6 +656,11 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             if flavour == .atom {
                 let href = attributeDict["href"] ?? ""
                 let rel = attributeDict["rel"] ?? "alternate"
+                // Channel level: the site, not this entry.
+                if current == nil, channelDepth > 0, rel == "alternate",
+                   channelLink.isEmpty, !href.isEmpty {
+                    channelLink = href.clamped(toUTF16: FeedFetcher.maxStoredURL)
+                }
                 if current != nil {
                     if rel == "alternate" && current!.link.isEmpty {
                         current!.link = href
@@ -770,6 +784,9 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         if current == nil {
             // A counter, not a scan. See `channelDepth`.
             let inChannel = channelDepth > 0
+            if inChannel && name == "link" && channelLink.isEmpty {
+                channelLink = text.clamped(toUTF16: FeedFetcher.maxStoredURL)
+            }
             if inChannel && name == "title" && channelTitle.isEmpty {
                 // Capped where it is parsed, not where it is drawn. This one
                 // is written to `feeds.json` and rewritten on every refresh,

@@ -333,6 +333,28 @@ enum FeedBoundsTests {
                     "an old archive item keeps its own date")
         }
 
+        T.suite("Feeds: reviewing a feed opens the site, never the XML") {
+            func feed(_ urlString: String, site: String? = nil) -> Feed {
+                Feed(url: URL(string: urlString)!, section: "News", title: nil,
+                     siteURL: site.flatMap { URL(string: $0) })
+            }
+            let apple = feed("https://images.apple.com/main/rss/hotnews/hotnews.rss")
+            T.equal(apple.reviewURL?.absoluteString, "https://images.apple.com/",
+                    "with no channel link it is the host, not the feed file")
+            let withSite = feed("https://images.apple.com/main/rss/hotnews/hotnews.rss",
+                                site: "https://www.apple.com/newsroom/")
+            T.equal(withSite.reviewURL?.absoluteString, "https://www.apple.com/newsroom/",
+                    "the channel link wins when the feed published one")
+            // The channel link is a string the feed chooses, so it goes
+            // through the same gate as anything else the app would open.
+            let hostile = feed("https://example.com/f.xml", site: "file:///etc/passwd")
+            T.equal(hostile.reviewURL?.absoluteString, "https://example.com/",
+                    "a channel link that is not a web address is ignored")
+            let notWeb = Feed(url: URL(string: "file:///tmp/f.xml")!, section: "News")
+            T.expect(notWeb.reviewURL == nil,
+                     "and a feed with no web address at all offers nothing")
+        }
+
         T.suite("Feeds: one that has quietly stopped working is noticed") {
             let now = Date()
             let day = Feed.silentFailureThreshold
@@ -396,6 +418,85 @@ enum FeedBoundsTests {
             T.expect(hostOnly.silentFailureSentence.hasPrefix("donmelton.com has"),
                      "an untitled feed is named by its host")
             T.equal([Feed]().silentFailureSentence, "", "and none says nothing at all")
+
+            // The dormancy wording shares the counting and differs in the
+            // claim, so both halves are pinned.
+            T.equal(one.dormantSentence,
+                    "Don Melton has published nothing for over a year.",
+                    "one dormant feed is named")
+            T.equal(nine.dormantSentence,
+                    "9 feeds have published nothing for over a year.",
+                    "beyond three it is a count here too")
+            T.equal([Feed]().dormantSentence, "", "and none says nothing at all")
+        }
+
+        T.suite("Feeds: one that answers and publishes nothing is noticed") {
+            let now = Date()
+            let year = Feed.dormancyThreshold
+            func feed(newest: Date?, paused: Bool = false,
+                      success: Date? = nil, failure: Date? = nil,
+                      announced: Date? = nil) -> Feed {
+                Feed(url: URL(string: "https://example.com/f.xml")!, section: "News",
+                     title: nil, isPaused: paused,
+                     lastSuccessfulFetchAt: success ?? now, lastFailedFetchAt: failure,
+                     newestItemAt: newest, dormancyAnnouncedAt: announced)
+            }
+            T.expect(!feed(newest: nil).isDormant(asOf: now),
+                     "a feed that has dated nothing is never called dormant")
+            T.expect(!feed(newest: now).isDormant(asOf: now),
+                     "nor is one that published today")
+            T.expect(!feed(newest: now.addingTimeInterval(-year / 2)).isDormant(asOf: now),
+                     "nor one quiet for six months")
+            T.expect(feed(newest: now.addingTimeInterval(-year)).isDormant(asOf: now),
+                     "the boundary itself counts")
+            T.expect(feed(newest: now.addingTimeInterval(-year * 10)).isDormant(asOf: now),
+                     "and ten years certainly does")
+            T.expect(!feed(newest: now.addingTimeInterval(-year * 10), paused: true)
+                        .isDormant(asOf: now),
+                     "a paused feed is not dormant; not fetching it is the point")
+
+            // **One feed, one fault.** A feed that is both unreachable and
+            // long-dormant would otherwise appear under the dateline twice,
+            // in two sentences that contradict each other about whether it
+            // works.
+            let broken = feed(newest: now.addingTimeInterval(-year * 10),
+                              success: now.addingTimeInterval(-Feed.silentFailureThreshold * 3),
+                              failure: now)
+            T.expect(broken.isSilentlyFailing(asOf: now), "it is unreachable")
+            T.expect(!broken.isDormant(asOf: now), "so it is not also reported as dormant")
+
+            // Said once.
+            let quiet = feed(newest: now.addingTimeInterval(-year * 2))
+            T.expect(quiet.isUnannouncedDormant(asOf: now), "a new one is worth saying")
+            T.expect(!feed(newest: now.addingTimeInterval(-year * 2), announced: now)
+                        .isUnannouncedDormant(asOf: now),
+                     "and having said it, the paper does not say it again")
+        }
+
+        T.suite("Feeds: a dormant feed that wakes up may be reported again") {
+            let now = Date()
+            let year = Feed.dormancyThreshold
+            var feed = Feed(url: URL(string: "https://example.com/f.xml")!,
+                            section: "News", title: "Example",
+                            lastSuccessfulFetchAt: now,
+                            newestItemAt: now.addingTimeInterval(-year * 2),
+                            dormancyAnnouncedAt: now.addingTimeInterval(-year))
+            T.expect(!feed.isUnannouncedDormant(asOf: now), "already mentioned, so not again")
+
+            feed.recordSuccess(newestItemAt: now, at: now)
+            T.expect(!feed.isDormant(asOf: now), "publishing again ends dormancy")
+            T.expect(feed.dormancyAnnouncedAt == nil,
+                     "and the mention is cleared, so a second silence is reported like the first")
+
+            // A fetch that carries no dates must not erase what is known.
+            feed.recordSuccess(newestItemAt: nil, at: now)
+            T.equal(feed.newestItemAt, now, "a dateless fetch leaves the recorded date alone")
+
+            // And a fetch that succeeds clears a standing failure, which is
+            // what the dormancy check depends on to tell the two apart.
+            feed.lastFailedFetchAt = now
+            feed.recordSuccess(newestItemAt: nil, at: now)
+            T.expect(feed.lastFailedFetchAt == nil, "a success clears the failure mark")
         }
     }
 }

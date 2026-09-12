@@ -47,7 +47,16 @@ struct FrontPage: View {
             // Only when it is true, and only for a feed that has been failing
             // for more than a day. See `SilentFeedNotice`.
             if !store.silentlyFailingFeeds.isEmpty {
-                SilentFeedNotice(feeds: store.silentlyFailingFeeds) {
+                SilentFeedNotice(kind: .unreachable, feeds: store.silentlyFailingFeeds) {
+                    store.showManageFeedsSheet = true
+                }
+            }
+
+            // And once, the first time each feed is found to have gone quiet
+            // without going away. See `AppStore.newlyDormantFeeds` for why
+            // this is a snapshot rather than a filter.
+            if !store.newlyDormantFeeds.isEmpty {
+                SilentFeedNotice(kind: .dormant, feeds: store.newlyDormantFeeds) {
                     store.showManageFeedsSheet = true
                 }
             }
