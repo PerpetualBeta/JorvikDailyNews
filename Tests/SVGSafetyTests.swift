@@ -106,5 +106,49 @@ enum SVGSafetyTests {
             T.expect(SVGSafety.refusal(for: svg("<image href=\"http://x/y\"/>"))?
                         .contains("outside itself") == true, "a reference says so")
         }
+
+        T.suite("SVG: a filter sizes the rasteriser, so it is refused") {
+            // MAX_SVG_SIDE bounds `width` and `height`, and neither decides
+            // the work when a filter is present: the filter states its own
+            // region, as a percentage of the object bounding box or, under
+            // `userSpaceOnUse`, in absolute units with no relationship to the
+            // viewBox. Measured through `NSImage(data:)` at a constant 247
+            // bytes with width 600, height 600, viewBox "0 0 600 600" — every
+            // number the walker inspects entirely ordinary:
+            //
+            //     region  5,000   0.17 s     243 MB
+            //     region 20,000   1.46 s   2,090 MB
+            //     region 60,000  11.77 s   5,038 MB
+            //
+            // and the review measured 200,000 reaching 10.06 GB and a SIGKILL.
+            // With the filter removed the same diagram costs 0.08 s.
+            let userSpace = "<svg width=\"600\" height=\"600\" viewBox=\"0 0 600 600\">"
+                + "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" "
+                + "width=\"200000\" height=\"200000\"><feGaussianBlur stdDeviation=\"10\"/></filter>"
+                + "<rect width=\"600\" height=\"600\" fill=\"red\" filter=\"url(#f)\"/></svg>"
+            T.expect(SVGSafety.refusal(for: userSpace) != nil, "a userSpaceOnUse filter is refused")
+
+            let percent = "<svg width=\"600\" height=\"600\" viewBox=\"0 0 600 600\">"
+                + "<filter id=\"f\" x=\"-5000%\" y=\"-5000%\" width=\"10000%\" height=\"10000%\">"
+                + "<feGaussianBlur stdDeviation=\"40\"/></filter>"
+                + "<rect width=\"600\" height=\"600\" filter=\"url(#f)\"/></svg>"
+            T.expect(SVGSafety.refusal(for: percent) != nil, "and so is the percentage form")
+
+            // The attribute alone, referring to a definition from elsewhere.
+            let attributeOnly = "<svg width=\"100\" height=\"100\">"
+                + "<rect width=\"100\" height=\"100\" filter=\"url(#f)\"/></svg>"
+            T.expect(SVGSafety.refusal(for: attributeOnly) != nil, "the attribute alone is enough")
+            let masked = "<svg width=\"100\" height=\"100\">"
+                + "<rect width=\"100\" height=\"100\" mask=\"url(#m)\"/></svg>"
+            T.expect(SVGSafety.refusal(for: masked) != nil, "and so is a mask")
+
+            // A real diagram is untouched. This reader deliberately supports
+            // defs, clipPath and clip-path="url(#…)", which is the shape real
+            // pages use, and clipping only ever reduces what is drawn.
+            let real = "<svg width=\"200\" height=\"100\" viewBox=\"0 0 200 100\">"
+                + "<defs><clipPath id=\"c\"><rect width=\"100\" height=\"100\"/></clipPath></defs>"
+                + "<g clip-path=\"url(#c)\"><circle cx=\"60\" cy=\"50\" r=\"40\"/></g></svg>"
+            T.expect(SVGSafety.refusal(for: real) == nil, "a clipPath diagram still draws")
+        }
     }
 }

@@ -481,6 +481,24 @@ enum WalkerTests {
             }
         }
 
+        T.suite("Walker: a filter is stripped, a clip path is not") {
+            let hostile = "<svg width=\"600\" height=\"600\" viewBox=\"0 0 600 600\">"
+                + "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" "
+                + "width=\"200000\" height=\"200000\"><feGaussianBlur stdDeviation=\"10\"/></filter>"
+                + "<rect width=\"600\" height=\"600\" fill=\"red\" filter=\"url(#f)\"/></svg>"
+            let out = walk(hostile)
+            let source = (out.first?["svg"] as? String ?? "").lowercased()
+            T.expect(!source.contains("<filter"), "the filter element is gone")
+            T.expect(!source.contains("filter="), "and so is the attribute that reaches it")
+
+            let real = "<svg width=\"200\" height=\"100\" viewBox=\"0 0 200 100\">"
+                + "<defs><clipPath id=\"c\"><rect width=\"100\" height=\"100\"/></clipPath></defs>"
+                + "<g clip-path=\"url(#c)\"><circle cx=\"60\" cy=\"50\" r=\"40\"/></g></svg>"
+            let kept = (walk(real).first?["svg"] as? String ?? "").lowercased()
+            T.expect(kept.contains("clip-path"), "a real clip path survives")
+            T.expect(kept.contains("clippath"), "along with the definition it points at")
+        }
+
         T.suite("Walker: an absurd image source is refused") {
             // `ReaderLede.key` percent-decodes every src on every body pass.
             let long = "<img src=\"data:image/png;base64,"

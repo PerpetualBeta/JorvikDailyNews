@@ -35,7 +35,23 @@ enum SVGSafety {
         // `<` then an optional `prefix:` then the local name.
         for (name, description) in [("script", "it contains a script element"),
                                     ("foreignobject", "it contains a foreignObject"),
-                                    ("iframe", "it contains an iframe")] {
+                                    ("iframe", "it contains an iframe"),
+                                    // **A filter sizes the rasteriser's buffer
+                                    // from its own region**, stated either as
+                                    // a percentage of the object bounding box
+                                    // or, under `userSpaceOnUse`, in absolute
+                                    // units with no relationship to the
+                                    // viewBox. So `MAX_SVG_SIDE` bounds two
+                                    // numbers that do not decide the work:
+                                    // measured at a constant 247 bytes with an
+                                    // ordinary `width`, `height` and
+                                    // `viewBox`, 12.39 s and 4.6 GB at a
+                                    // region of 60,000, and the review
+                                    // measured 10.06 GB and a SIGKILL at
+                                    // 200,000. `mask` carries the same
+                                    // attributes.
+                                    ("filter", "it contains a filter"),
+                                    ("mask", "it contains a mask")] {
             if s.range(of: "<([a-z0-9_.-]+:)?" + name + "\\b",
                        options: .regularExpression) != nil {
                 return description
@@ -47,6 +63,12 @@ enum SVGSafety {
         // of space around the equals sign.
         if s.range(of: #"\son[a-z]+\s*="#, options: .regularExpression) != nil {
             return "it carries an event handler"
+        }
+        // The attribute form, which reaches the same region without the
+        // element: `<rect filter="url(#f)">` where `#f` came from an earlier
+        // block, or from a `<defs>` the walker kept.
+        if s.range(of: #"\s(filter|mask)\s*=\s*["']?url\("#, options: .regularExpression) != nil {
+            return "it applies a filter or a mask"
         }
 
         // Any reference with a scheme other than data:. Fragment references

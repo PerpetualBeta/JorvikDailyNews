@@ -245,7 +245,35 @@
 
   /// Elements removed whole. Each can carry or execute something that is not
   /// drawing: `foreignObject` can hold arbitrary HTML including an iframe.
-  var SVG_DROP_ELEMENTS = /^(script|foreignobject|iframe|object|embed|audio|video|link|meta|base)$/i;
+  var SVG_DROP_ELEMENTS =
+    /^(script|foreignobject|iframe|object|embed|audio|video|link|meta|base|filter|mask)$/i;
+
+  /// Attributes that hand the rasteriser a region of its own choosing.
+  ///
+  /// **`MAX_SVG_SIDE` bounds the declared side, and the declared side does not
+  /// size the buffer when a filter is present.** A filter states its own
+  /// region: as a percentage of the object bounding box, which is SVG's
+  /// default, or in absolute user units under
+  /// `filterUnits="userSpaceOnUse"`, which has no relationship to the viewBox
+  /// at all. So there is no number anywhere in the document that arithmetic
+  /// over width, height and viewBox could be compared against.
+  ///
+  /// Measured through `NSImage(data:)`, the app's own path, at a constant
+  /// **247 bytes** with `width="600" height="600" viewBox="0 0 600 600"` —
+  /// every number the walker inspects being that of an ordinary small diagram:
+  ///
+  ///     region 600     0.26 s      66 MB
+  ///     region 5,000   0.17 s     243 MB
+  ///     region 20,000  1.46 s   2,090 MB
+  ///     region 60,000 12.39 s   4,632 MB
+  ///
+  /// and the review measured 200,000 taking the process to 10.06 GB and a
+  /// SIGKILL from jetsam. `mask` carries the same region attributes.
+  ///
+  /// `clip-path` is deliberately NOT here: clipping only ever reduces what is
+  /// drawn, and this reader supports diagrams that use `defs`, `clipPath` and
+  /// `clip-path="url(#…)"`, which is the shape real pages use.
+  var SVG_DROP_ATTRS = /^(filter|mask)$/i;
 
   /// A reference that stays inside this document.
   function svgRefIsLocal(value) {
@@ -297,6 +325,8 @@
         var value = el.getAttribute(name);
         // Event handlers: onload, onclick, onbegin, and the rest.
         if (lower.indexOf('on') === 0) { el.removeAttribute(name); continue; }
+        // A reference to a region the rasteriser will size itself from.
+        if (SVG_DROP_ATTRS.test(lower)) { el.removeAttribute(name); continue; }
         // href in any namespace.
         if (lower === 'href' || lower === 'xlink:href' || lower === 'src') {
           if (!svgRefIsLocal(value)) { el.removeAttribute(name); }
