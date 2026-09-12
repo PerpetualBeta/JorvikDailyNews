@@ -121,5 +121,41 @@ enum VideoPreflightTests {
             let mp4 = Data([0x00, 0x00, 0x00, 0x20]) + Data("ftypisom".utf8)
             T.expect(!VideoPreflight.startsWithPlaylistMarker(mp4), "an MP4 header is not")
         }
+
+        // `PolicedVideoAsset` is @MainActor; this file's runner is not.
+        // It really is the main thread here.
+        MainActor.assumeIsolated {
+        T.suite("Video: the player's own requests are policed too") {
+            // The pre-flight and the player used to be two different requests
+            // through two different stacks: URLSession with RedirectGuard, and
+            // AVFoundation with nothing. A server told them apart by user
+            // agent — CFNetwork against AppleCoreMedia — answered the
+            // pre-flight with a genuine ftyp MP4 prefix, and answered the
+            // player with `302 Location: http://127.0.0.1:9312/internal/admin`.
+            //
+            // Measured against the shipped code: pre-flight `play`, and the
+            // private server logged the request arriving TWICE. Through
+            // `PolicedVideoAsset` the private server is never reached, and a
+            // real 804 KB .mov still reaches `readyToPlay` with its duration
+            // and track count read correctly.
+            //
+            // What is testable without a server is the part that makes it
+            // work: the player is handed a scheme it cannot resolve itself.
+            let real = URL(string: "https://example.com/clip.mp4")!
+            let policed = PolicedVideoAsset(url: real)
+            T.expect(policed != nil, "a public address is accepted")
+            T.equal(policed?.asset.url.scheme, "jdn-video",
+                    "and the player gets a scheme only we can serve")
+            T.equal(policed?.asset.url.host, "example.com", "with the address preserved")
+            T.equal(policed?.asset.url.path, "/clip.mp4", "and the path")
+
+            // And the address policy is applied before any of that.
+            for refused in ["http://127.0.0.1/clip.mp4", "http://localhost/clip.mp4",
+                            "http://192.168.1.1/clip.mp4", "file:///tmp/clip.mp4"] {
+                T.expect(PolicedVideoAsset(url: URL(string: refused)!) == nil,
+                         "\(refused) never reaches the player")
+            }
+        }
+        }
     }
 }

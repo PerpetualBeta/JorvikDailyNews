@@ -36,6 +36,17 @@ enum VideoPreflight {
     /// is still read correctly, and small enough to cost nothing.
     static let inspectBytes = 64 * 1024
 
+    /// One identity for the pre-flight and for the player's own fetches.
+    ///
+    /// **The two requests used to be trivially distinguishable**, the
+    /// pre-flight arriving as `CFNetwork` and the player as `AppleCoreMedia`,
+    /// so a server could answer one with a genuine MP4 prefix and the other
+    /// with a redirect. `PolicedVideoAsset` sends this too, which removes the
+    /// signal rather than relying on nobody noticing it.
+    static let userAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 "
+        + "(KHTML, like Gecko) Version/17.4.1 Safari/605.1.15"
+
     enum Verdict: Equatable {
         case play
         case refuse(String)
@@ -166,6 +177,7 @@ enum VideoPreflight {
         // Ask for a prefix. A server may ignore it, which is why the read below
         // stops on its own count rather than trusting the response.
         request.setValue("bytes=0-\(inspectBytes - 1)", forHTTPHeaderField: "Range")
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
 
         do {
             // This sink does not go through BoundedFetch, so it installs the

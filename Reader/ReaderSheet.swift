@@ -1611,6 +1611,9 @@ private struct NativeVideoView: View {
 
     @State private var stage: Stage = .waiting
     @State private var player: AVPlayer?
+    /// `AVAssetResourceLoader` holds its delegate weakly, so the asset alone
+    /// does not keep the loader alive. The view owns it.
+    @State private var asset: PolicedVideoAsset?
 
     var body: some View {
         ZStack {
@@ -1673,7 +1676,19 @@ private struct NativeVideoView: View {
         case .refuse(let why):
             stage = .refused(why)
         case .play:
-            let p = AVPlayer(url: url)
+            // **Not `AVPlayer(url:)`.** That is a second request through
+            // AVFoundation, which has no delegate, no `RedirectGuard` and no
+            // address check on any hop — so a server could answer the
+            // pre-flight honestly and answer the player with
+            // `302 Location: http://127.0.0.1/…`, telling them apart by user
+            // agent. `PolicedVideoAsset` serves every range the player asks
+            // for through `URLSession` with the guard attached.
+            guard let policed = PolicedVideoAsset(url: url) else {
+                stage = .refused("that is not a public web address")
+                return
+            }
+            asset = policed
+            let p = AVPlayer(playerItem: AVPlayerItem(asset: policed.asset))
             player = p
             stage = .playing
             p.play()

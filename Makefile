@@ -55,6 +55,7 @@ READER_SOURCES := Reader/ArticleExtractor.swift \
                   Reader/EmbeddedArticle.swift \
                   Reader/MailtoLink.swift \
                   Reader/NativeReaderView.swift \
+                  Reader/PolicedVideoAsset.swift \
                   Reader/ProseText.swift \
                   Reader/SVGSafety.swift \
                   Reader/VideoPreflight.swift \
@@ -178,6 +179,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Support/RedirectGuard.swift \
                 Reader/ReaderLede.swift \
                 Reader/VideoPreflight.swift \
+                Reader/PolicedVideoAsset.swift \
                 Reader/SVGSafety.swift \
                 PDFService/PDFRenderProtocol.swift \
                 Reader/PDFContentType.swift \
