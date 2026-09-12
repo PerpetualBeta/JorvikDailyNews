@@ -493,30 +493,119 @@ final class ImageCache: @unchecked Sendable {
         }
     }
 
-    private static func download(_ url: URL, timeout: TimeInterval) async -> Outcome {
+    /// The largest picture this reader pulls down whole.
+    ///
+    /// Above this it reads the head of the file instead, and draws the first
+    /// frame if the bytes are a GIF. **An animation is the only thing that
+    /// reaches this size for a reason the reader can use, and the only thing a
+    /// prefix can be trusted for**: a truncated photograph decodes to its top
+    /// few rows over grey, and half a picture is worse than none.
+    ///
+    /// Measured on `github.com/olesha-ai/edgeinfer-eval`, which embeds an
+    /// 11,591,322-byte 172-frame GIF through a plain `<img src="video.gif">`.
+    /// It arrived in 57.3 s and 61.6 s on two consecutive runs against a 60 s
+    /// `resourceCeiling`, so it succeeded or failed on a coin toss — and on
+    /// the losing toss the reader drew a spinner for a minute and then nothing
+    /// at all. Its first frame decodes from the **first 128 KB**, identically
+    /// to the full file: 800x450, mean luminance 69.5 and standard deviation
+    /// 69.1 measured on both.
+    ///
+    /// Nothing is refused by this number. Over it the picture is fetched
+    /// twice at worst, and the ordinary path below it is unchanged.
+    static let fullFetchCeiling = 6 * 1024 * 1024
+
+    /// How much of an oversized picture is read. Eight times what the measured
+    /// case needed for a complete first frame.
+    static let headFetchBytes = 1024 * 1024
+
+    private static let userAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 "
+        + "(KHTML, like Gecko) Version/17.4.1 Safari/605.1.15"
+
+    /// Whether these bytes begin a GIF.
+    ///
+    /// The one format here whose prefix is safe to draw. A GIF stores its
+    /// frames whole and in order, so the first one is complete as soon as it
+    /// has arrived. Every other format the cache accepts holds one picture,
+    /// interleaved or not, so a prefix of it is a part-picture.
+    static func isGIF(_ data: Data) -> Bool {
+        data.prefix(4).elementsEqual([0x47, 0x49, 0x46, 0x38] as [UInt8])
+    }
+
+    private enum Fetched {
+        case body(Data, URLResponse)
+        /// The host declared, or sent, more than the limit asked for.
+        case tooLarge
+        /// Nothing more to try; this is the answer.
+        case stop(Outcome)
+    }
+
+    /// One request, bounded. `head` asks for that many leading bytes and keeps
+    /// whatever arrives, so a host that ignores `Range` is stopped by the
+    /// streaming limit rather than trusted to obey.
+    private static func fetch(_ url: URL, limit: Int, timeout: TimeInterval,
+                              head: Int? = nil, source: FetchSource) async -> Fetched {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
-            forHTTPHeaderField: "User-Agent"
-        )
-        let data: Data
-        let response: URLResponse
-        let source = FetchSource()
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        if let head { request.setValue("bytes=0-\(head - 1)", forHTTPHeaderField: "Range") }
         do {
-            (data, response) = try await BoundedFetch.data(for: request, on: Self.session, limit: BoundedFetch.imageLimit, delegate: source)
+            let (data, response) = try await BoundedFetch.data(
+                for: request, on: Self.session, limit: limit,
+                truncating: head != nil, delegate: source)
+            return .body(data, response)
         } catch let failure as BoundedFetch.Failure {
             // **A scheme the policy will never allow is not transient.** Filed
             // as one, the URL was retried on every refresh for the life of the
             // session, for ever, for an answer that cannot change.
             if case .schemeNotAllowed = failure {
-                return .permanent(failure.localizedDescription)
+                return .stop(.permanent(failure.localizedDescription))
             }
-            return .transient(failure.localizedDescription)
+            if case .tooLarge = failure { return .tooLarge }
+            return .stop(.transient(failure.localizedDescription))
         } catch {
             // A timeout, a dropped connection, a DNS hiccup. Nothing here says
             // the picture is bad.
-            return .transient(error.localizedDescription)
+            return .stop(.transient(error.localizedDescription))
+        }
+    }
+
+    private static func download(_ url: URL, timeout: TimeInterval) async -> Outcome {
+        let source = FetchSource()
+        let data: Data
+        let response: URLResponse
+
+        switch await fetch(url, limit: fullFetchCeiling, timeout: timeout, source: source) {
+        case .body(let d, let r):
+            (data, response) = (d, r)
+        case .stop(let outcome):
+            return outcome
+        case .tooLarge:
+            // Too big to draw whole. Read the head and see whether it is an
+            // animation, whose first frame — the only frame this reader ever
+            // draws — is complete long before the file is.
+            var prefix: (Data, URLResponse)?
+            if case .body(let d, let r) = await fetch(url, limit: headFetchBytes,
+                                                      timeout: timeout, head: headFetchBytes,
+                                                      source: source), isGIF(d) {
+                jdnLog("image: read the first \(mb(d.count)) of an animation from "
+                       + "\(url.host ?? "?") and drew its first frame, rather than "
+                       + "fetching the whole file")
+                prefix = (d, r)
+            }
+            if let prefix {
+                (data, response) = prefix
+            } else {
+                // Not an animation, so a prefix would be the top of a picture
+                // over grey. Pay for the whole thing.
+                switch await fetch(url, limit: BoundedFetch.imageLimit,
+                                   timeout: timeout, source: source) {
+                case .body(let d, let r): (data, response) = (d, r)
+                case .stop(let outcome): return outcome
+                case .tooLarge:
+                    return .permanent("larger than the \(mb(BoundedFetch.imageLimit)) ceiling")
+                }
+            }
         }
 
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {

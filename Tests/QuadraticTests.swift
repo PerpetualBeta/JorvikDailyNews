@@ -198,6 +198,29 @@ enum QuadraticTests {
             ] {
                 T.expect(!ImageCache.isAcceptedPicture(Data(bytes)), "\(what) is refused")
             }
+
+            // **Only a GIF prefix may be drawn.** A picture over
+            // `fullFetchCeiling` is read as a head rather than whole, and a
+            // GIF stores its frames in order so the first is complete as soon
+            // as it arrives. Every other format here holds one picture, so a
+            // prefix of it is the top of a photograph over grey — worse than
+            // showing nothing. Measured case: an 11,591,322-byte 172-frame GIF
+            // on a README, whose first frame decodes identically from the
+            // first 128 KB.
+            T.expect(ImageCache.isGIF(Data(Array("GIF89a".utf8))), "GIF89a is a GIF")
+            T.expect(ImageCache.isGIF(Data(Array("GIF87a".utf8))), "and so is GIF87a")
+            for (what, bytes) in [
+                ("PNG", [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] as [UInt8]),
+                ("JPEG", [0xFF, 0xD8, 0xFF, 0xE0]),
+                ("TIFF", [0x49, 0x49, 0x2A, 0x00]),
+                ("WebP", Array("RIFF".utf8) + [0, 0, 0, 0] + Array("WEBP".utf8)),
+                ("a short body", [0x47, 0x49]),
+                ("an empty body", []),
+            ] {
+                T.expect(!ImageCache.isGIF(Data(bytes)), "\(what) is not, so it is never part-drawn")
+            }
+            T.expect(ImageCache.headFetchBytes < ImageCache.fullFetchCeiling,
+                     "the head read is smaller than the ceiling that triggers it")
         }
 
         T.suite("Quadratic: an empty body is a dead feed, not a moved one") {
