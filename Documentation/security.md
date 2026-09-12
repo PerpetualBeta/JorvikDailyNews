@@ -40,11 +40,31 @@ Article links get the same rule, and that is why they need it. A `webcal:` link 
 
 That second step is not belt and braces. `AVPlayer` decides what to do from content rather than from the path, and it **follows an HLS playlist to whatever URLs the playlist names**. Measured against a local server: a URL ending `.mp4` that served `#EXTM3U` made the player fetch a segment URL the app had never seen. A check applied only to the link is therefore cosmetic, because the link is the one URL an attacker does not need. A playlist is refused outright, which costs live streams — rare behind a bare `.mp4` link.
 
-**That raises the bar rather than closing the hole, and it is worth being exact about why.** The inspection and the player make two independent requests, so a server can answer them differently: a real video prefix to the check, a playlist to the player. Closing it properly needs the player's every request routed through the app's own loader, which has not been done. What actually limits the exposure is that nothing is fetched until you press play.
+**That raised the bar rather than closing the hole, and the hole is closed now.** The inspection and the player made two independent requests, so a server could answer them differently — and it did not need to substitute content to win. Answering the player with `302 Location: http://127.0.0.1/…` was enough, because `AVPlayer(url:)` went through AVFoundation, which has no delegate, no redirect guard and no address check on any hop. Measured against two local servers: the check said play, and the private server logged the request arriving twice.
+
+Following the redirects in the check and handing the player the final address would not have fixed it, because a server can redirect only the player and tell the two apart by user agent. So the player is handed a `jdn-video:` scheme AVFoundation has no loader for, and every byte range it asks for is served by the app through `URLSession` with the redirect guard attached and the address policy applied to the result. There is no request AVFoundation can make that the app does not see. Both requests now also send the same user agent, which removes the signal the attack used. A real 804 KB `.mov` over an ordinary ranged server still plays.
 
 **The boundary with the PDF helper is treated as untrusted in both directions.** The helper's reply is checked to be a PNG before it is decoded: `NSImage` sniffs, and its accepted types include PDF, so a compromised helper could otherwise hand CoreGraphics' PDF parser straight back into the app that deliberately does not link PDFKit. Calls have deadlines, because a helper that is alive and silent resumes nothing. And the helper exits when its connection goes — `ServiceType = Application` gives one instance per application rather than one per connection, which an earlier comment in this project had backwards.
 
 **Cleartext is allowed for fetching and refused for web views.** A feed reader has to fetch what people subscribe to, and a great deal of RSS is still plain `http` — 178 of 247 feed URLs on a real subscription list. Refusing those would not make the app safer, only useless, and a feed is treated as hostile whatever carried it. Web views are different: they run the page's own scripts, and over cleartext an on-path attacker can rewrite that page and run script inside the app's chrome, where there is no address bar to check. So `NSAllowsArbitraryLoadsInWebContent` is off. The cost was measured before it was chosen: 6 of 898 stored article links are plain `http`, about one live-page fallback in 150, and extraction is unaffected because its usual route is not a web view.
+
+## Scripts on the live page, and the one thing no address check can catch
+
+When every extraction route fails, the reader shows the real website. That view is the only place in this app that runs a stranger's code, and **it runs with scripting off by default**:
+
+```
+defaults write cc.jorviksoftware.JorvikDailyNews allowScriptsOnLivePage -bool YES
+```
+
+`defaults delete` the key to go back to off. The setting takes effect on the next article opened, and the log says which way it went.
+
+**Why off, when scripts run in WebKit's own sandboxed content process and can reach no more than any browser allows.** That is true, and it is not the whole question. The app checks the *name* in a link and refuses private ones, but nothing in the app performs the lookup — macOS does that at connect time, and whoever runs DNS for the attacker's domain decides the number. A perfectly public `news.example.com` can answer `192.168.1.1`. No spelling catches it: the name really is public, and only the number behind it is not.
+
+With scripts off, that costs a blind request into your network. The reply goes into the app and nowhere else. With scripts on, a script on the page can fetch the same host, read the reply — the browser considers it the same site — and post it anywhere. That turns a blind request into a readable one, and it is the only route in this app by which a feed could reach data on your own network.
+
+**The cost of off is real and it is yours to weigh.** Plenty of sites render nothing without their scripts, and this view is the last resort, so off makes some of those articles unreadable in the app rather than merely plain. That is why it is a switch instead of a decision made for you. Turning it on restores the behaviour every browser has; the app's address blocklist still refuses private addresses written as such, and what returns is the rebinding case above.
+
+Everything else in the app already ran with scripting off: the reader's own pane and all five extraction rungs.
 
 **The sandbox remains the backstop, because one thing is left.** Decoding a genuine video file still happens in this process: `AVPlayer` renders through a view and cannot be moved into a helper the way PDFKit was. Nothing above removes that, and it is stated here rather than left for a reader to notice.
 

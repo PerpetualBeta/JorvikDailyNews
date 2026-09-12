@@ -157,5 +157,23 @@ enum VideoPreflightTests {
             }
         }
         }
+
+        T.suite("Live page: scripting is off unless the reader asks for it") {
+            let key = LivePagePolicy.allowScriptsKey
+            let original = UserDefaults.standard.object(forKey: key)
+            defer {
+                if let original { UserDefaults.standard.set(original, forKey: key) }
+                else { UserDefaults.standard.removeObject(forKey: key) }
+            }
+
+            UserDefaults.standard.removeObject(forKey: key)
+            T.expect(!LivePagePolicy.allowsScripts, "unset means off")
+
+            UserDefaults.standard.set(true, forKey: key)
+            T.expect(LivePagePolicy.allowsScripts, "and the reader can turn it on")
+
+            UserDefaults.standard.set(false, forKey: key)
+            T.expect(!LivePagePolicy.allowsScripts, "and off again")
+        }
     }
 }

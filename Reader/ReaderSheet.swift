@@ -669,6 +669,7 @@ struct ReaderWebView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    /// See `LivePagePolicy` for why the default is off and what it costs.
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         // Ephemeral: no keychain prompts, no leftover cookies between
@@ -905,20 +906,16 @@ struct LiveWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        let pagePrefs = WKWebpagePreferences()
+        pagePrefs.allowsContentJavaScript = LivePagePolicy.allowsScripts
+        config.defaultWebpagePreferences = pagePrefs
         let web = WKWebView(frame: .zero, configuration: config)
         web.allowsBackForwardNavigationGestures = true
         // Every navigation is judged, not just the first. A page reached here
         // can redirect, script a `location =`, or carry a meta refresh, and
         // this view had no policy at all.
-        //
-        // **Content scripting stays ON here, deliberately, unlike the reader's
-        // own pane.** This view exists to show the real website when everything
-        // else has failed, and most sites render nothing without it — turning
-        // it off would make the last resort useless. The page's scripts run in
-        // WebKit's own content process, which is sandboxed separately from this
-        // app, so what they can reach is what any browser would allow them,
-        // not what this app's entitlements allow.
         web.navigationDelegate = context.coordinator
+        jdnLog("live page: scripting \(LivePagePolicy.allowsScripts ? "ON (allowScriptsOnLivePage)" : "off")")
         return web
     }
 

@@ -91,6 +91,7 @@ SUPPORT_SOURCES := Support/BoundedFetch.swift \
                    Support/Clamping.swift \
                    Support/HTMLTags.swift \
                    Support/FirstAnswer.swift \
+                   Support/LivePagePolicy.swift \
                    Support/RedirectGuard.swift \
                    Support/Log.swift \
                    Support/WebURL.swift
@@ -190,6 +191,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Feeds/FeedDiscovery.swift \
                 Support/HTMLTags.swift \
                 Support/FirstAnswer.swift \
+                Support/LivePagePolicy.swift \
                 Reader/EmbeddedArticle.swift \
                 Pictures/PictureSignature.swift \
                 Pictures/PictureSignatureStore.swift \

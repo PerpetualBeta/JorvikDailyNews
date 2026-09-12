@@ -46,6 +46,22 @@ The reader header always shows where the material comes from: the feed's name, a
 
 **Exclude a source.** The header's **Exclude Source** button drops every item pointing at the current article's host from the paper and reflows immediately. The aggregator feed that surfaced it keeps flowing — only items pointing at that host disappear. Useful for muting a domain that a dozen feeds all keep linking to.
 
+## When the reader can't extract an article
+
+Some pages defeat extraction. When every route fails, the reader shows you the real website instead of an empty pane.
+
+**That view runs with the site's scripts turned off**, which is the only place in the app where a choice has been made that can make a page less useful. Many sites render nothing at all without their scripts, so an article that ends up here may look broken rather than merely plain. If you would rather have the working page:
+
+```
+defaults write cc.jorviksoftware.JorvikDailyNews allowScriptsOnLivePage -bool YES
+```
+
+`defaults delete` the same key puts it back. Either way it applies to the next article you open.
+
+**The reason for the default.** A script on a page can ask for a web address and read what comes back. The app refuses addresses that name a machine on your own network, but that check reads the *address* — and a perfectly ordinary-looking name can be pointed at a machine in your house by whoever owns the name. With scripts off, the worst that happens is a request going somewhere it should not, and nothing comes back out. With scripts on, a page can read the answer and send it on.
+
+That is the whole trade, and it is a small risk against a real cost, which is why it is yours to make rather than ours. [The security notes](security.md) go through it properly.
+
 ---
 
 [← Back to the README](../README.md)
