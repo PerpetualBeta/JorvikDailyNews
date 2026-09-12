@@ -97,6 +97,24 @@ final class IsolatedPDFModel {
     /// notice about a PDF would be wrong on a page that was never one.
     var onNotAPDF: () -> Void = { }
 
+    /// The bytes the helper was given, kept so a helper that goes away can be
+    /// handed the same document again.
+    ///
+    /// **An XPC service exiting is not a crash.** `ServiceType = Application`
+    /// leaves the helper's lifetime to launchd, which reaps it when it has
+    /// been idle — and the client's `interruptionHandler` cannot tell that
+    /// from a PDFKit crash. Measured in this reader's own log: a document
+    /// opened cleanly at 10:02:40 (13 pages from 44,371 bytes) and the
+    /// connection was interrupted at 10:24:07, twenty-one minutes later,
+    /// with no crash report for `PDFService` anywhere on the machine. The
+    /// second event that day was "helper stopped while rendering page 6",
+    /// which is the same thing noticed by somebody scrolling.
+    ///
+    /// So a lost helper is recovered from rather than reported. Held only
+    /// while the document is on screen, which is the same lifetime the helper
+    /// holds its own copy for.
+    private var openedBytes: Data?
+
     /// Downloads, hands over, and reports what the helper found.
     func load(_ url: URL) async {
         state = .starting
@@ -117,6 +135,7 @@ final class IsolatedPDFModel {
                 state = .failed("the document declares no pages")
                 return
             }
+            openedBytes = data
             sizes = doc.sizes
             jdnLog("pdf: helper opened \(doc.pageCount) page(s) from \(data.count) bytes")
             state = .ready(pageCount: doc.pageCount)
@@ -128,6 +147,31 @@ final class IsolatedPDFModel {
         } catch {
             jdnLog("pdf: FAILED — \(error.localizedDescription)")
             state = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Hand the same document to a new helper and draw the page again.
+    ///
+    /// Returns whether it worked. Once only: a document that kills two helpers
+    /// in a row is a document, not an idle timeout, and saying so is then the
+    /// right answer rather than an endless reconnection loop.
+    private func reopenAndRetry(page: Int, width: CGFloat) async -> Bool {
+        guard let bytes = openedBytes else { return false }
+        jdnLog("pdf: the helper went away — handing the document to a new one")
+        client.reopen()
+        do {
+            let doc = try await client.open(bytes)
+            guard doc.pageCount > 0 else { return false }
+            sizes = doc.sizes
+            let image = try await client.render(page: page, width: width,
+                                                scale: Self.renderScale)
+            rendered.setObject(image, forKey: key(page, width) as NSString,
+                               cost: Self.cost(of: image))
+            stored &+= 1
+            jdnLog("pdf: recovered — page \(page) drawn by the new helper")
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -143,10 +187,16 @@ final class IsolatedPDFModel {
             rendered.setObject(image, forKey: k as NSString, cost: Self.cost(of: image))
             stored &+= 1
         } catch let failure as PDFRenderClient.Failure {
-            // A helper that has died takes the whole document with it, and the
-            // reader must say so rather than leaving grey rectangles.
+            // A helper that has gone is usually launchd reclaiming an idle
+            // one, not PDFKit falling over. Hand the same bytes to a new
+            // helper and draw the page again; only say something if that
+            // fails too.
+            if case .helperStopped = failure, await reopenAndRetry(page: page, width: width) {
+                return
+            }
             if case .helperStopped = failure {
-                jdnLog("pdf: helper stopped while rendering page \(page)")
+                jdnLog("pdf: helper stopped while rendering page \(page), "
+                       + "and a second helper could not read the document either")
                 state = .failed("the PDF helper stopped while reading this document")
             } else {
                 jdnLog("pdf: page \(page) — \(failure.description)")

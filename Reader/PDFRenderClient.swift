@@ -85,7 +85,12 @@ final class PDFRenderClient {
         c.interruptionHandler = { [weak self] in
             Task { @MainActor in
                 guard let self, self.generation == era else { return }
-                jdnLog("pdf: helper interrupted — it stopped while reading a document")
+                // Usually launchd reclaiming an idle helper rather than
+                // PDFKit falling over: `ServiceType = Application` leaves the
+                // lifetime to launchd, and this handler cannot tell the two
+                // apart. `IsolatedPDFModel` recovers by handing the same bytes
+                // to a new one.
+                jdnLog("pdf: helper connection interrupted — it exited or stopped")
                 self.stopped = true
             }
         }
