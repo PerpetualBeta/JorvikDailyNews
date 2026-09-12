@@ -40,4 +40,27 @@ enum LivePagePolicy {
     static var allowsScripts: Bool {
         UserDefaults.standard.object(forKey: allowScriptsKey) as? Bool ?? false
     }
+
+    /// Whether the live page may load this address.
+    ///
+    /// **Cleartext is refused here rather than by App Transport Security.**
+    /// The app used to carry `NSAllowsArbitraryLoadsInWebContent = false`
+    /// alongside `NSAllowsArbitraryLoads = true`, meaning "cleartext for
+    /// fetching, none for web views". That is not what it does: ATS ignores
+    /// `NSAllowsArbitraryLoads` whenever the web-content key is **present**,
+    /// whatever value it carries. Proved with two app bundles differing in
+    /// nothing else, fetching the same five plain-http feeds — without the
+    /// key, three returned 152 KB, 48 KB and 190 KB and the other two failed
+    /// for reasons of their own; with it, all five were ATS BLOCKED. Every
+    /// remaining http feed had been failing hourly, in silence, since it
+    /// shipped.
+    ///
+    /// The reasoning behind the refusal stands: this view runs the page's own
+    /// scripts, and over cleartext an on-path attacker can rewrite that page
+    /// and run script inside the app's chrome, where there is no address bar
+    /// to check. It is one test in the one view that loads a remote page.
+    static func permitsLivePage(_ url: URL) -> Bool {
+        guard WebURL.isAllowed(url) else { return false }
+        return url.scheme?.lowercased() != "http"
+    }
 }

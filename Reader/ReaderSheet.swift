@@ -1125,6 +1125,30 @@ struct LiveWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            // **Cleartext is refused here rather than by ATS.**
+            //
+            // This used to be `NSAllowsArbitraryLoadsInWebContent = false` in
+            // Info.plist, alongside `NSAllowsArbitraryLoads = true` for the
+            // fetching the app has to do. That does not work: ATS ignores
+            // `NSAllowsArbitraryLoads` whenever the web-content key is
+            // **present**, whatever it is set to. Proved with two app bundles
+            // differing in nothing else, fetching the same `http://` feed —
+            // one got a real network answer, the other
+            // "the App Transport Security policy requires the use of a secure
+            // connection". Every remaining plain-http feed had been failing
+            // hourly, silently, since the key was added.
+            //
+            // The reasoning for refusing it in a web view stands: this view
+            // runs the page's own scripts, and over cleartext an on-path
+            // attacker can rewrite that page and run script inside the app's
+            // chrome, where there is no address bar to check. It is one test
+            // here instead, in the one view that loads a remote page.
+            if !LivePagePolicy.permitsLivePage(url) {
+                jdnLog("live page: refused \(url.host ?? "?") over cleartext — "
+                       + "this view runs the page's scripts")
+                decisionHandler(.cancel)
+                return
+            }
             decisionHandler(.allow)
         }
 

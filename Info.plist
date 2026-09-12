@@ -31,20 +31,29 @@
          make it useless, and the feed itself is treated as hostile input
          regardless of how it arrived.
 
-         NSAllowsArbitraryLoadsInWebContent is OFF, which is the part that
-         matters. Web views run the page's own scripts, and over cleartext an
-         on-path attacker can rewrite that page — script execution inside the
-         app's chrome, with no address bar to check. The cost is small and was
-         measured too: of 898 stored article links, 6 are plain http, so this
-         affects roughly one live-page fallback in 150. Extraction is
-         unaffected, because its first and usual route is URLSession rather
-         than a web view. -->
+         NSAllowsArbitraryLoadsInWebContent WAS here, set to false, and it
+         had to be removed. **ATS ignores NSAllowsArbitraryLoads whenever the
+         web-content key is PRESENT, whatever value it carries.** Proved with
+         two app bundles differing in nothing else, both fetching the same
+         http:// feed: the one without the key got a real network answer, the
+         one with it got "the App Transport Security policy requires the use
+         of a secure connection". So adding it turned cleartext fetching off
+         app-wide, and every remaining plain-http feed failed hourly, in
+         silence, from the moment it shipped.
+
+         The reasoning behind it was right and is kept — a web view runs the
+         page's own scripts, and over cleartext an on-path attacker can
+         rewrite that page and run script inside the app's chrome, where there
+         is no address bar to check. It is enforced in
+         LiveWebView's navigation policy instead, which is the one view that
+         loads a remote page, and which already refuses anything WebURL
+         refuses. The cost was measured before it was chosen: of 898 stored
+         article links, 6 are plain http, roughly one live-page fallback in
+         150. -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
         <true/>
-        <key>NSAllowsArbitraryLoadsInWebContent</key>
-        <false/>
     </dict>
     <key>SUFeedURL</key>
     <string>https://jorviksoftware.cc/appcasts/jorvikdailynews.xml</string>

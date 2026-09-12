@@ -175,5 +175,26 @@ enum VideoPreflightTests {
             UserDefaults.standard.set(false, forKey: key)
             T.expect(!LivePagePolicy.allowsScripts, "and off again")
         }
+
+        T.suite("Live page: cleartext is refused in code, not by ATS") {
+            // `NSAllowsArbitraryLoadsInWebContent = false` alongside
+            // `NSAllowsArbitraryLoads = true` does not mean "cleartext for
+            // fetching, none for web views". ATS ignores the second key
+            // whenever the first is PRESENT, whatever it is set to — so that
+            // arrangement turned cleartext fetching off app-wide and every
+            // remaining http feed failed hourly in silence.
+            T.expect(LivePagePolicy.permitsLivePage(URL(string: "https://example.com/a")!),
+                     "https is allowed")
+            T.expect(!LivePagePolicy.permitsLivePage(URL(string: "http://example.com/a")!),
+                     "http is refused, because this view runs the page's scripts")
+            T.expect(!LivePagePolicy.permitsLivePage(URL(string: "HTTP://example.com/a")!),
+                     "and the scheme's case does not matter")
+            // And it still defers to the address policy for everything else.
+            for refused in ["https://127.0.0.1/a", "https://localhost/a",
+                            "file:///tmp/a", "javascript:alert(1)"] {
+                T.expect(!LivePagePolicy.permitsLivePage(URL(string: refused)!),
+                         "\(refused) is refused")
+            }
+        }
     }
 }
