@@ -938,7 +938,15 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             // RFC822 variants: named timezone vs. numeric offset, with and
             // without seconds, with and without the leading day-name.
             for f in Self.fallbackFormatters {
-                if let d = f.date(from: s) { return d }
+                guard let d = f.date(from: s) else { continue }
+                if d >= Self.earliestPlausibleDate { return d }
+                // A two-digit year that `yyyy` read as a four-digit one. Try
+                // it as what RFC 822 says it is.
+                for g in Self.twoDigitYearFormatters {
+                    if let corrected = g.date(from: s),
+                       corrected >= Self.earliestPlausibleDate { return corrected }
+                }
+                return d
             }
         }
         return nil
@@ -972,6 +980,59 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
             f.locale = Locale(identifier: "en_US_POSIX")
             f.timeZone = TimeZone(secondsFromGMT: 0)
             f.dateFormat = p
+            return f
+        }
+    }()
+
+    /// Earlier than this and the date was not read correctly.
+    ///
+    /// **`DateFormatter`'s `yyyy` accepts two digits and answers year 25
+    /// rather than declining.** RFC 822 permits a two-digit year and
+    /// keithclark.co.uk serves one — `Wed, 01 Oct 25 23:31:20 +0000` — so its
+    /// items were dated the first century AD. `EditionBuilder` sorts
+    /// date-descending, so every article from that feed sorted two thousand
+    /// years old and never reached a page. Nothing said so: the parse
+    /// succeeded, the item was built, and it simply lost every comparison.
+    ///
+    /// Found on 2026-09-12 by the dormancy notice printing a feed's last
+    /// publication date as `0025-10-01`. It had been silently dropping that
+    /// feed for as long as the subscription existed.
+    ///
+    /// 1990 is comfortably before the web and well below the oldest genuine
+    /// archive item measured on this machine (True Tiger Recordings,
+    /// 2005-12-09).
+    private static let earliestPlausibleDate: Date = {
+        var c = DateComponents()
+        c.year = 1990; c.month = 1; c.day = 1
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        return cal.date(from: c)!
+    }()
+
+    /// The RFC 822 patterns again, reading the year as the two digits it is.
+    ///
+    /// The pivot is stated rather than inherited: a syndication feed cannot
+    /// predate the web, so `70`–`99` are the 1900s and `00`–`69` the 2000s.
+    private static let twoDigitYearFormatters: [DateFormatter] = {
+        let patterns = [
+            "EEE, dd MMM yy HH:mm:ss Z",
+            "EEE, dd MMM yy HH:mm:ss zzz",
+            "EEE, dd MMM yy HH:mm Z",
+            "EEE, dd MMM yy HH:mm zzz",
+            "dd MMM yy HH:mm:ss Z",
+            "dd MMM yy HH:mm:ss zzz",
+        ]
+        var c = DateComponents()
+        c.year = 1970; c.month = 1; c.day = 1
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let pivot = cal.date(from: c)!
+        return patterns.map { p in
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = TimeZone(secondsFromGMT: 0)
+            f.dateFormat = p
+            f.twoDigitStartDate = pivot
             return f
         }
     }()

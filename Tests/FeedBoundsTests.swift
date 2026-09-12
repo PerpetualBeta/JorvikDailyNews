@@ -299,6 +299,40 @@ enum FeedBoundsTests {
             T.expect(out.items.first?.summary.contains("thirty") == true, "summary intact")
         }
 
+        T.suite("Feeds: a two-digit year is the year RFC 822 means") {
+            // `DateFormatter`'s `yyyy` accepts two digits and answers year 25
+            // rather than declining, so keithclark.co.uk's perfectly legal
+            // `Wed, 01 Oct 25 23:31:20 +0000` dated its items to the first
+            // century. `EditionBuilder` sorts date-descending, so every
+            // article from that feed lost every comparison and never reached a
+            // page — silently, with the parse reporting success.
+            var cal = Calendar(identifier: .gregorian)
+            cal.timeZone = TimeZone(secondsFromGMT: 0)!
+            func year(of xml: String) throws -> Int? {
+                guard let d = try parse(xml).items.first?.publishedAt else { return nil }
+                return cal.component(.year, from: d)
+            }
+            func dated(_ pubDate: String) -> String {
+                rss("<item><title>T</title><link>https://example.com/a</link>"
+                    + "<pubDate>\(pubDate)</pubDate></item>")
+            }
+            T.equal(try year(of: dated("Wed, 01 Oct 25 23:31:20 +0000")), 2025,
+                    "the measured case reads as 2025, not 25")
+            T.equal(try year(of: dated("01 Oct 25 23:31:20 +0000")), 2025,
+                    "and so does the form with no day name")
+            T.equal(try year(of: dated("Wed, 01 Oct 99 12:00:00 GMT")), 1999,
+                    "the pivot puts 99 in the 1900s")
+            T.equal(try year(of: dated("Wed, 01 Oct 2025 23:31:20 +0000")), 2025,
+                    "a four-digit year is untouched")
+            T.equal(try year(of: dated("2025-10-01T23:31:20Z")), 2025,
+                    "and so is RFC 3339")
+            // A genuinely old archive item must survive. The plausibility
+            // floor is 1990, comfortably below the oldest real one measured
+            // (True Tiger Recordings, 2005-12-09).
+            T.equal(try year(of: dated("Fri, 09 Dec 2005 00:00:00 +0000")), 2005,
+                    "an old archive item keeps its own date")
+        }
+
         T.suite("Feeds: one that has quietly stopped working is noticed") {
             let now = Date()
             let day = Feed.silentFailureThreshold
