@@ -227,8 +227,9 @@ enum WebURL {
         // and so are the `sslip.io` and `xip.io` families. This app does not
         // and cannot close DNS rebinding in general — the check is on the URL,
         // not on the socket — but a host that carries a private dotted-quad in
-        // its own labels is announcing itself, and refusing that costs
-        // nothing: no legitimate host begins with four numeric labels.
+        // its own labels is announcing itself. Only a PRIVATE quad is refused,
+        // so `93.184.216.34.nip.io` is left alone; a public address spelled
+        // across labels is still a public address.
         if embedsPrivateAddress(bare) { return true }
         return !bare.contains(".")
     }

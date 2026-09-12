@@ -165,11 +165,13 @@ final class FeedFetcher: Sendable {
               let text = String(data: data, encoding: encoding),
               let utf8 = text.data(using: .utf8)
         else {
-            // Undecodable as the encoding its own bytes advertise.
-            // `scanRefusal` refuses this before anything reaches here, so the
-            // scan is never handed bytes it cannot read. Kept as a total
-            // function rather than a trap, because `entityAmplification` is
-            // also called by `OPMLImporter`.
+            // Undecodable as the encoding its own bytes advertise. Both
+            // callers of `entityAmplification` — `parse` here and
+            // `OPMLImporter.read` — gate on `scanRefusal` first, and that
+            // refuses a UTF-16 body this cannot transcode, so in the shipped
+            // paths the scan is not handed bytes it cannot read. Kept as a
+            // total function rather than a trap, because that is a property of
+            // two call sites and not of this one.
             return data
         }
         return utf8
@@ -376,6 +378,11 @@ final class FeedFetcher: Sendable {
     /// reader successfully read it, so that is the ceiling. Only future dates
     /// are touched; an honest past date is never moved, and a genuinely fresh
     /// item published since the last fetch is dated honestly and still wins.
+    ///
+    /// **On a feed's first successful fetch there is no previous one to clamp
+    /// against, and the ceiling falls back to `now`** — so the restamping this
+    /// closes is open for exactly one refresh after the reader subscribes.
+    /// `EditionBuilder.dedupeByLink` records why that residual matters.
     static func clamped(_ date: Date, now: Date = Date(), since lastFetch: Date? = nil) -> Date {
         guard date > now else { return date }
         guard let lastFetch, lastFetch < now else { return now }

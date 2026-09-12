@@ -686,11 +686,14 @@ final class AppStore {
     /// The unit the exclude list works in.
     static func normalizedHost(_ url: URL) -> String? {
         // The root label first, and from the same routine `WebURL` uses, so
-        // the exclusion list and the address policy cannot disagree about what
-        // a host is. `example.com.` is the same host as `example.com` to every
-        // resolver, and a muted source kept printing under the spelling with
-        // the dot — the same root-label hole that was sweep 2's CRITICAL, in a
-        // second place.
+        // the two cannot disagree about trailing dots or case. They still
+        // differ deliberately below: the exclusion list works in `www.`-less
+        // hosts and the address policy does not.
+        //
+        // `example.com.` is the same host as `example.com` to every resolver,
+        // and a muted source kept printing under the spelling with the dot —
+        // the same root-label hole that was sweep 2's CRITICAL, in a second
+        // place.
         guard var host = WebURL.canonicalHost(url) else { return nil }
         if host.hasPrefix("www.") { host.removeFirst(4) }
         return host.isEmpty ? nil : host

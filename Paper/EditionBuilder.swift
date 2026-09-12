@@ -98,12 +98,17 @@ struct EditionBuilder {
             }
         }
         if kept.count < maxEditionItems {
-            // **Not `overflow.prefix`.** `share * feeds <= maxEditionItems` by
-            // integer division, so pass one can never fill the edition and
-            // pass two always runs — and `overflow` was appended in the
+            // **Not `overflow.prefix`.** Integer division leaves
+            // `share * feeds` short of the ceiling for most publisher counts,
+            // so pass two usually runs — and `overflow` was appended in the
             // iteration order of a date-descending list, so the feed that
             // dated its items latest sat at the front of it and took every
-            // remaining slot. Measured on a 254-subscription fixture: one
+            // remaining slot.
+            //
+            // Not *always*, which an earlier draft of this comment claimed:
+            // when the publishers divide the ceiling evenly, or when there are
+            // more publishers than slots and `share` floors to 1, pass one can
+            // fill the edition on its own and this never runs. Measured on a 254-subscription fixture: one
             // hostile feed of 8,000 items displaced 816 genuine articles and
             // took the lead.
             //
