@@ -1524,9 +1524,17 @@ struct VideoEmbedView: NSViewRepresentable {
                      createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction,
                      windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if let url = navigationAction.request.url {
-                webView.load(URLRequest(url: url))
+            // **A `window.open` is a URL the embedded page chose, and this
+            // hop had no policy on it at all** — it loaded whatever was asked
+            // for, into the view showing the video, while every other route in
+            // the app goes through `WebURL`. This view has no navigation
+            // delegate either, so there was no second chance.
+            guard let url = navigationAction.request.url else { return nil }
+            guard WebURL.isAllowed(url) else {
+                jdnLog("embed: refused a window.open to \(url.host ?? "?")")
+                return nil
             }
+            webView.load(URLRequest(url: url))
             return nil
         }
     }

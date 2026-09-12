@@ -172,7 +172,8 @@ final class ArticleClassifier {
     /// This is the half that pays: a pin places an item on a section page the
     /// reader curated, so a feed copying a `<guid>` out of another feed's
     /// public XML could put its own story there. Each key is claimable once.
-    func migrateLegacyIDs(for items: [FeedItem]) {
+    @discardableResult
+    func migrateLegacyIDs(for items: [FeedItem]) -> Bool {
         var carried = 0
         // See `ReadStore.migrateLegacyIDs`: a key two items claim is evidence
         // of a copied guid, and this is the half that pays, because a pin puts
@@ -192,9 +193,13 @@ final class ArticleClassifier {
                 carried += 1
             }
         }
-        guard carried > 0 else { return }
+        // See `ReadStore.migrateLegacyIDs`: the launch's first recompute runs
+        // against the previous build's edition, where no item carries one.
+        let hadLegacyKeys = items.contains { $0.legacyItemId != nil }
+        guard carried > 0 else { return hadLegacyKeys }
         jdnLog("classifier: carried \(carried) pin(s)/correction(s) onto namespaced item ids")
         save()
+        return true
     }
 
     // MARK: - Internals

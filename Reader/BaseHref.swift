@@ -45,13 +45,25 @@ enum BaseHref {
             .replacingOccurrences(of: "\"", with: "&quot;")
         let tag = "<base href=\"\(escaped)\">"
         let document = stripped(html)
-        // After `<head>` if there is one, otherwise after `<html>`, otherwise
-        // at the very front. Never before the doctype, which would drop the
-        // parser into quirks mode and change the DOM we are trying to read.
-        for opener in ["<head", "<html"] {
-            guard let start = document.range(of: opener, options: .caseInsensitive) else { continue }
-            guard let close = document.range(of: ">", range: start.upperBound..<document.endIndex)
-            else { continue }
+        // **Straight after the doctype, not after the first `<head`.**
+        //
+        // Locating `<head` textually has no idea what a comment is, so a page
+        // opening `<!-- <head> -->` put the injected tag inside the comment,
+        // where it is inert — and the page's own base, which `stripped` has
+        // now removed, used to win outright.
+        //
+        // After the doctype is both simpler and spec-correct: the "before
+        // html" insertion mode treats a `<base>` start tag as "anything else",
+        // which opens an implied `<html>` and an implied `<head>` and puts the
+        // base in it, first in tree order. Never BEFORE the doctype, which
+        // would drop the parser into quirks mode and change the DOM we are
+        // trying to read.
+        var index = document.startIndex
+        while index < document.endIndex, document[index].isWhitespace {
+            index = document.index(after: index)
+        }
+        if document[index...].lowercased().hasPrefix("<!doctype"),
+           let close = document.range(of: ">", range: index..<document.endIndex) {
             var out = document
             out.insert(contentsOf: tag, at: close.upperBound)
             return out

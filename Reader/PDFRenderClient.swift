@@ -45,6 +45,23 @@ final class PDFRenderClient {
     /// rather than hanging on a proxy that will never answer.
     private var stopped = false
 
+    /// Which helper the handlers below are talking about.
+    ///
+    /// **`reopen()` used to be undone by its own `close()`.** It set
+    /// `stopped = false` and then invalidated the live connection, which fires
+    /// `invalidationHandler` — off the calling thread, after `invalidate()`
+    /// returns — and that handler queues `stopped = true`. `load` then awaits
+    /// the download, a seconds-long suspension in which the queued task runs,
+    /// so `client.open` threw `helperStopped` before sending a single XPC
+    /// message. The reader showed "the PDF helper stopped while reading this
+    /// document" for a helper that was running perfectly, after re-downloading
+    /// the whole file. The second Try Again worked, because by then
+    /// `connection` was nil and `close()` was a no-op — which is what made it
+    /// read as flaky rather than broken.
+    ///
+    /// A handler only speaks for the connection it was installed on.
+    private var generation = 0
+
     /// The tail of the render chain. See `serialised`.
     private var renderTail: Task<Void, Never>?
 
@@ -64,14 +81,19 @@ final class PDFRenderClient {
             argumentIndex: 0, ofReply: false)
         // interruption = the helper died, which is the case this design is
         // for. invalidation = the connection will never work again.
+        let era = generation
         c.interruptionHandler = { [weak self] in
             Task { @MainActor in
+                guard let self, self.generation == era else { return }
                 jdnLog("pdf: helper interrupted — it stopped while reading a document")
-                self?.stopped = true
+                self.stopped = true
             }
         }
         c.invalidationHandler = { [weak self] in
-            Task { @MainActor in self?.stopped = true }
+            Task { @MainActor in
+                guard let self, self.generation == era else { return }
+                self.stopped = true
+            }
         }
         c.resume()
         connection = c
@@ -94,9 +116,12 @@ final class PDFRenderClient {
     /// because that built a new client.
     func reopen() {
         if stopped { jdnLog("pdf: starting a new helper after the last one stopped") }
-        stopped = false
         renderTail = nil
+        // Close first, then disown the handlers it will fire, then clear the
+        // flag. In that order the invalidation this causes cannot undo it.
         close()
+        generation += 1
+        stopped = false
     }
 
     /// Runs `work` after every render already waiting, and makes the next

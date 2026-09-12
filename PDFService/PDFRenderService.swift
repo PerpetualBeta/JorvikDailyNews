@@ -32,6 +32,12 @@ final class PDFRenderService: NSObject, PDFRenderServiceProtocol, @unchecked Sen
     /// allocation. A page declaring 200,000 points square is a hostile page,
     /// not a poster.
     private static let maxRenderSide: CGFloat = 10_000
+
+    /// How long one page may draw before the helper says which page it is.
+    private static let renderWarning: TimeInterval = 10
+
+    /// Off `queue`, because `queue` is the thread doing the drawing.
+    private static let watchdog = DispatchQueue(label: "cc.jorviksoftware.jdn.pdfwatchdog")
     private static let maxRenderPixels: CGFloat = 40_000_000
 
     func open(handle: FileHandle,
@@ -106,8 +112,10 @@ final class PDFRenderService: NSObject, PDFRenderServiceProtocol, @unchecked Sen
                 return
             }
             let box = p.bounds(for: .cropBox)
-            guard box.width > 0, box.height > 0 else {
-                reply(nil, "page \(page) declares no size")
+            // The same test `open` applies, so the helper cannot refuse to
+            // describe a page and then agree to draw it.
+            guard PDFPageSizes.isUsable(box.size) else {
+                reply(nil, "page \(page) declares a size no layout can use")
                 return
             }
 
@@ -126,6 +134,21 @@ final class PDFRenderService: NSObject, PDFRenderServiceProtocol, @unchecked Sen
                 let k = (Self.maxRenderPixels / (size.width * size.height)).squareRoot()
                 size = CGSize(width: size.width * k, height: size.height * k)
             }
+
+            // **A watchdog on the helper's own work, which is what the
+            // client's deadline comment always said the deadline should be
+            // measuring.** The render ceilings bound pixels; nothing bounds
+            // the work behind them, and a few hundred thousand path operations
+            // on one page costs minutes of CPU regardless of output size.
+            // `thumbnail(of:for:)` polls no cancellation, so this cannot stop
+            // the draw — what it does is tell the app which page is at fault,
+            // instead of leaving the client to conclude from silence that the
+            // helper crashed and take the whole document down with it.
+            let slow = DispatchWorkItem {
+                NSLog("pdf helper: page %d is still drawing after %.0fs", page, Self.renderWarning)
+            }
+            Self.watchdog.asyncAfter(deadline: .now() + Self.renderWarning, execute: slow)
+            defer { slow.cancel() }
 
             // `thumbnail(of:for:)` is PDFKit's own rasteriser and draws the
             // page in this process, which is the whole point of this process.

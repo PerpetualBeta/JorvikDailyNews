@@ -43,6 +43,21 @@ enum WebURL {
     /// rejects a URL that is perfectly valid. Three of the five call sites this
     /// replaces had that bug. It failed closed, so it cost a working link
     /// rather than anything worse.
+    /// A URL's host, lowercased, with every trailing root label removed.
+    ///
+    /// The one reading of a host this app agrees on. `example.com.` is the
+    /// same host as `example.com` to every resolver, and a trailing dot
+    /// defeating a host comparison is what sweep 2's CRITICAL was — so
+    /// anything comparing hosts takes the value from here rather than from
+    /// `url.host` directly.
+    ///
+    /// Stripped in a loop, because `example.com..` is the same trick twice.
+    static func canonicalHost(_ url: URL) -> String? {
+        guard var host = url.host?.lowercased(), !host.isEmpty else { return nil }
+        while host.hasSuffix(".") { host = String(host.dropLast()) }
+        return host.isEmpty ? nil : host
+    }
+
     static func isAllowed(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(),
               allowedSchemes.contains(scheme)

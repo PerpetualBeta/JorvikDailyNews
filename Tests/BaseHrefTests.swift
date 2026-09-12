@@ -10,6 +10,26 @@ enum BaseHrefTests {
     private static let base = URL(string: "https://example.com/news/story")!
 
     static func run() {
+        T.suite("Base href: the injected tag is first in tree order") {
+            // It is inserted straight after the doctype rather than after the
+            // first `<head`, because locating `<head` textually has no idea
+            // what a comment is: a page opening `<!-- <head> -->` buried the
+            // injected tag inside the comment, where it is inert. The spec's
+            // "before html" insertion mode treats a `<base>` start tag as
+            // "anything else", opening an implied html and head and putting
+            // the base in it.
+            let commented = BaseHref.apply(to: "<!-- <head> here --><html><head></head></html>",
+                                           base: base)
+            let at = commented.range(of: "<base", options: .caseInsensitive)
+            T.expect(at != nil, "a leading comment does not lose it")
+            if let at {
+                let before = commented[commented.startIndex..<at.lowerBound]
+                let opens = before.components(separatedBy: "<!--").count - 1
+                let closes = before.components(separatedBy: "-->").count - 1
+                T.expect(opens == closes, "and does not bury it inside the comment")
+            }
+        }
+
         T.suite("Base href: the injected tag goes in the head") {
             let out = BaseHref.apply(to: "<html><head><title>A</title></head><body>x</body></html>",
                                      base: base)

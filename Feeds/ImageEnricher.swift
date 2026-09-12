@@ -302,11 +302,24 @@ struct ImageEnricher: Sendable {
 
         var found: [URL] = []
         let metaTags = Self.tags("meta", in: head)
+        // **`<link rel="image_src">` is a `<link>`, and this only ever saw
+        // `<meta>`.** Sweep 2's quadratic fix moved matching onto split tags,
+        // and every string `tags("meta", …)` returns begins with the literal
+        // `<meta` by construction, so the fifth pattern — which requires
+        // `<link[^>]+rel=["']image_src["']` — could not match a real element.
+        // The file header still advertised it as a supported source, and
+        // `PageMeta.failure` would report "declares no og:image or
+        // twitter:image" for a page that declares one.
+        let linkTags = Self.tags("link", in: head)
         for pattern in patterns {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
             var match: NSTextCheckingResult?
             var tag = ""
-            for candidate in metaTags {
+            // A pattern that names `<link` is asked about link tags; the rest
+            // about meta tags. Splitting by name is what made this necessary,
+            // and it is cheaper than asking every pattern about both.
+            let candidates = pattern.contains("<link") ? linkTags : metaTags
+            for candidate in candidates {
                 let range = NSRange(candidate.startIndex..., in: candidate)
                 if let m = regex.firstMatch(in: candidate, range: range) { match = m; tag = candidate; break }
             }

@@ -73,6 +73,11 @@
         last.text += text;
         return;
       }
+      // At the ceiling, merge into the tail rather than opening another run.
+      // The text is kept; only the styling of the tail is lost.
+      if (out.length >= MAX_BLOCK_RUNS) {
+        if (last) { last.text += text; return; }
+      }
       out.push({ text: text, bold: s.bold, italic: s.italic, code: s.code, href: s.href });
     }
 
@@ -165,11 +170,24 @@
   /// roughly 3.8 million points tall.
   var MAX_BLOCK_CHARS = 64 * 1024;
 
+  /// Most runs one block may hold.
+  ///
+  /// `MAX_BLOCK_CHARS` bounds characters and `MAX_BLOCK_PARTS` bounds items
+  /// and cells; neither bounds how many runs a block is cut into, and a run
+  /// costs more than a character — `NativeReaderView.prose` walks every one
+  /// through `run.target(relativeTo:)` and builds an attributed span for it.
+  /// A real article's longest paragraph has tens of runs, not tens of
+  /// thousands.
+  var MAX_BLOCK_RUNS = 2000;
+
   /// Most parts — list items, or table cells — one block may hold. The
   /// character ceiling above bounds bulk, not count: 30,000 single-character
   /// `<li>` elements are one block, well under the character budget, and
   /// still 30,000 views drawn eagerly in a plain `VStack`.
   var MAX_BLOCK_PARTS = 2000;
+
+  /// Longest `alt` text that will be stored. A real one is a sentence.
+  var MAX_ALT_CHARS = 4096;
 
   /// Longest image `src` that will be stored. Generous enough for a genuine
   /// inline `data:` image, and small enough that the per-pass percent-decode
@@ -325,8 +343,14 @@
     if (src.length > MAX_SRC_CHARS) return null;
     var w = parseFloat(node.getAttribute('width')) || 0;
     var h = parseFloat(node.getAttribute('height')) || 0;
+    // `alt` was clamped by neither half and is drawn by nothing. Bounded on
+    // the same line as `src`, because an unclamped field with no ceiling is
+    // the field a later accessibility change hands straight to a layout
+    // engine.
+    var alt = node.getAttribute('alt') || null;
+    if (alt && alt.length > MAX_ALT_CHARS) { alt = cutToLimit(alt, MAX_ALT_CHARS); }
     return { kind: 'image', src: src, width: w || null, height: h || null,
-             caption: null, alt: node.getAttribute('alt') || null };
+             caption: null, alt: alt };
   }
 
   // Elements that may legitimately sit in <head>. Everything else ends it.
@@ -457,8 +481,17 @@
       var items = [];
       // One budget for the whole list, so its ceiling is a property of the
       // block rather than of each item.
-      collectItems(node, ordered, 0, items, { chars: MAX_BLOCK_CHARS });
+      var budget = { chars: MAX_BLOCK_CHARS };
+      collectItems(node, ordered, 0, items, budget);
       if (items.length >= MAX_BLOCK_PARTS) drop('list-items');
+      // **`charsTruncated` cannot see this loss.** `runsOf`'s walk returns at
+      // its first line once the shared budget is spent, so every item after
+      // the boundary never reaches `push` and is never counted. Only the item
+      // straddling the boundary is, and often there is none: a list of 300
+      // items of 4,096 characters kept 65,536 and reported `dropped {}`, and
+      // one of 300 x 4,000 reported 2,464 against a real loss of 1,134,464, a
+      // 460x undercount. A flag that is true beats a number that is wrong.
+      if (budget.chars <= 0) drop('list-over-block-chars');
       if (items.length) blocks.push({ kind: 'list', ordered: !!ordered, items: items });
     }
 
@@ -480,6 +513,7 @@
         if (cells.length) rows.push(cells);
       }
       if (i < trs.length) drop('table-rows');
+      if (budget.chars <= 0) drop('table-over-block-chars');
       if (rows.length) blocks.push({ kind: 'table', rows: rows });
     }
 

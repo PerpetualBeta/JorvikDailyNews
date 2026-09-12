@@ -98,7 +98,35 @@ struct EditionBuilder {
             }
         }
         if kept.count < maxEditionItems {
-            kept.append(contentsOf: overflow.prefix(maxEditionItems - kept.count))
+            // **Not `overflow.prefix`.** `share * feeds <= maxEditionItems` by
+            // integer division, so pass one can never fill the edition and
+            // pass two always runs — and `overflow` was appended in the
+            // iteration order of a date-descending list, so the feed that
+            // dated its items latest sat at the front of it and took every
+            // remaining slot. Measured on a 254-subscription fixture: one
+            // hostile feed of 8,000 items displaced 816 genuine articles and
+            // took the lead.
+            //
+            // So the leftovers are shared out the same way the guaranteed
+            // slots are, one publisher at a time, newest first within each.
+            var byPublisher: [String: [FeedItem]] = [:]
+            var order: [String] = []
+            for item in overflow {
+                let key = publisherKey(item)
+                if byPublisher[key] == nil { order.append(key) }
+                byPublisher[key, default: []].append(item)
+            }
+            var cursor = 0
+            var placed = true
+            while kept.count < maxEditionItems, placed {
+                placed = false
+                for key in order where kept.count < maxEditionItems {
+                    guard let bucket = byPublisher[key], cursor < bucket.count else { continue }
+                    kept.append(bucket[cursor])
+                    placed = true
+                }
+                cursor += 1
+            }
             kept.sort { $0.publishedAt > $1.publishedAt }
         }
         return kept
@@ -153,13 +181,19 @@ struct EditionBuilder {
         // the reader's own subscriptions stop appearing.
         //
         // So the budget is per feed first and global second.
-        let capped = Self.capped(sorted)
-        if capped.count < sorted.count {
-            jdnLog("edition: \(sorted.count) items is over the \(Self.maxEditionItems) "
-                   + "allowed — kept the newest \(capped.count)")
+        // **After the dedupe, not before it.** `performRefresh` carries every
+        // prior-edition item forward, so a freshly fetched article and its
+        // carried copy are both present and both spent one of their feed's
+        // slots — halving the real capacity of the paper for no reason.
+        // Nothing downstream needs the cap to run first: `roundRobinByFeed`
+        // takes whatever order it is given.
+        let deduped = dedupeByLink(sorted)
+        let capped = Self.capped(deduped)
+        if capped.count < deduped.count {
+            jdnLog("edition: \(deduped.count) distinct articles is over the "
+                   + "\(Self.maxEditionItems) allowed — kept \(capped.count)")
         }
-        let deduped = dedupeByLink(capped)
-        let interleaved = roundRobinByFeed(deduped)
+        let interleaved = roundRobinByFeed(capped)
 
         // The lead *must* display an image — a text-only hero looks like a
         // mistake at full-width span. An item qualifies only if it has an

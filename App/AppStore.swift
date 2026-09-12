@@ -685,7 +685,13 @@ final class AppStore {
     /// Normalised destination host for an item — lowercased, `www.` stripped.
     /// The unit the exclude list works in.
     static func normalizedHost(_ url: URL) -> String? {
-        guard var host = url.host?.lowercased() else { return nil }
+        // The root label first, and from the same routine `WebURL` uses, so
+        // the exclusion list and the address policy cannot disagree about what
+        // a host is. `example.com.` is the same host as `example.com` to every
+        // resolver, and a muted source kept printing under the spelling with
+        // the dot — the same root-label hole that was sweep 2's CRITICAL, in a
+        // second place.
+        guard var host = WebURL.canonicalHost(url) else { return nil }
         if host.hasPrefix("www.") { host.removeFirst(4) }
         return host.isEmpty ? nil : host
     }
@@ -757,9 +763,16 @@ final class AppStore {
         // be done — an old key cannot be turned back into a feed — and all
         // that is needed, because the paper is day-scoped.
         if !migratedLegacyIDs {
-            migratedLegacyIDs = true
-            readStore.migrateLegacyIDs(for: all)
-            classifier.migrateLegacyIDs(for: all)
+            // **Latched only when there was something to migrate.**
+            // `onLaunch` recomputes once against `editionStore.today` — on the
+            // first launch after the upgrade, that is the edition the PREVIOUS
+            // build wrote, whose items carry no `legacyItemId` at all. So the
+            // flag was burned by a pass that could not have done anything, and
+            // the real migration, on the items the first refresh fetches,
+            // never ran.
+            let read = readStore.migrateLegacyIDs(for: all)
+            let pins = classifier.migrateLegacyIDs(for: all)
+            migratedLegacyIDs = read || pins
         }
 
         let pausedIds = Set(feedStore.feeds.filter { $0.isPaused }.map { $0.id })

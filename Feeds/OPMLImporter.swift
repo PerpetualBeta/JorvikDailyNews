@@ -53,6 +53,13 @@ struct OPMLImporter: Sendable {
         if let size, size > Self.maxFileBytes { throw Failure.tooLarge(size) }
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
         if data.count > Self.maxFileBytes { throw Failure.tooLarge(data.count) }
+        // The same gate `FeedFetcher.parse` applies, and for the same reason:
+        // this parses an untrusted file with the same libxml2. `scanRefusal`
+        // was declared for both and called by one.
+        if let why = FeedFetcher.scanRefusal(data) {
+            jdnLog("opml: \(why) — refused before parsing")
+            throw Failure.amplification(why)
+        }
         if let why = FeedFetcher.entityAmplification(in: data) {
             jdnLog("opml: refused before parsing — \(why)")
             throw Failure.amplification(why)

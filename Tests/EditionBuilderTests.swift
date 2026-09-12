@@ -172,6 +172,37 @@ enum EditionBuilderTests {
                     "300 subscriptions on one host do not evict the genuine feeds")
         }
 
+        T.suite("Edition: the leftover slots are shared out too") {
+            // share * feeds <= maxEditionItems by integer division, so pass
+            // one can never fill the edition and pass two always runs. It used
+            // to take a date-ordered prefix, so the feed that dated its items
+            // latest took every remaining slot.
+            let now = Date()
+            var hostile: [FeedItem] = []
+            let loud = UUID()
+            for n in 0..<8000 {
+                hostile.append(item("Loud \(n)", at: now.addingTimeInterval(-Double(n) / 10000),
+                                    link: "https://loud.example/a?r=\(n)", feedId: loud,
+                                    feedHost: "loud.example"))
+            }
+            var genuine: [FeedItem] = []
+            for n in 0..<40 {
+                let id = UUID()
+                genuine += (0..<60).map {
+                    item("Real \(n)-\($0)", at: now.addingTimeInterval(-3600 - Double($0)),
+                         link: "https://real\(n).example/a?r=\($0)", feedId: id,
+                         feedHost: "real\(n).example")
+                }
+            }
+            let kept = EditionBuilder.capped((hostile + genuine)
+                .sorted { $0.publishedAt > $1.publishedAt })
+            T.equal(kept.count, EditionBuilder.maxEditionItems, "the ceiling holds")
+            let survivors = kept.filter { $0.feedHost != "loud.example" }.count
+            T.equal(survivors, 2400, "every genuine article survives")
+            T.expect(kept.filter { $0.feedHost == "loud.example" }.count < 4000,
+                     "and the loud feed does not take the rest of the paper")
+        }
+
         T.suite("Day range: one day, half open") {
             let noon = date("2026-09-09 12:00")
             let range = EditionBuilder.dayRange(for: noon)

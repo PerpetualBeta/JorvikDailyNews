@@ -163,6 +163,14 @@ final class IsolatedPDFModel {
 /// its own. Every ceiling and every log line here was already in the app; this
 /// is a move, not a rewrite.
 enum PDFDownload {
+    /// Its own session, so the transfer has a wall-clock bound and not only an
+    /// idle one. The 42-second case below is comfortably inside this.
+    static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 600
+        return URLSession(configuration: config)
+    }()
+
     /// Long enough for a large report on a slow line — the one that prompted
     /// the progress work took 42 seconds for 7.4 MB — and short enough that a
     /// dead host does not hold the reader indefinitely.
@@ -214,7 +222,7 @@ enum PDFDownload {
 
         // This sink does not go through BoundedFetch, so it installs the
         // redirect guard itself.
-        let (stream, response) = try await URLSession.shared.bytes(
+        let (stream, response) = try await Self.session.bytes(
             for: request, delegate: RedirectGuard())
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             jdnLog("pdf: \(url.host ?? "?") returned HTTP \(http.statusCode)")

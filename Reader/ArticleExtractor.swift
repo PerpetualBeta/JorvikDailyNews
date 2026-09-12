@@ -655,9 +655,19 @@ final class ArticleExtractor: NSObject, WKNavigationDelegate {
             if let scratchDir { try? FileManager.default.removeItem(at: scratchDir) }
         }
 
-        let handler = strategy == .schemeHandler
-            ? BytesSchemeHandler(data: page.data, mimeType: page.mimeType, encoding: page.textEncodingName)
-            : nil
+        // **This rung served `page.data` verbatim, and a comment thirty lines
+        // below said it carried the injected base.** It did not:
+        // `BaseHref.apply` is called in exactly one place in this file, the
+        // `.fileURL` branch. Loading from a private scheme moves `baseURI` off
+        // the article's own address just as a temporary file does, and
+        // Readability's `_fixRelativeUris` reads exactly that property — so
+        // every relative link and picture resolved against the private scheme.
+        let handler: BytesSchemeHandler? = {
+            guard strategy == .schemeHandler else { return nil }
+            let based = BaseHref.apply(to: page.html, base: page.url)
+            return BytesSchemeHandler(data: Data(based.utf8),
+                                      mimeType: page.mimeType, encoding: "utf-8")
+        }()
         let view = makeWebView(blocker: blocker, schemeHandler: handler)
         retire(webView)
         webView = view
@@ -1686,6 +1696,8 @@ final class NativeReader: @unchecked Sendable {
     /// tree is shallower than this counts, so a page that trips it is
     /// extraordinary by any reading. It exists to stop the parser, not to
     /// measure the document.
+    var VOID_TAGS = /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)\\b/i;
+
     globalThis.__jdnTooDeepText = function (html) {
       var depth = 0, deepest = 0, elements = 0;
       var i = 0, n = html.length;
@@ -1693,15 +1705,25 @@ final class NativeReader: @unchecked Sendable {
         var lt = html.indexOf('<', i);
         if (lt < 0) { break; }
         var next = html.charAt(lt + 1);
-        if (next === '/') { if (depth > 0) { depth -= 1; } }
+        // **Only `</` followed by a letter closes anything.** `</1>`, `</!>`
+        // and `</ >` are bogus end tags: a spec parser discards them without
+        // popping, while this decremented on every one of them, so a run of
+        // them cancelled out real nesting and the guard read a deep tree as
+        // shallow.
+        if (next === '/') {
+          if (/[a-zA-Z]/.test(html.charAt(lt + 2)) && depth > 0) { depth -= 1; }
+        }
         else if (next === '!' || next === '?') { /* comment, doctype, PI */ }
         else if (/[a-zA-Z]/.test(next)) {
           var gt = html.indexOf('>', lt);
           if (gt < 0) { break; }
           elements += 1;
           if (elements > globalThis.__jdnMaxElements * 8) { return true; }
-          // Self-closing tags open nothing.
-          if (html.charAt(gt - 1) !== '/') {
+          // **A self-closing spelling is not a self-closing element.** Only
+          // the real void elements close themselves; `<div/>` opens a div in
+          // every HTML parser, so counting it as opening nothing let a nesting
+          // bomb walk straight past the guard that exists to catch one.
+          if (html.charAt(gt - 1) !== '/' || !VOID_TAGS.test(html.substr(lt + 1, 10))) {
             depth += 1;
             if (depth > deepest) {
               deepest = depth;

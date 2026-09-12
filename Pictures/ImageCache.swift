@@ -406,7 +406,17 @@ final class ImageCache: @unchecked Sendable {
         let task = Task<NSImage?, Never> { [weak self] in
             let outcome = await Self.download(url, timeout: timeout)
             self?.finish(url: url, outcome: outcome)
-            if case .image(let decoded) = outcome { return decoded.image }
+            // **`finish` marking a picture blank changed only the
+            // bookkeeping.** It inserted the URL into `failed` and returned,
+            // and then this line handed the same blank image to the caller
+            // anyway, so the one value that flows to everyone said yes while
+            // the record said no. The test is here as well, because `finish`
+            // is where the signature is written to the store and moving it
+            // earlier would lose that.
+            if case .image(let decoded) = outcome {
+                if decoded.signature?.isFeatureless == true { return nil }
+                return decoded.image
+            }
             return nil
         }
         // `finish` clears `inFlight`, and it is only reached when the download
@@ -495,6 +505,14 @@ final class ImageCache: @unchecked Sendable {
         let source = FetchSource()
         do {
             (data, response) = try await BoundedFetch.data(for: request, on: Self.session, limit: BoundedFetch.imageLimit, delegate: source)
+        } catch let failure as BoundedFetch.Failure {
+            // **A scheme the policy will never allow is not transient.** Filed
+            // as one, the URL was retried on every refresh for the life of the
+            // session, for ever, for an answer that cannot change.
+            if case .schemeNotAllowed = failure {
+                return .permanent(failure.localizedDescription)
+            }
+            return .transient(failure.localizedDescription)
         } catch {
             // A timeout, a dropped connection, a DNS hiccup. Nothing here says
             // the picture is bad.

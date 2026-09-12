@@ -90,7 +90,8 @@ final class ReadStore {
     /// key is then consumed, the genuine item could never claim it on any
     /// later launch either. So a contested key is awarded to nobody: two items
     /// offering one guid is evidence of a copy, not of a migration.
-    func migrateLegacyIDs(for items: [FeedItem]) {
+    @discardableResult
+    func migrateLegacyIDs(for items: [FeedItem]) -> Bool {
         var carried = 0
         let uncontested = FeedItem.uncontestedLegacyKeys(in: items)
         for item in items {
@@ -102,9 +103,16 @@ final class ReadStore {
             readIds.remove(legacy)
             carried += 1
         }
-        guard carried > 0 else { return }
+        // Whether there was anything to migrate at all, which is not the same
+        // question as whether anything was carried. `onLaunch` recomputes once
+        // against the PREVIOUS build's edition before the first refresh, and
+        // that edition has no `legacyItemId` on any item, so the latch was
+        // burned by a pass that could not have done anything.
+        let hadLegacyKeys = items.contains { $0.legacyItemId != nil }
+        guard carried > 0 else { return hadLegacyKeys }
         jdnLog("read: carried \(carried) read mark(s) onto namespaced item ids")
         save()
+        return true
     }
 
     func isRead(_ itemId: String) -> Bool {

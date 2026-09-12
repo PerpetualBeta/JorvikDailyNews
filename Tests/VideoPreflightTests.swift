@@ -94,5 +94,32 @@ enum VideoPreflightTests {
         T.suite("Video preflight: the inspection window") {
             T.equal(VideoPreflight.inspectBytes, 64 * 1024, "64 KB, enough for any playlist")
         }
+
+        T.suite("Preflight: one NUL cannot hide a playlist") {
+            // De-interleaving used to be inferred from a single NUL at offset
+            // 0 or 1 and applied destructively, so one NUL inserted into a
+            // plain ASCII playlist made the scan drop every other byte and the
+            // marker vanish — from the check the file's own comment calls "the
+            // check that matters".
+            let plain = Data("#EXTM3U\n#EXT-X-VERSION:3\n".utf8)
+            T.expect(VideoPreflight.startsWithPlaylistMarker(plain), "a plain playlist is caught")
+
+            var nulAtOne = Data([0x23, 0x00])
+            nulAtOne.append(Data("EXTM3U\n".utf8))
+            T.expect(VideoPreflight.startsWithPlaylistMarker(Data([0x00]) + plain),
+                     "a leading NUL does not hide it")
+
+            // UTF-16 in both orders still works.
+            var le = Data([0xFF, 0xFE])
+            for byte in Array("#EXTM3U".utf8) { le.append(contentsOf: [byte, 0x00]) }
+            T.expect(VideoPreflight.startsWithPlaylistMarker(le), "UTF-16LE is caught")
+            var be = Data([0xFE, 0xFF])
+            for byte in Array("#EXTM3U".utf8) { be.append(contentsOf: [0x00, byte]) }
+            T.expect(VideoPreflight.startsWithPlaylistMarker(be), "UTF-16BE is caught")
+
+            // And a real video is not a playlist.
+            let mp4 = Data([0x00, 0x00, 0x00, 0x20]) + Data("ftypisom".utf8)
+            T.expect(!VideoPreflight.startsWithPlaylistMarker(mp4), "an MP4 header is not")
+        }
     }
 }

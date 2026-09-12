@@ -94,23 +94,54 @@ enum VideoPreflight {
     /// all of them are ways of pushing the marker out of a naive window — and
     /// the skip is bounded so a body that is nothing but whitespace cannot make
     /// this loop the length of the response.
+    /// **Every reading of the bytes, and a playlist if ANY of them is one.**
+    ///
+    /// De-interleaving used to be inferred from a single NUL at offset 0 or 1
+    /// and applied destructively, so one NUL inserted into a plain ASCII
+    /// playlist made the scan drop every other byte and the marker vanish. The
+    /// comment above calls this "the check that matters", so it had to stop
+    /// being decided by one byte.
+    ///
+    /// The three readings are cheap and independent: as delivered, and
+    /// de-interleaved from either offset. A file is refused if the marker is
+    /// found in any of them.
+    /// Its own session, for a wall-clock ceiling.
+    ///
+    /// **`timeoutInterval` is an idle timeout**, so a server dribbling one
+    /// byte every few seconds resets it for ever — `BoundedFetch`'s own header
+    /// says so, and this sink does not go through `BoundedFetch`. It is on
+    /// `URLSession.shared` no longer, because a resource ceiling belongs to
+    /// this read and not to every request the app makes. 64 KB has no business
+    /// taking half a minute.
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 30
+        return URLSession(configuration: config)
+    }()
+
     static func startsWithPlaylistMarker(_ bytes: Data) -> Bool {
-        let marker = Array("#EXTM3U".utf8)
         let boms: [[UInt8]] = [[0xEF, 0xBB, 0xBF], [0xFF, 0xFE], [0xFE, 0xFF]]
         var b = [UInt8](bytes.prefix(inspectBytes))
-
         for bom in boms where b.starts(with: bom) {
             b.removeFirst(bom.count)
             break
         }
-        // UTF-16 spells the marker with a NUL after each byte. Dropping those
-        // makes one scan cover both encodings without decoding anything.
-        if b.count >= 2, b[0] == 0x00 { b = stride(from: 1, to: b.count, by: 2).map { b[$0] } }
-        else if b.count >= 2, b[1] == 0x00 { b = stride(from: 0, to: b.count, by: 2).map { b[$0] } }
+        if markerLeads(b) { return true }
+        // UTF-16 spells the marker with a NUL after each byte, in either
+        // order. Tried as alternatives, not as a replacement.
+        guard b.count >= 2 else { return false }
+        if markerLeads(stride(from: 0, to: b.count, by: 2).map { b[$0] }) { return true }
+        return markerLeads(stride(from: 1, to: b.count, by: 2).map { b[$0] })
+    }
 
+    private static func markerLeads(_ b: [UInt8]) -> Bool {
+        let marker = Array("#EXTM3U".utf8)
         var i = 0
         let skipLimit = min(b.count, 4096)
-        while i < skipLimit, b[i] == 0x20 || b[i] == 0x09 || b[i] == 0x0A || b[i] == 0x0D { i += 1 }
+        while i < skipLimit,
+              b[i] == 0x20 || b[i] == 0x09 || b[i] == 0x0A || b[i] == 0x0D || b[i] == 0x00 {
+            i += 1
+        }
         guard b.count - i >= marker.count else { return false }
         return Array(b[i..<(i + marker.count)]).elementsEqual(marker)
     }
@@ -139,7 +170,7 @@ enum VideoPreflight {
         do {
             // This sink does not go through BoundedFetch, so it installs the
             // redirect guard itself.
-            let (stream, response) = try await URLSession.shared.bytes(
+            let (stream, response) = try await Self.session.bytes(
                 for: request, delegate: RedirectGuard())
             if let http = response as? HTTPURLResponse,
                !(200..<300).contains(http.statusCode) {

@@ -74,11 +74,22 @@ public enum PDFPageSizes {
     /// because both ends of this check exist to not trust the other one.)
     public static let maxPageSide: Double = 20_000
 
+    /// Widest page shape that is still a page.
+    ///
+    /// **Each side being sane does not make the pair sane.** `pageHeight`
+    /// multiplies the pane width by `height / width`, so a page declaring
+    /// 1 x 20,000 — both inside `maxPageSide` — becomes a frame 20,000 times
+    /// the pane width. Real pages are inside about 1:20; anything past 1:100
+    /// is not a page.
+    public static let maxAspectRatio: Double = 100
+
     /// Whether a declared page size is one a layout can be asked for.
     public static func isUsable(_ size: CGSize) -> Bool {
         let w = Double(size.width), h = Double(size.height)
-        return w.isFinite && h.isFinite && w > 0 && h > 0
-            && w <= maxPageSide && h <= maxPageSide
+        guard w.isFinite, h.isFinite, w > 0, h > 0,
+              w <= maxPageSide, h <= maxPageSide else { return false }
+        let ratio = max(w / h, h / w)
+        return ratio.isFinite && ratio <= maxAspectRatio
     }
 
     /// Rebuilds page sizes from the flat width, height, width, height… list.
