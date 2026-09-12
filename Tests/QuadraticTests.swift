@@ -65,6 +65,50 @@ enum QuadraticTests {
                     "resolved against the page")
         }
 
+        T.suite("Tags: the splitter's edges") {
+            // Shared by four call sites now, so a fault here is systemic.
+            T.expect(HTMLTags.named("link", in: "").isEmpty, "empty input")
+            T.expect(HTMLTags.named("link", in: "<p>hello</p>").isEmpty, "no tags")
+            T.equal(HTMLTags.named("link", in: "<LINK REL=x>").count, 1, "case insensitive")
+            T.expect(HTMLTags.named("link", in: "abc<link").isEmpty, "an opener with no close")
+            T.equal(HTMLTags.named("link", in: "<link a><link b>").count, 2, "two tags")
+            // A tag name ends at whitespace, `/` or `>`.
+            T.expect(HTMLTags.named("link", in: "<linkedin a>").isEmpty, "<linkedin> is not <link>")
+            T.expect(HTMLTags.named("meta", in: "<metadata x=1>").isEmpty, "<metadata> is not <meta>")
+            T.equal(HTMLTags.named("br", in: "<br/>").count, 1, "a self-closing tag")
+            T.equal(HTMLTags.named("hr", in: "<hr>").count, 1, "and a bare one")
+            // The window skip must not end the scan.
+            let longTag = "<link " + String(repeating: "x", count: 5000) + "><link ok>"
+            T.expect(!HTMLTags.named("link", in: longTag).isEmpty,
+                     "an over-long tag does not stop the scan")
+            let many = String(repeating: "<link a>", count: 1000)
+            T.equal(HTMLTags.named("link", in: many).count, HTMLTags.maxTags, "the count is capped")
+            T.equal(HTMLTags.named("link", in: many, limit: 10).count, 10, "and the cap is settable")
+        }
+
+        T.suite("Clamping: the ceiling's edges") {
+            T.equal("hello".clamped(toUTF16: 10), "hello", "under the limit is untouched")
+            T.equal("hello".clamped(toUTF16: 5), "hello", "exactly the limit")
+            T.expect("hello".clamped(toUTF16: 0).isEmpty, "a zero limit")
+            T.expect("hello".clamped(toUTF16: -1).isEmpty, "a negative limit")
+            T.expect("".clamped(toUTF16: 10).isEmpty, "an empty string")
+
+            // Astral characters are two UTF-16 units, so an odd limit must cut
+            // short rather than split the pair.
+            let emoji = String(repeating: "\u{1F600}", count: 10)
+            T.equal(emoji.clamped(toUTF16: 5).utf16.count, 4, "an odd limit cuts to a scalar")
+            T.equal(emoji.clamped(toUTF16: 6).utf16.count, 6, "an even one is exact")
+            T.expect(emoji.clamped(toUTF16: 5).unicodeScalars
+                        .allSatisfy { $0.value < 0xD800 || $0.value > 0xDFFF },
+                     "and never leaves a lone surrogate")
+
+            let cluster = "a" + String(repeating: "\u{0301}", count: 200)
+            let clusters = String(repeating: cluster, count: 100)
+            T.equal(clusters.storedLength, clusters.utf16.count, "storedLength is UTF-16")
+            T.expect(clusters.clamped(toUTF16: 100).utf16.count <= 100,
+                     "a cluster is measured in UTF-16, not counted as one")
+        }
+
         T.suite("Quadratic: discovery is bounded on a hostile body") {
             // The body `fetchSelfHealing` would hand it after one empty 200.
             let bomb = String(repeating: "<link ", count: 128 * 1024 / 6)

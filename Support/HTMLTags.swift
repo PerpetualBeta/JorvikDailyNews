@@ -51,6 +51,18 @@ enum HTMLTags {
         let opener = "<" + name
         while let start = html.range(of: opener, options: [.caseInsensitive],
                                      range: index..<html.endIndex) {
+            // A tag name ends at whitespace, `/` or `>`. Without that,
+            // `<linkedin>` answered to `link` and `<metadata>` to `meta` —
+            // harmless in every current caller, because the per-tag pattern
+            // then fails to match, but this is shared by four of them now and
+            // a name test belongs in the splitter rather than in each one.
+            if start.upperBound < html.endIndex {
+                let after = html[start.upperBound]
+                if !(after.isWhitespace || after == "/" || after == ">") {
+                    index = start.upperBound
+                    continue
+                }
+            }
             let window = html.index(start.lowerBound, offsetBy: maxTag,
                                     limitedBy: html.endIndex) ?? html.endIndex
             if let close = html.range(of: ">", range: start.upperBound..<window) {
