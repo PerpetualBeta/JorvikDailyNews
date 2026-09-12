@@ -548,6 +548,17 @@ final class AppStore {
         jdnLog("refresh: published \(edition.itemCount) items "
                + "of \(eligible) eligible from \(allItems.count) fetched "
                + "in \(elapsed)s of \(Int(Self.refreshTimeout))s allowed")
+        // **One line naming what has stopped working, not one per attempt.**
+        // Nine feeds failed on every refresh for a day and the only trace was
+        // a line per feed per attempt, which reads as noise rather than as a
+        // pattern. This says how many and for how long.
+        let failing = silentlyFailingFeeds
+        if !failing.isEmpty {
+            let names = failing.prefix(5).map { $0.title ?? $0.url.host ?? "?" }
+            jdnLog("refresh: \(failing.count) feed(s) have failed every attempt for "
+                   + "more than a day — \(names.joined(separator: ", "))"
+                   + (failing.count > names.count ? " and \(failing.count - names.count) more" : ""))
+        }
         let suppressed = edition.repeatedPictures.count
             + edition.sections.reduce(0) { $0 + $1.repeatedPictures.count }
         let withPictures = edition.sections.reduce(edition.secondaries.filter { $0.imageURL != nil }.count
@@ -577,6 +588,13 @@ final class AppStore {
     /// re-picks the next usable-image item as lead (or drops the lead). The
     /// loop is bounded; in the common case the first lead validates on the
     /// first pass.
+    /// Feeds that have failed every attempt for more than a day.
+    ///
+    /// Paused feeds are not counted: not being fetched is what a pause is.
+    var silentlyFailingFeeds: [Feed] {
+        feedStore.feeds.filter { !$0.isPaused && $0.isSilentlyFailing() }
+    }
+
     private func validatedLeadEdition(_ edition: Edition, from items: [FeedItem]) async -> Edition {
         var current = edition
         var attempts = 0

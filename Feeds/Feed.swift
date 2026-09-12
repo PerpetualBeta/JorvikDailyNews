@@ -64,6 +64,31 @@ extension Feed {
         case stale
     }
 
+    /// How long a feed may be failing before the paper says so.
+    ///
+    /// A day, so an overnight outage at one publisher is not an announcement
+    /// and a feed that has genuinely stopped is.
+    static let silentFailureThreshold: TimeInterval = 24 * 60 * 60
+
+    /// Whether this feed has been failing long enough to be worth telling the
+    /// reader about.
+    ///
+    /// **The data for this already existed and nothing looked at it.** Nine
+    /// plain-http feeds failed on every hourly refresh for a day after an
+    /// Info.plist change, and the only trace was one log line per feed per
+    /// attempt, in a log that is off by default. The manage-feeds sheet showed
+    /// them as red dots the whole time, which helps nobody who has no reason
+    /// to open it.
+    ///
+    /// Never true for a feed that has simply not been tried yet, and never
+    /// true for one whose last attempt succeeded.
+    func isSilentlyFailing(asOf now: Date = Date()) -> Bool {
+        guard let failed = lastFailedFetchAt else { return false }
+        if let succeeded = lastSuccessfulFetchAt, succeeded >= failed { return false }
+        let since = lastSuccessfulFetchAt ?? failed
+        return now.timeIntervalSince(since) >= Feed.silentFailureThreshold
+    }
+
     /// Three-state health summary for the manage-feeds pill.
     /// Boundary between `recent` and `stale` is 30 days since last success.
     var fetchStatus: FetchStatus {

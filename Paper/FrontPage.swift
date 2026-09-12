@@ -22,6 +22,8 @@ struct FrontPage: View {
     /// The printed width of the page. Seeded at the widest the paper can be so
     /// the lead's standfirst is planned sensibly on its very first frame; the
     /// probe corrects it for a narrower window before anything is drawn twice.
+    @Environment(AppStore.self) private var store
+
     @State private var pageWidth: CGFloat = Paper.maxContentWidth
 
     var body: some View {
@@ -41,6 +43,14 @@ struct FrontPage: View {
                 )
 
             Masthead(date: edition.date)
+
+            // Only when it is true, and only for a feed that has been failing
+            // for more than a day. See `SilentFeedNotice`.
+            if !store.silentlyFailingFeeds.isEmpty {
+                SilentFeedNotice(feeds: store.silentlyFailingFeeds) {
+                    store.showManageFeedsSheet = true
+                }
+            }
 
             Rectangle().fill(Color.primary).frame(height: 3)
 

@@ -298,5 +298,34 @@ enum FeedBoundsTests {
                     "title intact, not clamped")
             T.expect(out.items.first?.summary.contains("thirty") == true, "summary intact")
         }
+
+        T.suite("Feeds: one that has quietly stopped working is noticed") {
+            let now = Date()
+            let day = Feed.silentFailureThreshold
+            func feed(success: Date?, failure: Date?) -> Feed {
+                Feed(url: URL(string: "https://example.com/f.xml")!, section: "News",
+                     title: nil, lastSuccessfulFetchAt: success, lastFailedFetchAt: failure)
+            }
+            T.expect(!feed(success: nil, failure: nil).isSilentlyFailing(asOf: now),
+                     "a feed never tried is not failing")
+            T.expect(!feed(success: now, failure: nil).isSilentlyFailing(asOf: now),
+                     "nor is one that has only ever worked")
+            T.expect(!feed(success: now, failure: now.addingTimeInterval(-day * 3))
+                        .isSilentlyFailing(asOf: now),
+                     "nor one that failed long ago and works now")
+            T.expect(!feed(success: now.addingTimeInterval(-60), failure: now)
+                        .isSilentlyFailing(asOf: now),
+                     "a single fresh failure is not an announcement")
+            T.expect(feed(success: now.addingTimeInterval(-day * 2), failure: now)
+                        .isSilentlyFailing(asOf: now),
+                     "but two days of failure is")
+            T.expect(feed(success: nil, failure: now.addingTimeInterval(-day * 2))
+                        .isSilentlyFailing(asOf: now),
+                     "and so is one that has never once succeeded")
+            // Exactly at the threshold counts, so the boundary is stated.
+            T.expect(feed(success: now.addingTimeInterval(-day), failure: now)
+                        .isSilentlyFailing(asOf: now),
+                     "the boundary itself counts")
+        }
     }
 }

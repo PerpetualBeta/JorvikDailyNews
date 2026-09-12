@@ -36,6 +36,7 @@ PAPER_SOURCES := Paper/Edition.swift \
                  Paper/FrontPage.swift \
                  Paper/MasonryColumns.swift \
                  Paper/Masthead.swift \
+                Paper/SilentFeedNotice.swift \
                  Paper/OptionalImage.swift \
                  Paper/SectionPageView.swift \
                  Paper/StoryCard.swift
