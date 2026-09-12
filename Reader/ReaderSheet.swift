@@ -941,44 +941,78 @@ struct LiveWebView: NSViewRepresentable {
         }
     }
 
+    /// Host prefixes no page may fetch a subresource from, as anchored
+    /// regular expressions.
+    ///
+    /// Derived from the same set `WebURL` refuses, restated here because
+    /// WebKit's rule engine cannot call into Swift. Kept as data and rendered
+    /// to JSON by `JSONSerialization` rather than written as an escaped string
+    /// literal: hand-escaping this cost three rounds of measurement when it
+    /// was first written — invalid JSON, then a double-escape that delivered
+    /// `10\\.`, then a rejected disjunction.
+    private static let privateHostPatterns: [String] = {
+        var hosts = ["127\\.", "10\\.", "192\\.168\\.", "169\\.254\\.",
+                     "0\\.", "192\\.0\\.0\\.", "198\\.18\\.", "198\\.19\\.",
+                     "255\\.255\\.255\\.255"]
+        // 172.16.0.0/12 and 100.64.0.0/10, enumerated because the rule engine
+        // has no alternation.
+        hosts += (16...31).map { "172\\.\($0)\\." }
+        hosts += (64...127).map { "100\\.\($0)\\." }
+        // Multicast and reserved, 224. to 255.
+        hosts += (224...255).map { "\($0)\\." }
+        // IPv6: loopback, IPv4-mapped, unique-local and link-local.
+        hosts += ["\\[::1\\]", "\\[::ffff:", "\\[fc", "\\[fd", "\\[fe8", "\\[fe9",
+                  "\\[fea", "\\[feb", "\\[fec", "\\[fed", "\\[fee", "\\[fef"]
+        // **Names, as url-filters rather than as `if-domain`.** `if-domain` is
+        // evaluated against the DOCUMENT's domain, not the resource's, so the
+        // one clause that was supposed to cover `localhost`, `*.local` and
+        // `*.internal` blocked nothing at all. Proved with a controlled A/B
+        // against a loopback server: with `if-domain` the subresource to
+        // `http://localhost:9002/pixel.png` arrived; with
+        // `^https?://localhost` the identical request was blocked.
+        hosts += ["localhost[:/]", "[^/]*\\.localhost[:/]", "[^/]*\\.local[:/]",
+                  "[^/]*\\.internal[:/]", "[^/]*\\.home\\.arpa[:/]"]
+        return hosts
+    }()
+
     /// Refuses subresource loads to the addresses the rest of the app will not
     /// fetch, because the navigation delegate never sees them.
     ///
     /// `WKNavigationAction` is raised for main-frame and sub-frame navigations
     /// only — never for images, stylesheets, scripts, fonts, media or
     /// `fetch`/XHR. Compiled once and reused.
+    ///
+    /// **Two failures the third review measured in a real web view, both of
+    /// which this now covers.** The `if-domain` clause blocked no name, as
+    /// above. And a userinfo segment sits between `//` and the address and
+    /// defeated all 21 anchored IP filters at once: `http://user@127.0.0.1/`
+    /// reached a loopback server while plain `http://127.0.0.1/` was blocked.
+    /// From an http-origin page a `fetch` to a local service succeeded and the
+    /// page read the response body back, so it was a readable cross-origin
+    /// SSRF against anything answering `Access-Control-Allow-Origin: *`, not a
+    /// blind GET. Every pattern is emitted twice, with and without a userinfo
+    /// prefix.
+    ///
+    /// The identifier carries a version, because `lookUpContentRuleList`
+    /// returns whatever was compiled before: without it, a machine that
+    /// compiled the old rules would keep them for ever.
     static func privateAddressBlocker() async -> WKContentRuleList? {
-        let identifier = "cc.jorviksoftware.JorvikDailyNews.liveprivate"
+        let identifier = "cc.jorviksoftware.JorvikDailyNews.liveprivate.v2"
         guard let store = WKContentRuleListStore.default() else { return nil }
         if let found = await withCheckedContinuation({ (c: CheckedContinuation<WKContentRuleList?, Never>) in
             store.lookUpContentRuleList(forIdentifier: identifier) { list, _ in c.resume(returning: list) }
         }) { return found }
-        let rules = #"""
-        [
-         {"trigger":{"url-filter":"^https?://10\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://127\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://192\\.168\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://169\\.254\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://0\\.0\\.0\\.0"},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.16\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.17\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.18\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.19\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.20\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.21\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.22\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.23\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.24\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.25\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.26\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.27\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.28\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.29\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.30\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://172\\.31\\."},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://\\[::1\\]"},"action":{"type":"block"}},
-         {"trigger":{"url-filter":".*","if-domain":["localhost","*.local","*.internal"]},"action":{"type":"block"}}]
-        """#
+
+        var triggers: [[String: Any]] = []
+        for host in privateHostPatterns {
+            for prefix in ["", "[^/]*@"] {
+                triggers.append(["trigger": ["url-filter": "^https?://\(prefix)\(host)"],
+                                 "action": ["type": "block"]])
+            }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: triggers),
+              let rules = String(data: data, encoding: .utf8) else { return nil }
+
         return await withCheckedContinuation { (c: CheckedContinuation<WKContentRuleList?, Never>) in
             store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: rules) { list, error in
                 if let error {

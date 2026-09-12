@@ -90,8 +90,20 @@ private final class OPMLDelegate: NSObject, XMLParserDelegate {
         guard elementName.lowercased() == "outline" else { return }
 
         let xmlUrl = attributeDict["xmlUrl"] ?? attributeDict["xmlurl"] ?? attributeDict["xmlURL"]
+        // **Clamped where it is read, like the feed path does.** This delegate
+        // has no `maxAttributeValue`, no `maxElementText` and no
+        // `maxDocumentText`: the whole battery of ceilings `RSSAtomParser`
+        // carries is absent here, and `read` bounds only the file. A single
+        // category outline with a 3,900,000-character `text` became the
+        // `section` of every feed nested inside it — written to feeds.json,
+        // rewritten on every refresh, copied onto every `FeedItem` the feed
+        // produces, and drawn as a section header. Measured: one such file
+        // yields an entry whose section is 3,900,000 characters in 0.01 s, and
+        // 500 items of it is about 1.95 GB of edition JSON, pretty-printed on
+        // the main actor at the end of every refresh.
         let text = (attributeDict["text"] ?? attributeDict["title"])?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+            .clamped(toUTF16: FeedFetcher.maxStoredTitle)
 
         // `WebURL.isAllowed`, not a scheme test that resembles it. The old one
         // did not lowercase, so an uppercase `HTTP:` entry in an otherwise good
@@ -113,7 +125,7 @@ private final class OPMLDelegate: NSObject, XMLParserDelegate {
             wasCategory.append(false)
         } else {
             let name = (text?.isEmpty == false ? text! : "Imported")
-            sectionStack.append(name)
+            sectionStack.append(name.clamped(toUTF16: FeedFetcher.maxStoredTitle))
             wasCategory.append(true)
         }
     }

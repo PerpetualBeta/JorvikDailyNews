@@ -63,7 +63,25 @@ final class ArticleClassifier {
     /// supply a fallback for nil — the classifier never guesses.
     func predict(text: String, minimumLogMargin: Double = 1.0) -> String? {
         guard isReady else { return nil }
-        let freqs = Self.tokenFrequencies(Self.tokenise(text))
+        // **Clamped like `move` below, and for the same reason it gives.**
+        // `move` cuts to `maxTrainingText` before tokenising, under a comment
+        // explaining why unbounded feed text must not reach the tokeniser —
+        // and it runs once per explicit user correction. `predict` runs once
+        // per item on every `recomputeVisibleEdition`, which is eleven call
+        // sites: at launch, after every refresh, after every enrichment round,
+        // on every filter toggle, and on every article opened while
+        // `hideReadItems` is on. It clamped nothing.
+        //
+        // Measured with 20 trained sections: an ordinary headline and
+        // standfirst cost 0.023 ms, while 4,500 characters of distinct
+        // three-letter tokens — every value inside the limits `finalise`
+        // enforces — cost 1.144 ms, a 50x amplification, or 6.86 s of frozen
+        // main thread for a 6,000-item edition.
+        //
+        // A section is a topical judgement from a headline and a standfirst.
+        // Nothing past the first few hundred characters changes it.
+        let freqs = Self.tokenFrequencies(
+            Self.tokenise(text.clamped(toUTF16: Self.maxTrainingText)))
         guard !freqs.isEmpty else { return nil }
 
         let vocabSize = max(1, state.vocabulary.count)
