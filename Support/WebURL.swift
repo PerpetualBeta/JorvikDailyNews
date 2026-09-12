@@ -222,7 +222,25 @@ enum WebURL {
                        ".home.arpa", ".lan", ".corp", ".private"] {
             if bare.hasSuffix(suffix) { return true }
         }
+        // **A name that spells out a private address is a rebinding service.**
+        // `127.0.0.1.nip.io` is a real public name that resolves to loopback,
+        // and so are the `sslip.io` and `xip.io` families. This app does not
+        // and cannot close DNS rebinding in general — the check is on the URL,
+        // not on the socket — but a host that carries a private dotted-quad in
+        // its own labels is announcing itself, and refusing that costs
+        // nothing: no legitimate host begins with four numeric labels.
+        if embedsPrivateAddress(bare) { return true }
         return !bare.contains(".")
+    }
+
+    /// Whether this name's leading labels are a private IPv4 address.
+    private static func embedsPrivateAddress(_ host: String) -> Bool {
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count > 4 else { return false }
+        let quad = labels.prefix(4)
+        guard quad.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }) else { return false }
+        let readings = ipv4Readings(quad.joined(separator: "."))
+        return !readings.isEmpty && readings.contains(where: isPrivate)
     }
 
     /// A possibly-relative href from untrusted content, resolved and checked.

@@ -118,5 +118,30 @@ enum WebURLTests {
             T.expect(WebURL.resolve("//127.0.0.1/x", against: base) == nil,
                      "protocol-relative to loopback is still refused")
         }
+
+        T.suite("WebURL: a name that spells out a private address") {
+            // `127.0.0.1.nip.io` is a real public DNS name that resolves to
+            // loopback, and the sslip.io and xip.io families do the same. This
+            // app cannot close DNS rebinding in general — the check is on the
+            // URL, not on the socket — but a host carrying a private
+            // dotted-quad in its own labels is announcing itself.
+            for host in ["127.0.0.1.nip.io", "10.0.0.1.sslip.io", "192.168.1.1.xip.io",
+                         "172.16.0.1.nip.io", "169.254.169.254.nip.io"] {
+                T.expect(!WebURL.isAllowed(URL(string: "https://" + host + "/a")!),
+                         host + " is refused")
+            }
+            // And the false positive this replaced: a host whose first label
+            // merely looks like part of an address. Gravatar really does serve
+            // avatars from 0, 1 and 2.
+            for host in ["0.gravatar.com", "1.gravatar.com", "10.cdn.example.com",
+                         "224.cdn.example.com", "100.100.example.com",
+                         "127.example.com", "192.168.example.com"] {
+                T.expect(WebURL.isAllowed(URL(string: "https://" + host + "/a")!),
+                         host + " is allowed")
+            }
+            // A public address spelled across five labels is still public.
+            T.expect(WebURL.isAllowed(URL(string: "https://93.184.216.34.nip.io/a")!),
+                     "a public quad in a name is not refused")
+        }
     }
 }

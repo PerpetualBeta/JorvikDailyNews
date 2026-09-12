@@ -997,7 +997,7 @@ struct LiveWebView: NSViewRepresentable {
     /// returns whatever was compiled before: without it, a machine that
     /// compiled the old rules would keep them for ever.
     static func privateAddressBlocker() async -> WKContentRuleList? {
-        let identifier = "cc.jorviksoftware.JorvikDailyNews.liveprivate.v2"
+        let identifier = "cc.jorviksoftware.JorvikDailyNews.liveprivate.v3"
         guard let store = WKContentRuleListStore.default() else { return nil }
         if let found = await withCheckedContinuation({ (c: CheckedContinuation<WKContentRuleList?, Never>) in
             store.lookUpContentRuleList(forIdentifier: identifier) { list, _ in c.resume(returning: list) }
@@ -1005,9 +1005,35 @@ struct LiveWebView: NSViewRepresentable {
 
         var triggers: [[String: Any]] = []
         for host in privateHostPatterns {
-            for prefix in ["", "[^/]*@"] {
-                triggers.append(["trigger": ["url-filter": "^https?://\(prefix)\(host)"],
-                                 "action": ["type": "block"]])
+            // **An address prefix is not a host.** `^https?://0\.` matches
+            // `https://0.gravatar.com/` as happily as `http://0.0.0.0/`, and
+            // Gravatar really does serve avatars from `0`, `1` and
+            // `2.gravatar.com` — so the first version of this list blocked a
+            // host every second live page loads. A dotted-decimal address is
+            // digits and dots all the way to the port or the path, and a
+            // hostname is not, so the IPv4 patterns say that.
+            var forms: [String] = []
+            if host.hasPrefix("\\[") || host.hasSuffix("[:/]") {
+                forms = [host]
+            } else {
+                // The address itself: digits and dots to the port or the path.
+                forms.append(host + "[0-9.]*[:/]")
+                // And the address spelled inside a name, which is what a
+                // rebinding service is: `127.0.0.1.nip.io`. Mirrors
+                // `WebURL.isPrivateName`, which refuses the same shape for
+                // navigations — four numeric labels and then more name.
+                let covered = host.hasSuffix("\\.")
+                    ? host.components(separatedBy: "\\.").count - 1
+                    : host.components(separatedBy: "\\.").count
+                let remaining = max(0, 4 - covered)
+                forms.append(host + String(repeating: "[0-9]+\\.", count: remaining)
+                             + (remaining == 0 ? "\\." : ""))
+            }
+            for form in forms {
+                for prefix in ["", "[^/]*@"] {
+                    triggers.append(["trigger": ["url-filter": "^https?://\(prefix)\(form)"],
+                                     "action": ["type": "block"]])
+                }
             }
         }
         guard let data = try? JSONSerialization.data(withJSONObject: triggers),
