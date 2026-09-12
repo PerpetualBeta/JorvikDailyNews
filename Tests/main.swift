@@ -29,5 +29,6 @@ WalkerTests.run()
 ReaderBlockTests.run()
 LegacyIDTests.run()
 BaseHrefTests.run()
+QuadraticTests.run()
 
 exit(T.report())

@@ -243,30 +243,10 @@ struct ImageEnricher: Sendable {
     ///
     /// Splitting first means each pattern runs against one short tag, where
     /// `[^>]+` has nothing to backtrack through.
+    /// See `HTMLTags`, which is where this scan lives now. Two identical
+    /// copies of it existed, and a third place needed it.
     private static func tags(_ name: String, in html: String) -> [String] {
-        /// Longest a single tag may be before it is treated as malformed. A
-        /// real `<meta>` is well under this; the attack has no `>` at all.
-        let maxTag = 4096
-        var out: [String] = []
-        var index = html.startIndex
-        let opener = "<" + name
-        while let start = html.range(of: opener, options: [.caseInsensitive], range: index..<html.endIndex) {
-            let limit = html.index(start.lowerBound, offsetBy: maxTag, limitedBy: html.endIndex) ?? html.endIndex
-            if let close = html.range(of: ">", range: start.upperBound..<limit) {
-                out.append(String(html[start.lowerBound...close.lowerBound]))
-                index = close.upperBound
-            } else {
-                // No closing bracket within a sane distance, so nothing that
-                // starts inside this window can be a tag either. Skipping the
-                // whole window keeps the scan linear; advancing by one made it
-                // quadratic all over again, in the splitter instead of the
-                // pattern.
-                index = limit
-                if limit == html.endIndex { break }
-            }
-            if out.count >= 512 { break }
-        }
-        return out
+        HTMLTags.named(name, in: html)
     }
 
     private func description(in head: String) -> String? {
@@ -349,9 +329,18 @@ struct ImageEnricher: Sendable {
     /// Every URL the head declares as a site icon. Covers `icon`,
     /// `shortcut icon`, `apple-touch-icon`, `apple-touch-icon-precomposed` and
     /// `mask-icon` in one sweep, because each spells "icon" in its `rel`.
+    /// **The one pattern in this file that was never converted.** Sweep 2's
+    /// answer here was to split tags out first and run each pattern against
+    /// one short tag, and the comment explaining why sits 110 lines above —
+    /// but `description` and `imageCandidates` were converted and this was
+    /// not. It ran three unbounded classes plus the classic
+    /// `[^"']*icon[^"']*` ambiguity over the whole 32 KB head, which the
+    /// attacker's own server decides the contents of: measured 0.45 s at
+    /// 16 KB and about 1.8 s at 32 KB, zero matches, 4x per doubling, for
+    /// every enriched page, eight at a time, hourly.
     private func iconURLs(in head: String, relativeTo url: URL) -> Set<URL> {
-        guard let linkRegex = try? NSRegularExpression(
-            pattern: "<link[^>]*rel=[\"'][^\"']*icon[^\"']*[\"'][^>]*>",
+        guard let relRegex = try? NSRegularExpression(
+            pattern: "rel=[\"'][^\"']*icon[^\"']*[\"']",
             options: .caseInsensitive
         ), let hrefRegex = try? NSRegularExpression(
             pattern: "href=[\"']([^\"']+)[\"']",
@@ -359,11 +348,9 @@ struct ImageEnricher: Sendable {
         ) else { return [] }
 
         var icons: Set<URL> = []
-        let range = NSRange(head.startIndex..., in: head)
-        for match in linkRegex.matches(in: head, range: range) {
-            guard let tagRange = Range(match.range, in: head) else { continue }
-            let tag = String(head[tagRange])
+        for tag in Self.tags("link", in: head) {
             let tagNSRange = NSRange(tag.startIndex..., in: tag)
+            guard relRegex.firstMatch(in: tag, range: tagNSRange) != nil else { continue }
             guard let href = hrefRegex.firstMatch(in: tag, range: tagNSRange),
                   href.numberOfRanges > 1,
                   let r = Range(href.range(at: 1), in: tag) else { continue }

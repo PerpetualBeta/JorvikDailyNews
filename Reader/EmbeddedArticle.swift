@@ -68,21 +68,42 @@ enum EmbeddedArticle {
 
     // MARK: - Scanning
 
-    private static let framePattern = try! NSRegularExpression(
-        pattern: "<iframe\\b[^>]*>", options: [.caseInsensitive])
-
+    /// **This used to be `<iframe\\b[^>]*>` run over the whole document, on
+    /// the main actor.** With no `>` after the opener ICU walks to end of
+    /// input and backtracks from every start position: measured 11.16 s at
+    /// 128 KB and 201.8 s at 512 KB, against a body bounded only by
+    /// `BoundedFetch.markupLimit` of 32 MB. The reader's own 25 s backstop
+    /// cannot save the user from it, because it is a `Task { @MainActor }` and
+    /// the actor is inside the regex, and `NSRegularExpression` never polls
+    /// `Task.isCancelled`, so cancelling the view's `.task` does nothing
+    /// either. The app beachballs until the match completes.
+    ///
+    /// `HTMLTags.named` hands back short tags instead, so the attribute
+    /// patterns below match inside 4 KB rather than 32 MB.
     private static func frames(in html: String) -> [String] {
-        let range = NSRange(html.startIndex..., in: html)
-        return framePattern.matches(in: html, range: range).compactMap {
-            Range($0.range, in: html).map { r in String(html[r]) }
-        }
+        HTMLTags.named("iframe", in: html)
     }
+
+    /// Compiled once, not per call.
+    ///
+    /// `attribute` built a fresh `NSRegularExpression` on every call, and
+    /// `candidate` calls it for `src` while `isTiny` calls it for `width` and
+    /// `height`. At 3.89 microseconds a compile that was 32.6 s of the 37.9 s
+    /// a 32 MB page of bare `<iframe>` cost — more than the scan it was
+    /// blamed on.
+    private static let attributePatterns: [String: [NSRegularExpression]] = {
+        var out: [String: [NSRegularExpression]] = [:]
+        for name in ["src", "width", "height"] {
+            out[name] = ["\(name)\\s*=\\s*\"([^\"]*)\"", "\(name)\\s*=\\s*'([^']*)'"]
+                .compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+        }
+        return out
+    }()
 
     private static func attribute(_ name: String, in tag: String) -> String? {
         // Both quotings, because plenty of pages use neither consistently.
-        for pattern in ["\(name)\\s*=\\s*\"([^\"]*)\"", "\(name)\\s*=\\s*'([^']*)'"] {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-                  let match = regex.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)),
+        for regex in attributePatterns[name] ?? [] {
+            guard let match = regex.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)),
                   let range = Range(match.range(at: 1), in: tag)
             else { continue }
             return String(tag[range])

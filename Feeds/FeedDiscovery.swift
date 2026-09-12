@@ -106,20 +106,38 @@ final class FeedDiscovery: Sendable {
         return parseLinkTags(in: head, baseURL: baseURL)
     }
 
-    private func parseLinkTags(in html: String, baseURL: URL) -> [DiscoveredFeed] {
+    /// **This used to run `<link\\s+([^>]*?)/?>` over the whole body.**
+    /// `parseAlternateLinks` hands it the entire document when there is no
+    /// `</head>`, and `fetch` buffers up to `BoundedFetch.markupLimit`, so a
+    /// 32 MB body of the six-byte token `<link ` with no `>` anywhere made the
+    /// lazy class walk to end of input from every one of millions of
+    /// positions. Measured: 1.75 s at 32 KB, 27.9 s at 128 KB, and 256 KB did
+    /// not finish inside 120 s — a clean 4x per doubling.
+    ///
+    /// It runs on the cooperative pool inside the 16-wide refresh group, the
+    /// 300 s watchdog cannot stop a running match, and `sameHost` is applied
+    /// to the result, after the cost is paid. So one pool thread was wedged at
+    /// 100% for the life of the process, with a fresh one joining it every
+    /// hour. `HTMLTags.named` is the third place in this codebase that needed
+    /// the same splitter.
+    /// Internal rather than private so the linear scan can be tested: the
+    /// quadratic version it replaced was reachable unattended and had no test
+    /// of any kind.
+    func parseLinkTags(in html: String, baseURL: URL) -> [DiscoveredFeed] {
         guard let regex = try? NSRegularExpression(
             pattern: "<link\\s+([^>]*?)/?>",
             options: [.caseInsensitive, .dotMatchesLineSeparators]
         ) else { return [] }
 
-        let range = NSRange(html.startIndex..., in: html)
         var seen = Set<URL>()
         var results: [DiscoveredFeed] = []
 
-        for match in regex.matches(in: html, range: range) {
-            guard match.numberOfRanges > 1,
-                  let r = Range(match.range(at: 1), in: html) else { continue }
-            let attrs = String(html[r])
+        for tag in HTMLTags.named("link", in: html) {
+            let range = NSRange(tag.startIndex..., in: tag)
+            guard let match = regex.firstMatch(in: tag, range: range),
+                  match.numberOfRanges > 1,
+                  let r = Range(match.range(at: 1), in: tag) else { continue }
+            let attrs = String(tag[r])
             let lower = attrs.lowercased()
 
             guard lower.contains("alternate") else { continue }

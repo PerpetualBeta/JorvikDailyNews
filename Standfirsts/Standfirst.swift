@@ -107,7 +107,7 @@ enum Standfirst {
     /// back wherever it appears somewhere narrower.
     static func extract(from html: String) -> String {
         let stripped = removeNonProse(clamp(html))
-        let marked = replace(Patterns.blockEnd, in: stripped, with: separator)
+        let marked = markBlockBoundaries(in: stripped)
         let minWords = minParagraphWords
 
         let paragraphs = marked
@@ -263,6 +263,88 @@ enum Standfirst {
         return out
     }
 
+    // MARK: - Linear tag handling
+
+    /// Longest a single tag may be before the `<` is treated as text.
+    private static let maxTag = 4096
+
+    /// Walks `html`, handing each `<…>` to `replacement` and copying
+    /// everything else through unchanged.
+    ///
+    /// **Two of this file's four patterns were still quadratic.** Sweep 2
+    /// answered `removeNonProse` with a linear scanner and left these alone,
+    /// under a comment that reads as if the class of fault were closed.
+    /// `Patterns.blockEnd` ends `(?:\s[^>]*)?\s*>` and ran over the whole
+    /// body; `Patterns.tag` is `<[^>]+>` and ran over every chunk. Against a
+    /// body with no `>` anywhere, ICU walks to end of input and backtracks a
+    /// character at a time from every `<` position.
+    ///
+    /// Measured on the shipped file, a clean 4x per doubling: 0.197 s at 4 KB,
+    /// 2.75 s at 16 KB, 11.03 s at 32 KB, 44.8 s at 64 KB of bare `<`. Per
+    /// item, inside the XMLParser delegate, sixteen feeds at a time, on the
+    /// hourly timer — and the 300 s watchdog's `work.cancel()` does nothing to
+    /// a running `NSRegularExpression`.
+    ///
+    /// Bounding the character class was not enough: `<[^>]{1,512}>` still
+    /// measured 1.793 s on the same 64 KB. The scan has to stop looking, so a
+    /// `<` with no `>` within `maxTag` is text and the whole window is skipped
+    /// — nothing starting inside it can be a tag either. Same shape as
+    /// `HTMLTags.named`, kept here because this one rewrites rather than
+    /// collects.
+    private static func rewritingTags(_ html: String,
+                                      _ replacement: (Substring) -> String) -> String {
+        guard html.contains("<") else { return html }
+        var out = ""
+        out.reserveCapacity(html.count)
+        var index = html.startIndex
+        while let lt = html.range(of: "<", range: index..<html.endIndex) {
+            // **HTML's own rule for what opens a tag**, which is a letter or a
+            // `/`. Without it a `<` that opens nothing swallowed everything up
+            // to the next `>` somewhere else in the document: a body still
+            // carrying a literal `<![CDATA[` lost its whole opening paragraph
+            // and the card read "Continue reading …" instead of the article.
+            // Comments are already gone by this point, removed by
+            // `removeNonProse`, so nothing needs `<!` to be an opener.
+            let after = lt.upperBound < html.endIndex ? html[lt.upperBound] : " "
+            guard after.isLetter || after == "/" else {
+                out += html[index..<lt.upperBound]
+                index = lt.upperBound
+                continue
+            }
+            let window = html.index(lt.lowerBound, offsetBy: maxTag,
+                                    limitedBy: html.endIndex) ?? html.endIndex
+            guard let gt = html.range(of: ">", range: lt.upperBound..<window) else {
+                out += html[index..<window]
+                index = window
+                if window == html.endIndex { break }
+                continue
+            }
+            out += html[index..<lt.lowerBound]
+            out += replacement(html[lt.lowerBound...gt.lowerBound])
+            index = gt.upperBound
+        }
+        out += html[index...]
+        return out
+    }
+
+    /// Every block-level tag replaced by the paragraph separator, every other
+    /// tag left where it is for `flatten` to remove.
+    ///
+    /// `Patterns.blockEnd` is unchanged and still decides what a boundary is.
+    /// It is asked about one short tag at a time now, where `[^>]*` is bounded
+    /// by construction, instead of about a whole document.
+    private static func markBlockBoundaries(in html: String) -> String {
+        rewritingTags(html) { tag in
+            let text = String(tag)
+            let whole = NSRange(text.startIndex..., in: text)
+            if let match = Patterns.blockEnd.firstMatch(in: text, range: whole),
+               match.range == whole {
+                return separator
+            }
+            return text
+        }
+    }
+
     /// One block of markup reduced to a single line of readable text.
     private static func flatten(_ chunk: String) -> String {
         // Inline tags are removed rather than replaced with a space, because
@@ -270,7 +352,7 @@ enum Standfirst {
         // used to put the gap in "the famous Doppler effect ." Block
         // boundaries have already become paragraph separators by this point,
         // so nothing that needed to keep words apart is left here.
-        var s = replace(Patterns.tag, in: chunk, with: "")
+        var s = rewritingTags(chunk) { _ in "" }
         // Entities are decoded after the tags are gone, never before: decoding
         // first would turn a literal `&lt;script&gt;` into real markup.
         s = decodeEntities(s)

@@ -88,6 +88,7 @@ STORAGE_SOURCES := Storage/EditionStore.swift \
 # Small things with no home of their own.
 SUPPORT_SOURCES := Support/BoundedFetch.swift \
                    Support/Clamping.swift \
+                   Support/HTMLTags.swift \
                    Support/RedirectGuard.swift \
                    Support/Log.swift \
                    Support/WebURL.swift
@@ -183,6 +184,8 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Reader/MailtoLink.swift \
                 Support/BoundedFetch.swift \
                 Support/Clamping.swift \
+                Feeds/FeedDiscovery.swift \
+                Support/HTMLTags.swift \
                 Reader/EmbeddedArticle.swift \
                 Pictures/PictureSignature.swift \
                 Pictures/PictureSignatureStore.swift \
@@ -223,6 +226,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/ReaderBlockTests.swift \
                 Tests/LegacyIDTests.swift \
                 Tests/BaseHrefTests.swift \
+                Tests/QuadraticTests.swift \
                 Tests/main.swift
 
 TEST_BIN := .build/tests

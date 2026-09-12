@@ -488,7 +488,7 @@ final class ImageCache: @unchecked Sendable {
 
         // Reject 1×1 trackers and icon-sized placeholders. Undecodable bytes and
         // a tracking pixel are both settled facts about the URL.
-        guard let decoded = decode(data) else {
+        guard let decoded = await decodeOffPool(data) else {
             return .permanent("undecodable, \(data.count) bytes")
         }
         let w = Int(decoded.image.size.width), h = Int(decoded.image.size.height)
@@ -575,8 +575,96 @@ final class ImageCache: @unchecked Sendable {
     /// And in total. The largest real picture the app has decoded is 12.1 MP.
     static let maxSourcePixels = 80_000_000
 
+    /// The picture formats a newspaper needs, by their own first bytes.
+    ///
+    /// **ImageIO decides which parser runs from the bytes, and the feed
+    /// chooses the bytes.** `CGImageSourceCopyTypeIdentifiers()` returns 62
+    /// UTIs on this machine, and CoreGraphics reaches PDF through a further
+    /// fallback that is not even in that list. So a feed naming any picture —
+    /// an `<enclosure>`, a `<media:content>`, an `og:image`, an `<img src>` in
+    /// a description — could answer with PDF, DICOM, PICT, OpenEXR, Radiance,
+    /// DDS or any of 25 camera RAW parsers, and pick which one ran. Nothing on
+    /// this path looks at the declared MIME type.
+    ///
+    /// PDF mattered most: `PDFRenderClient` says the XPC helper exists "so
+    /// PDFKit never parses a feed's bytes in this process", and the Makefile
+    /// makes PDFKit's absence "a property of the link line rather than a claim
+    /// in a comment" — but CGPDF, the parser underneath PDFKit, was reachable
+    /// through ImageIO in the main process, which holds the network
+    /// entitlement, on the unattended hourly path.
+    ///
+    /// Magic numbers rather than UTIs, because this has to be decided before
+    /// `CGImageSourceCreateWithData` is handed the bytes at all.
+    private static let acceptedSignatures: [[UInt8]] = [
+        [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],   // PNG
+        [0xFF, 0xD8, 0xFF],                                 // JPEG
+        [0x47, 0x49, 0x46, 0x38],                           // GIF87a/89a
+        [0x49, 0x49, 0x2A, 0x00],                           // TIFF, little endian
+        [0x4D, 0x4D, 0x00, 0x2A],                           // TIFF, big endian
+        [0x42, 0x4D],                                       // BMP
+    ]
+
+    /// The same list as UTIs, for the second check after the source is made.
+    private static let acceptedTypes: Set<String> = [
+        "public.png", "public.jpeg", "com.compuserve.gif", "public.tiff",
+        "com.microsoft.bmp", "org.webmproject.webp", "public.heic",
+        "public.heif", "public.heics", "public.avif",
+    ]
+
+    /// Whether these bytes are a picture format the paper actually uses.
+    ///
+    /// WebP, HEIC and AVIF are ISO-BMFF or RIFF containers, so they are
+    /// matched on the brand at offset 4 rather than on a fixed prefix.
+    static func isAcceptedPicture(_ data: Data) -> Bool {
+        let head = [UInt8](data.prefix(16))
+        guard head.count >= 4 else { return false }
+        for signature in acceptedSignatures where head.starts(with: signature) { return true }
+        if head.count >= 12, head.starts(with: [0x52, 0x49, 0x46, 0x46]),   // RIFF
+           Array(head[8..<12]) == [0x57, 0x45, 0x42, 0x50] { return true }  // WEBP
+        if head.count >= 12, Array(head[4..<8]) == [0x66, 0x74, 0x79, 0x70] {   // ftyp
+            let brand = String(decoding: head[8..<12], as: UTF8.self).lowercased()
+            return ["heic", "heix", "hevc", "heim", "heis", "hevm", "mif1",
+                    "msf1", "avif", "avis"].contains(brand)
+        }
+        return false
+    }
+
+    /// Where the decode is allowed to block.
+    ///
+    /// **`CGImageSourceCreateThumbnailAtIndex` polls no cancellation**, so
+    /// neither `Task` cancellation nor the 300 s refresh watchdog can stop one
+    /// once it starts. It used to run synchronously on a cooperative-pool
+    /// thread, because `sharedTask` creates a plain unstructured `Task` from a
+    /// nonisolated method. Measured with 24 concurrent decodes of one hostile
+    /// fixture on 14 cores: an ordinary 0.5 s `Task.sleep` started at t=0 did
+    /// not resume until t=9.1 s, and in a second run t=32.6 s.
+    ///
+    /// That is the same starvation `SaliencyCache` records in its own comment
+    /// as having meant "no async work in the app could be scheduled again".
+    /// Vision was moved off the pool for it and the decode was left on it.
+    /// One pathological picture should cost one thread, not the runtime.
+    private static let decodeQueue = DispatchQueue(label: "cc.jorviksoftware.jdn.decode",
+                                                   qos: .utility)
+
+    private static func decodeOffPool(_ data: Data) async -> Decoded? {
+        await withCheckedContinuation { continuation in
+            decodeQueue.async { continuation.resume(returning: decode(data)) }
+        }
+    }
+
     private static func decode(_ data: Data) -> Decoded? {
+        guard isAcceptedPicture(data) else {
+            jdnLog("image: REFUSED \(data.count) bytes that are not a picture format "
+                   + "this reader decodes")
+            return nil
+        }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        // Belt as well as braces: the signature above says what the bytes
+        // claim, this says what ImageIO decided to be.
+        if let type = CGImageSourceGetType(source) as String?, !acceptedTypes.contains(type) {
+            jdnLog("image: REFUSED a source ImageIO reads as \(type)")
+            return nil
+        }
         // Source dimensions come from the metadata, so reading them costs no
         // decode.
         let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
@@ -598,7 +686,13 @@ final class ImageCache: @unchecked Sendable {
         // 80 megapixels with neither side over 40,000 is far past any news
         // photograph: the largest the app has ever decoded is 4800x2520, which
         // is 12.1.
-        guard srcW >= 0, srcH >= 0,
+        // **A missing dimension is a refusal, not permission.** ImageIO
+        // publishes no `kCGImagePropertyPixelWidth` for some formats — PDF
+        // among them — so both defaulted to 0, this guard passed trivially,
+        // `sourceLongEdge` was 0, and `target` became the full
+        // `maxPixelSize`. The ceiling written to stop an absurd canvas was a
+        // no-op for exactly the inputs that had no canvas to declare.
+        guard srcW > 0, srcH > 0,
               srcW <= maxSourceSide, srcH <= maxSourceSide,
               srcW * srcH <= maxSourcePixels
         else {

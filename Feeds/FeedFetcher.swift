@@ -375,6 +375,17 @@ final class FeedFetcher: Sendable {
             jdnLog("fetch: \(feed.url.host ?? "?") declares \(amplification) — refused before parsing")
             throw FeedFetchError.parseFailureDetail("declares \(amplification)")
         }
+        // **An empty body is a dead feed, not a moved one.** A zero-byte 200,
+        // a single space and a bare CRLF were the only inputs that produced a
+        // bare `parseFailure`, which is precisely the case `fetchSelfHealing`
+        // treats as "try discovery" — so one empty answer per hourly refresh
+        // was enough to send discovery at whatever the host served next.
+        // Everything else malformed already throws `parseFailureDetail`.
+        if data.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0A || $0 == 0x0D }) {
+            jdnLog("fetch: \(feed.url.host ?? "?") answered with an empty body — "
+                   + "treated as a dead feed, not a moved one")
+            throw FeedFetchError.parseFailureDetail("answered with an empty body")
+        }
         let parser = RSSAtomParser(data: data, feed: feed)
         guard let result = parser.parse() else {
             // Two different faults, and lumping them together hid one of them
@@ -1051,24 +1062,7 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
 
     /// Every `<tag …>` of one name, as separate strings. See `firstImageURL`.
     static func tags(_ name: String, in html: String) -> [String] {
-        let maxTag = 4096
-        var out: [String] = []
-        var index = html.startIndex
-        let opener = "<" + name
-        while let start = html.range(of: opener, options: [.caseInsensitive],
-                                     range: index..<html.endIndex) {
-            let limit = html.index(start.lowerBound, offsetBy: maxTag,
-                                   limitedBy: html.endIndex) ?? html.endIndex
-            if let close = html.range(of: ">", range: start.upperBound..<limit) {
-                out.append(String(html[start.lowerBound...close.lowerBound]))
-                index = close.upperBound
-            } else {
-                index = limit
-                if limit == html.endIndex { break }
-            }
-            if out.count >= 512 { break }
-        }
-        return out
+        HTMLTags.named(name, in: html)
     }
 
 }
