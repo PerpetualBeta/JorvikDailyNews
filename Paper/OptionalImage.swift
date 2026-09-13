@@ -145,6 +145,14 @@ struct OptionalImage: View {
     /// tracker-sized). The lead uses this to demote itself when its image
     /// can't be shown; ordinary cards leave it nil and just collapse.
     let onFailure: (() -> Void)?
+    /// The widest this picture will ever be drawn, in points, when that is
+    /// known in advance. A masonry card knows its column; the lead and the
+    /// reader do not bound theirs, and pass nil to get the full-size decode
+    /// every caller used to get.
+    ///
+    /// It sizes the DECODE, not the draw. `OptionalImage` never upscales, so a
+    /// picture decoded for this width is drawn at this width and no wider.
+    let drawWidth: CGFloat?
 
     @Environment(\.displayScale) private var displayScale
 
@@ -158,9 +166,11 @@ struct OptionalImage: View {
     /// we crop from the top.
     @State private var subject: SaliencyCache.Span?
 
-    init(url: URL, maxHeight: CGFloat? = nil, onFailure: (() -> Void)? = nil) {
+    init(url: URL, maxHeight: CGFloat? = nil, drawWidth: CGFloat? = nil,
+         onFailure: (() -> Void)? = nil) {
         self.url = url
         self.maxHeight = maxHeight
+        self.drawWidth = drawWidth
         self.onFailure = onFailure
         // Seed from the cache synchronously so a cached image renders on the
         // very first frame — no placeholder flash, no reflow when paging back
@@ -322,18 +332,32 @@ struct OptionalImage: View {
         // Synchronous hit — already decoded (covers an `init` that seeded
         // `.loaded`). The async `image(for:)` coalesces with any prefetch /
         // sibling view fetching the same URL, so the image is downloaded once.
-        if let cached = ImageCache.shared.cachedImage(for: url) {
+        if let cached = ImageCache.shared.cachedImage(for: url,
+                                                       wideEnoughFor: requestedWidthPx) {
             state = .loaded(cached)
             await resolveSaliency(cached)
             return
         }
-        if let img = await ImageCache.shared.image(for: url) {
+        if let img = await ImageCache.shared.image(for: url, drawWidthPx: requestedWidthPx) {
             state = .loaded(img)
             await resolveSaliency(img)
         } else {
             state = .failed
             onFailure?()
         }
+    }
+
+    /// How many pixels wide this picture needs to be decoded, or nil for the
+    /// full-size decode.
+    ///
+    /// `displayScale` is the environment's, so a window dragged to a
+    /// non-retina screen asks for fewer pixels and one dragged back asks for
+    /// more. The already-held bitmap answers the smaller question, so moving
+    /// between screens costs nothing in the direction that matters.
+    private var requestedWidthPx: Int? {
+        guard let drawWidth, drawWidth > 0 else { return nil }
+        let scale = displayScale > 0 ? displayScale : 2
+        return Int((drawWidth * scale).rounded(.up))
     }
 
     /// Ask Vision where the subject is. Only worth doing when there IS a cap —

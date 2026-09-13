@@ -147,7 +147,27 @@ final class ImageCache: @unchecked Sendable {
     /// URLs whose last attempt failed for a reason that MIGHT change, and the
     /// moment it becomes worth trying again.
     private var retryAfter: [URL: Date] = [:]
-    private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+    /// A picture at a particular size. Two callers wanting the same URL at the
+    /// same width share one download; at different widths they do not, because
+    /// they are asking for different bitmaps.
+    struct Request: Hashable {
+        let url: URL
+        let drawWidthPx: Int?
+    }
+
+    private var inFlight: [Request: Task<NSImage?, Never>] = [:]
+
+    /// How wide the bitmap held for each URL actually is, in pixels.
+    ///
+    /// Without this the cache cannot answer "is what I have good enough for
+    /// this caller", and a card-sized copy would be handed to the reader.
+    private var decodedWidth: [URL: Int] = [:]
+
+    /// URLs whose held bitmap is as large as it will ever get — the decode
+    /// reached `maxPixelSize`, or the source itself was smaller. A caller
+    /// asking for the full size is satisfied by one of these and by nothing
+    /// else.
+    private var atCeiling: Set<URL> = []
 
     /// Running total of decoded bytes the cache is holding, for diagnostics.
     ///
@@ -369,6 +389,20 @@ final class ImageCache: @unchecked Sendable {
     }
 
     /// Synchronous cache peek — for instant `@State` seeding in `OptionalImage.init`.
+    /// The held bitmap, but only when it is already wide enough for this
+    /// caller.
+    ///
+    /// **`load()` returned on any synchronous hit, and that was the bug this
+    /// exists to stop.** The front page fills the cache with card-sized
+    /// bitmaps; the reader then opened, found one, and drew its lede from a
+    /// picture decoded for a 400pt column. A hit is only a hit if it answers
+    /// the question that was asked.
+    func cachedImage(for url: URL, wideEnoughFor drawWidthPx: Int?) -> NSImage? {
+        guard let img = images.object(forKey: url as NSURL) else { return nil }
+        guard holds(url, atLeast: drawWidthPx) else { return nil }
+        return img
+    }
+
     func cachedImage(for url: URL) -> NSImage? {
         guard Self.picturesEnabled else { return nil }
         return images.object(forKey: url as NSURL)
@@ -393,19 +427,60 @@ final class ImageCache: @unchecked Sendable {
     /// awaits the shared fetch. Success caches the image and clears any prior
     /// failed flag; failure (bad URL, non-2xx, undecodable, tracker-sized, or
     /// timeout) records it.
-    func image(for url: URL, timeout: TimeInterval = 12) async -> NSImage? {
+    /// Load a picture, decoded no larger than the caller will draw it.
+    ///
+    /// **`drawWidthPx` is a width, not a long edge, and that distinction is
+    /// the whole point.** A card's constraint is its column: it fills the
+    /// width and crops the height. Sizing by the long edge instead would
+    /// under-serve a portrait — a 1000x3000 source asked for at an 800px long
+    /// edge comes back 267 wide, and `OptionalImage` never upscales, so the
+    /// card would draw it at 133pt in a 400pt column. `decode` converts this
+    /// to a long-edge request using the source's own aspect, which it reads
+    /// from metadata before decoding anything.
+    ///
+    /// Nil means "as large as the ceiling allows", which is what the reader
+    /// and the lead want and what every caller used to get.
+    ///
+    /// Measured on one real log: 7,727 of 8,113 draws were cards at a 260pt
+    /// cap, and every one of them was handed a bitmap decoded for a 2,048px
+    /// ceiling. A typical 1200x630 og:image costs 2.88 MB that way and 1.03 MB
+    /// at the width a card actually draws.
+    func image(for url: URL, drawWidthPx: Int? = nil,
+               timeout: TimeInterval = 12) async -> NSImage? {
         guard Self.picturesEnabled else { return nil }
-        if let img = images.object(forKey: url as NSURL) { return img }
+        // A bitmap already at least as wide as this caller needs is the right
+        // answer, whoever decoded it. Only a caller wanting MORE pixels than
+        // are held has to go round again.
+        if let img = images.object(forKey: url as NSURL), holds(url, atLeast: drawWidthPx) {
+            return img
+        }
         if isFailed(url) { return nil }
-        return await sharedTask(for: url, timeout: timeout).value
+        return await sharedTask(for: url, drawWidthPx: drawWidthPx, timeout: timeout).value
     }
 
-    private func sharedTask(for url: URL, timeout: TimeInterval) -> Task<NSImage?, Never> {
+    /// Whether the cached bitmap for `url` is already wide enough.
+    ///
+    /// Nil asks for the ceiling, so only a decode that reached the ceiling —
+    /// or the source's own size, whichever came first — satisfies it.
+    private func holds(_ url: URL, atLeast wanted: Int?) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        if let existing = inFlight[url] { return existing }
+        guard let held = decodedWidth[url] else { return false }
+        guard let wanted else { return atCeiling.contains(url) }
+        return held >= wanted
+    }
+
+    private func sharedTask(for url: URL, drawWidthPx: Int?,
+                            timeout: TimeInterval) -> Task<NSImage?, Never> {
+        lock.lock(); defer { lock.unlock() }
+        // Keyed by the size as well as the URL. Many cards in one column ask
+        // for the same width and still share a single download; a reader
+        // wanting the full-size copy of a picture the page already holds small
+        // is a different question and gets its own answer.
+        let key = Request(url: url, drawWidthPx: drawWidthPx)
+        if let existing = inFlight[key] { return existing }
         let task = Task<NSImage?, Never> { [weak self] in
-            let outcome = await Self.download(url, timeout: timeout)
-            self?.finish(url: url, outcome: outcome)
+            let outcome = await Self.download(url, timeout: timeout, drawWidthPx: drawWidthPx)
+            self?.finish(url: url, request: key, outcome: outcome)
             // **`finish` marking a picture blank changed only the
             // bookkeeping.** It inserted the URL into `failed` and returned,
             // and then this line handed the same blank image to the caller
@@ -426,13 +501,13 @@ final class ImageCache: @unchecked Sendable {
         // server stopped the paper publishing for the whole session.
         // `timeoutIntervalForResource` above bounds the transfer; this is the
         // belt for anything that still does not come back.
-        inFlight[url] = task
+        inFlight[key] = task
         return task
     }
 
-    private func finish(url: URL, outcome: Outcome) {
+    private func finish(url: URL, request: Request, outcome: Outcome) {
         lock.lock(); defer { lock.unlock() }
-        inFlight[url] = nil
+        inFlight[request] = nil
         switch outcome {
         case .image(let decoded):
             if let signature = decoded.signature {
@@ -454,6 +529,14 @@ final class ImageCache: @unchecked Sendable {
             let held = heldBytes, count = heldCount
             bytesLock.unlock()
             images.setObject(decoded.image, forKey: url as NSURL, cost: cost)
+            // Recorded with the bitmap, so a later caller can ask whether what
+            // is held is wide enough for it. A picture decoded at its own
+            // source size is at the ceiling too: there are no more pixels to
+            // be had by asking again.
+            decodedWidth[url] = decoded.cgWidth
+            if decoded.cgWidth >= decoded.sourceWidth || decoded.target >= Self.maxPixelSize {
+                atCeiling.insert(url)
+            }
             let scaled = (decoded.cgWidth != decoded.sourceWidth || decoded.cgHeight != decoded.sourceHeight)
             jdnLog("image: \(decoded.sourceWidth)x\(decoded.sourceHeight) -> \(decoded.cgWidth)x\(decoded.cgHeight)"
                    + "\(scaled ? " SCALED" : "") \(Self.mb(cost)) — holding \(Self.mb(held))"
@@ -570,7 +653,8 @@ final class ImageCache: @unchecked Sendable {
         }
     }
 
-    private static func download(_ url: URL, timeout: TimeInterval) async -> Outcome {
+    private static func download(_ url: URL, timeout: TimeInterval,
+                                 drawWidthPx: Int? = nil) async -> Outcome {
         let source = FetchSource()
         let data: Data
         let response: URLResponse
@@ -619,7 +703,7 @@ final class ImageCache: @unchecked Sendable {
 
         // Reject 1×1 trackers and icon-sized placeholders. Undecodable bytes and
         // a tracking pixel are both settled facts about the URL.
-        guard let decoded = await decodeOffPool(data) else {
+        guard let decoded = await decodeOffPool(data, drawWidthPx: drawWidthPx) else {
             return .permanent("undecodable, \(data.count) bytes")
         }
         let w = Int(decoded.image.size.width), h = Int(decoded.image.size.height)
@@ -777,9 +861,9 @@ final class ImageCache: @unchecked Sendable {
     private static let decodeQueue = DispatchQueue(label: "cc.jorviksoftware.jdn.decode",
                                                    qos: .utility)
 
-    private static func decodeOffPool(_ data: Data) async -> Decoded? {
+    private static func decodeOffPool(_ data: Data, drawWidthPx: Int?) async -> Decoded? {
         await withCheckedContinuation { continuation in
-            decodeQueue.async { continuation.resume(returning: decode(data)) }
+            decodeQueue.async { continuation.resume(returning: decode(data, drawWidthPx: drawWidthPx)) }
         }
     }
 
@@ -830,7 +914,7 @@ final class ImageCache: @unchecked Sendable {
     /// The source goes through `SVGSafety` first, which is the same check the
     /// reader runs on inline SVG, because an SVG fetched from a stranger is
     /// drawing instructions and `NSImage(data:)` is the interpreter.
-    private static func decodeSVG(_ data: Data) -> Decoded? {
+    private static func decodeSVG(_ data: Data, drawWidthPx: Int? = nil) -> Decoded? {
         guard data.count <= maxSVGSource else {
             jdnLog("image: REFUSED an SVG of \(data.count) bytes — over the "
                    + "\(maxSVGSource) allowed")
@@ -861,10 +945,11 @@ final class ImageCache: @unchecked Sendable {
         // ImageIO does above.** Asked for a 1200px long edge on a real 1200x630
         // og:image, `cgImage(forProposedRect:)` answered 2400x1260 — the
         // backing scale applied to a rect it treats as points. Left alone that
-        // is 11.54 MB held to draw a card. So the same correction loop runs
-        // here, and converges in two for the same reason its comment gives.
+        // is 11.54 MB held to draw a card, which is the waste this whole path
+        // exists to avoid. So the same correction loop runs here, and converges
+        // in two for the same reason its comment gives.
         let sourceLongEdge = max(srcW, srcH)
-        let target = min(maxPixelSize, sourceLongEdge)
+        let target = decodeLongEdge(drawWidthPx: drawWidthPx, sourceWidth: srcW, sourceHeight: srcH)
         var request = target
         var best: CGImage?
         var usedAttempts = 0
@@ -905,10 +990,32 @@ final class ImageCache: @unchecked Sendable {
                        target: target, requested: request, attempts: usedAttempts)
     }
 
-    private static func decode(_ data: Data) -> Decoded? {
+    /// The long edge to decode at, for a caller that will draw this picture
+    /// `drawWidthPx` pixels wide.
+    ///
+    /// `kCGImageSourceThumbnailMaxPixelSize` bounds the LONG edge, and a
+    /// card's constraint is its WIDTH, so the two have to be converted through
+    /// the source's own aspect. For a landscape picture they are the same
+    /// number; for a portrait the long edge is taller, and asking for the
+    /// width directly would return something far too narrow to fill the
+    /// column.
+    ///
+    /// Never above `maxPixelSize`, which stays the absolute ceiling, and never
+    /// above the source's own long edge, because nothing here upscales.
+    static func decodeLongEdge(drawWidthPx: Int?, sourceWidth: Int, sourceHeight: Int) -> Int {
+        let sourceLongEdge = max(sourceWidth, sourceHeight)
+        guard let drawWidthPx, drawWidthPx > 0, sourceWidth > 0 else {
+            return sourceLongEdge > 0 ? min(maxPixelSize, sourceLongEdge) : maxPixelSize
+        }
+        let scaled = Double(drawWidthPx) * Double(sourceLongEdge) / Double(sourceWidth)
+        let wanted = max(1, Int(scaled.rounded(.up)))
+        return min(maxPixelSize, sourceLongEdge, wanted)
+    }
+
+    private static func decode(_ data: Data, drawWidthPx: Int? = nil) -> Decoded? {
         // Before the raster allow-list, because an SVG is not one of its
         // formats and would be refused as "not a picture" rather than drawn.
-        if isSVG(data) { return decodeSVG(data) }
+        if isSVG(data) { return decodeSVG(data, drawWidthPx: drawWidthPx) }
         guard isAcceptedPicture(data) else {
             jdnLog("image: REFUSED \(data.count) bytes that are not a picture format "
                    + "this reader decodes")
@@ -957,8 +1064,7 @@ final class ImageCache: @unchecked Sendable {
             return nil
         }
 
-        let sourceLongEdge = max(srcW, srcH)
-        let target = sourceLongEdge > 0 ? min(maxPixelSize, sourceLongEdge) : maxPixelSize
+        let target = decodeLongEdge(drawWidthPx: drawWidthPx, sourceWidth: srcW, sourceHeight: srcH)
 
         var request = target
         var best: CGImage?

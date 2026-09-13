@@ -42,7 +42,8 @@ struct StoryCard: View {
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 if showsPicture, let img = item.imageURL {
-                    OptionalImage(url: img, maxHeight: ImageCap.resolve(imageMaxHeight))
+                    OptionalImage(url: img, maxHeight: ImageCap.resolve(imageMaxHeight),
+                                  drawWidth: columnWidth)
                         .padding(.bottom, 2)
                 }
                 Text(item.sourceTitle.uppercased())

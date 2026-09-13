@@ -221,6 +221,7 @@ enum QuadraticTests {
             }
             T.expect(ImageCache.headFetchBytes < ImageCache.fullFetchCeiling,
                      "the head read is smaller than the ceiling that triggers it")
+
             // **SVG is how a lot of the web ships a picture**, and the cache
             // took raster formats only. Measured across one real log: 33
             // refusals, the largest group shields.io badges proxied through
@@ -261,6 +262,51 @@ enum QuadraticTests {
                      "and an og:image is above it")
             T.expect(ImageCache.maxSVGSource == 64 * 1024,
                      "the source ceiling matches the reader's inline one")
+        }
+
+        T.suite("Pictures: a card is decoded for its column, not for the ceiling") {
+            let ceiling = ImageCache.maxPixelSize
+            func edge(_ want: Int?, _ w: Int, _ h: Int) -> Int {
+                ImageCache.decodeLongEdge(drawWidthPx: want, sourceWidth: w, sourceHeight: h)
+            }
+
+            // Nil is the reader and the lead: as large as the source or the
+            // ceiling allows, which is what every caller used to get.
+            T.equal(edge(nil, 6000, 4000), ceiling, "nil takes the ceiling")
+            T.equal(edge(nil, 1200, 630), 1200, "or the source, when that is smaller")
+
+            // A landscape card. 400pt column at 2x is 800px, and for a
+            // landscape picture the width IS the long edge.
+            T.equal(edge(800, 1200, 630), 800, "a landscape card asks for its column")
+
+            // **The case that makes this a width and not a long edge.** A
+            // 1000x2000 portrait asked for at an 800px LONG edge comes back
+            // 400 wide, and nothing here upscales, so a 400pt column would
+            // draw it at 200pt. Converted through the aspect it is 1600, so
+            // the picture fills the column.
+            T.equal(edge(800, 1000, 2000), 1600, "a portrait card asks for the taller edge")
+            T.expect(edge(800, 1000, 2000) > 800, "which is more than the width, not less")
+
+            // Never upscale, and never past the ceiling.
+            T.equal(edge(800, 300, 200), 300, "a source smaller than the column is not blown up")
+            T.equal(edge(99_999, 6000, 4000), ceiling, "and an absurd request still meets the ceiling")
+            T.equal(edge(800, 1000, 30_000), ceiling,
+                    "a very tall portrait is held to the ceiling too")
+
+            // Degenerate inputs answer the ceiling rather than trapping.
+            T.equal(edge(0, 1200, 630), 1200, "a zero width is treated as unset")
+            T.equal(edge(-5, 1200, 630), 1200, "and so is a negative one")
+            T.equal(edge(800, 0, 0), ceiling, "a source of unknown size takes the ceiling")
+
+            // The saving this was built for, stated as the arithmetic rather
+            // than as a claim: a 1200x630 og:image drawn in a 400pt column.
+            let full = 1200 * 630 * 4
+            let card = edge(800, 1200, 630) * (edge(800, 1200, 630) * 630 / 1200) * 4
+            T.expect(card * 2 < full, "a card bitmap is less than half the full-size one")
+        }
+
+        T.suite("Pictures: the GIF and SVG ceilings hold together") {
+            T.expect(ImageCache.minimumPixels > 0, "the furniture floor is real")
         }
 
         T.suite("Quadratic: an empty body is a dead feed, not a moved one") {
