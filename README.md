@@ -38,7 +38,6 @@ A newspaper is the other shape. It publishes for a day, it is finite, and you fi
 
 ## Documentation
 
-| | |
 |---|---|
 | [Using it](Documentation/using-it.md) | Adding feeds, import and export, the reader pane |
 | [How the paper is built](Documentation/the-paper.md) | Today-only, lead selection, standfirsts and column fitting |
@@ -52,7 +51,6 @@ A newspaper is the other shape. It publishes for a day, it is finite, and you fi
 
 ## Screenshots
 
-| | |
 |---|---|
 | ![A topic section page](Documentation/screenshots/section-page.png) | ![The Add Feed sheet](Documentation/screenshots/add-feed.png) |
 | Section pages collect a topic's stories into their own masonry. | Add a feed by URL — or paste a site's home page and it finds the feed. |
