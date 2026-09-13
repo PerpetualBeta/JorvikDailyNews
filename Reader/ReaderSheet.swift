@@ -1385,14 +1385,17 @@ struct LiveWebView: NSViewRepresentable {
             /// is the point of keeping it.
             let markup: Int
             static let nothing = Drawn(text: 0, media: 0, markup: 0)
-            /// Roughly a sentence, or a picture with at least some words
-            /// beside it. `LivePagePolicy.countsAsDrawn` carries the measured
-            /// reason the second half is not just `media >= 1`.
-            var hasDrawn: Bool { LivePagePolicy.countsAsDrawn(text: text, media: media) }
-            /// The page painted something and said nothing. A wall, or a page
-            /// that writes its words with scripts — and from here the app
-            /// cannot tell which, so it does not guess.
-            var paintedButWordless: Bool { media >= 1 && text == 0 }
+            /// Roughly a sentence of readable text.
+            /// `LivePagePolicy.hasSomethingToRead` carries the measured reason
+            /// a painted picture does not count towards it.
+            var hasDrawn: Bool { LivePagePolicy.hasSomethingToRead(text: text) }
+            /// The page painted something and gave nothing to read. A wall, or
+            /// a page that writes its words with scripts — and from here the
+            /// app cannot tell which, so it does not guess.
+            ///
+            /// Only ever asked when `hasDrawn` is already false, so the text
+            /// is below the floor by the time this is consulted.
+            var paintedButWordless: Bool { media >= 1 }
             /// 39 characters is `<html><head></head><body></body></html>`, the
             /// skeleton a web view starts with. Anything more means a document
             /// arrived, whatever the layout probe says about it.

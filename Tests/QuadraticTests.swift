@@ -332,7 +332,8 @@ enum QuadraticTests {
 
         T.suite("Live page: a picture with no words is not a drawn page") {
             func drawn(_ text: Int, _ media: Int) -> Bool {
-                LivePagePolicy.countsAsDrawn(text: text, media: media)
+                _ = media
+                return LivePagePolicy.hasSomethingToRead(text: text)
             }
             // **Media alone used to be enough.** Measured across 51 real
             // live-page loads: ten produced zero characters of text and the
@@ -345,11 +346,15 @@ enum QuadraticTests {
             T.expect(!drawn(0, 67), "nor sixty-seven — the AccuWeather case")
             T.expect(!drawn(0, 0), "and nothing at all certainly is not")
 
-            // A picture still counts. That is the point of keeping the second
-            // clause rather than demanding the full text floor everywhere: a
-            // photo essay with a caption draws.
-            T.expect(drawn(1, 1), "a picture with even one character is drawn")
-            T.expect(drawn(40, 3), "a captioned picture is drawn")
+            // **The reported case, and the reason media was dropped from the
+            // rule entirely.** A LessWrong comment permalink drew ONE
+            // character of text beside three pictures. The previous rule was
+            // `media >= 1 && text > 0`, written on a measured gap — zero, or
+            // at least 102, nothing between — and this landed in the gap and
+            // showed a blank pane. A gap in 51 samples is not a law.
+            T.expect(!drawn(1, 3), "one character beside three pictures is not a page")
+            T.expect(!drawn(40, 3), "nor is half a sentence beside them")
+            T.expect(!drawn(79, 9), "a picture cannot make up the difference")
 
             // Text alone, at the floor.
             T.expect(drawn(LivePagePolicy.readableTextFloor, 0),

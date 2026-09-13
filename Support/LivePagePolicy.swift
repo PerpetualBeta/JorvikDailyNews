@@ -84,11 +84,26 @@ enum LivePagePolicy {
     /// recurred, so that fix worked. It closed one mechanism; this closes the
     /// rule behind it. Three of the ten happened after it shipped.
     ///
-    /// A picture still counts, and that is the point of the second clause: a
-    /// photo essay with a caption draws. What no longer counts is a picture
-    /// with no words beside it at all.
-    static func countsAsDrawn(text: Int, media: Int) -> Bool {
-        if text >= readableTextFloor { return true }
-        return media >= 1 && text > 0
+    /// **Media does not enter into it, and two versions of this rule learned
+    /// that the hard way.** It was `media >= 1 || text >= 80`, which showed
+    /// any page that painted a picture and carried no words. Then it was
+    /// `media >= 1 && text > 0`, on the strength of a gap in the measurements:
+    /// ten pages produced zero characters and the lowest non-zero was 102,
+    /// with nothing between. That gap was real in 51 samples and it was not a
+    /// law. The next page reported was a LessWrong comment permalink that drew
+    /// **one** character of text beside three pictures, landed in the gap, and
+    /// showed a blank pane.
+    ///
+    /// So the question is only ever "is there something to read", and a
+    /// picture cannot answer it. A page that is one photograph and no words
+    /// gets the notice too, which for a newspaper reader is the honest answer
+    /// rather than a loss.
+    ///
+    /// `readableTextFloor` still sits in unobserved ground — 1 below it, 102
+    /// above — so it is bounded by the measurements on both sides rather than
+    /// pinned by them. It is the app's existing definition of a sentence and
+    /// no new number was invented for this.
+    static func hasSomethingToRead(text: Int) -> Bool {
+        text >= readableTextFloor
     }
 }
