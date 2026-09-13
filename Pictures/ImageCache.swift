@@ -656,7 +656,7 @@ final class ImageCache: @unchecked Sendable {
     /// Smaller than this on either side and it is furniture, not a picture:
     /// a 1x1 tracker, a favicon, a broken-CDN placeholder. Drawing one blots
     /// the page with an empty rectangle.
-    private static let minimumPixels = 48
+    static let minimumPixels = 48
 
     private static func thumbnail(from source: CGImageSource, longEdge: Int) -> CGImage? {
         // `kCGImageSourceCreateThumbnailWithTransform` applies the EXIF
@@ -783,7 +783,132 @@ final class ImageCache: @unchecked Sendable {
         }
     }
 
+    /// Longest SVG source that will be drawn, matching the inline ceiling in
+    /// `NativeReaderView`. One rule, two components, stated in both.
+    static let maxSVGSource = 64 * 1024
+
+    /// Whether these bytes are an SVG document.
+    ///
+    /// Deliberately narrow: the root element must be `<svg>`, allowing only an
+    /// XML declaration, a doctype, comments and whitespace before it. A test
+    /// that merely looked for `<svg` anywhere would call every HTML page with
+    /// an inline icon a picture.
+    static func isSVG(_ data: Data) -> Bool {
+        guard let text = String(data: data.prefix(1024), encoding: .utf8)?.lowercased()
+        else { return false }
+        var rest = Substring(text)
+        // Bounded rather than `while true`, so a head made of nothing but
+        // comments cannot spin here.
+        let prologue = [("<?xml", "?>"), ("<!--", "-->"), ("<!doctype", ">")]
+        for _ in 0..<8 {
+            rest = rest.drop { $0 == " " || $0 == "\n" || $0 == "\r" || $0 == "\t" || $0 == "\u{FEFF}" }
+            if rest.hasPrefix("<svg") { return true }
+            // A prologue this cannot see the end of is not worth guessing at.
+            guard let closer = prologue.first(where: { rest.hasPrefix($0.0) })?.1,
+                  let end = rest.range(of: closer)
+            else { return false }
+            rest = rest[end.upperBound...]
+        }
+        return false
+    }
+
+    /// Draw an SVG, or say why not.
+    ///
+    /// **The picture cache took raster formats only, and SVG is how a lot of
+    /// the web ships a picture.** Measured across one real log: 33 refusals,
+    /// of which the largest group was `camo.githubusercontent.com` serving
+    /// shields.io badges, and the next was a site whose `og:image` is an SVG.
+    /// Verified by fetching both: the badge is 1,308 bytes at 110x20 and the
+    /// og:image is 386 bytes at 1200x630, matching their log lines to the byte.
+    ///
+    /// **Nothing new decides which of those is wanted.** `minimumPixels`
+    /// already throws out anything under 48px a side as furniture rather than
+    /// a picture, and it is applied to the rasterised result in `download`, so
+    /// a 20px-tall badge fails the test a favicon fails and a 630px og:image
+    /// passes the test a photograph passes.
+    ///
+    /// The source goes through `SVGSafety` first, which is the same check the
+    /// reader runs on inline SVG, because an SVG fetched from a stranger is
+    /// drawing instructions and `NSImage(data:)` is the interpreter.
+    private static func decodeSVG(_ data: Data) -> Decoded? {
+        guard data.count <= maxSVGSource else {
+            jdnLog("image: REFUSED an SVG of \(data.count) bytes — over the "
+                   + "\(maxSVGSource) allowed")
+            return nil
+        }
+        guard let source = String(data: data, encoding: .utf8) else {
+            jdnLog("image: REFUSED an SVG that is not UTF-8")
+            return nil
+        }
+        if let why = SVGSafety.refusal(for: source) {
+            jdnLog("image: REFUSED an SVG — \(why)")
+            return nil
+        }
+        guard let image = NSImage(data: data) else {
+            jdnLog("image: REFUSED an SVG of \(data.count) bytes that would not parse")
+            return nil
+        }
+        let srcW = Int(image.size.width.rounded()), srcH = Int(image.size.height.rounded())
+        guard srcW > 0, srcH > 0,
+              srcW <= maxSourceSide, srcH <= maxSourceSide,
+              srcW * srcH <= maxSourcePixels
+        else {
+            jdnLog("image: REFUSED an SVG declaring \(srcW)x\(srcH)")
+            return nil
+        }
+
+        // **The rasteriser scales the request by a constant, exactly as
+        // ImageIO does above.** Asked for a 1200px long edge on a real 1200x630
+        // og:image, `cgImage(forProposedRect:)` answered 2400x1260 — the
+        // backing scale applied to a rect it treats as points. Left alone that
+        // is 11.54 MB held to draw a card. So the same correction loop runs
+        // here, and converges in two for the same reason its comment gives.
+        let sourceLongEdge = max(srcW, srcH)
+        let target = min(maxPixelSize, sourceLongEdge)
+        var request = target
+        var best: CGImage?
+        var usedAttempts = 0
+        for attempt in 1...maxDecodeAttempts {
+            usedAttempts = attempt
+            let scale = Double(request) / Double(sourceLongEdge)
+            let w = max(1, Int((Double(srcW) * scale).rounded()))
+            let h = max(1, Int((Double(srcH) * scale).rounded()))
+            var rect = CGRect(x: 0, y: 0, width: w, height: h)
+            guard let cg = image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+            else { break }
+            best = cg
+            let got = max(cg.width, cg.height)
+            if got <= target {
+                if attempt > 1 {
+                    jdnLog("image: SVG raster corrected at attempt \(attempt) — asked "
+                           + "\(request)px, got \(got)px")
+                }
+                break
+            }
+            let corrected = max(1, Int((Double(request) * Double(target) / Double(got)).rounded(.down)))
+            if corrected == request || attempt == maxDecodeAttempts {
+                jdnLog("image: SVG rasteriser will not honour \(target)px — asked "
+                       + "\(request)px, got \(cg.width)x\(cg.height) after "
+                       + "\(attempt) attempt(s); keeping it")
+                break
+            }
+            request = corrected
+        }
+        guard let cg = best else {
+            jdnLog("image: REFUSED an SVG that parsed but would not rasterise")
+            return nil
+        }
+        return Decoded(image: NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)),
+                       signature: PictureSignature.of(cg),
+                       sourceWidth: srcW, sourceHeight: srcH,
+                       cgWidth: cg.width, cgHeight: cg.height,
+                       target: target, requested: request, attempts: usedAttempts)
+    }
+
     private static func decode(_ data: Data) -> Decoded? {
+        // Before the raster allow-list, because an SVG is not one of its
+        // formats and would be refused as "not a picture" rather than drawn.
+        if isSVG(data) { return decodeSVG(data) }
         guard isAcceptedPicture(data) else {
             jdnLog("image: REFUSED \(data.count) bytes that are not a picture format "
                    + "this reader decodes")

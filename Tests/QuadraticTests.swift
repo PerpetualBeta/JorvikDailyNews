@@ -221,6 +221,46 @@ enum QuadraticTests {
             }
             T.expect(ImageCache.headFetchBytes < ImageCache.fullFetchCeiling,
                      "the head read is smaller than the ceiling that triggers it")
+            // **SVG is how a lot of the web ships a picture**, and the cache
+            // took raster formats only. Measured across one real log: 33
+            // refusals, the largest group shields.io badges proxied through
+            // camo, the next a site whose og:image is an SVG.
+            for (what, text) in [
+                ("a bare root", "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"),
+                // The real og:image case, and the one a first version of this
+                // got wrong: the prologue has to be walked past, not just
+                // tolerated.
+                ("an XML declaration first", "<?xml version=\"1.0\"?><svg width=\"1200\"></svg>"),
+                ("leading whitespace", "\n  <svg/>"),
+                ("a comment first", "<!-- made by hand --><svg/>"),
+                ("a doctype first", "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"x.dtd\"><svg/>"),
+                ("upper case", "<SVG XMLNS=\"x\"></SVG>"),
+            ] {
+                T.expect(ImageCache.isSVG(Data(text.utf8)), "SVG: \(what)")
+            }
+            for (what, text) in [
+                // A page with an inline icon is not a picture, and a test that
+                // looked for `<svg` anywhere would have called it one.
+                ("an HTML page carrying an inline icon",
+                 "<!DOCTYPE html><html><body><p>hi</p><svg/></body></html>"),
+                ("a feed", "<?xml version=\"1.0\"?><rss><channel><title>x</title></channel></rss>"),
+                ("plain text", "not markup at all"),
+                ("an unterminated prologue", "<?xml version=\"1.0\""),
+                ("nothing", ""),
+            ] {
+                T.expect(!ImageCache.isSVG(Data(text.utf8)), "not SVG: \(what)")
+            }
+            T.expect(!ImageCache.isSVG(Data([0x89, 0x50, 0x4E, 0x47])), "not SVG: PNG bytes")
+
+            // The floor that separates a badge from a picture is the one that
+            // already separates a favicon from a picture. Nothing new decides
+            // it. Measured: shields.io badge 110x20, og:image 1200x630.
+            T.expect(20 < ImageCache.minimumPixels,
+                     "a badge is below the furniture floor")
+            T.expect(630 > ImageCache.minimumPixels,
+                     "and an og:image is above it")
+            T.expect(ImageCache.maxSVGSource == 64 * 1024,
+                     "the source ceiling matches the reader's inline one")
         }
 
         T.suite("Quadratic: an empty body is a dead feed, not a moved one") {
