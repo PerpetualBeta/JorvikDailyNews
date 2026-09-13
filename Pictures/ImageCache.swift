@@ -965,8 +965,8 @@ final class ImageCache: @unchecked Sendable {
             let got = max(cg.width, cg.height)
             if got <= target {
                 if attempt > 1 {
-                    jdnLog("image: SVG raster corrected at attempt \(attempt) — asked "
-                           + "\(request)px, got \(got)px")
+                    jdnLog("image: SVG raster met the \(target)px target at attempt "
+                           + "\(attempt) — asked \(request)px, got \(got)px")
                 }
                 break
             }
@@ -1076,7 +1076,8 @@ final class ImageCache: @unchecked Sendable {
             let got = max(cg.width, cg.height)
             if got <= target {
                 if attempt > 1 {
-                    jdnLog("image: decode corrected at attempt \(attempt) — asked \(request)px, got \(got)px")
+                    jdnLog("image: decode met the \(target)px target at attempt \(attempt)"
+                           + " — asked \(request)px, got \(got)px")
                 }
                 break
             }
