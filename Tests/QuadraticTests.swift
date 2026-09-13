@@ -298,6 +298,31 @@ enum QuadraticTests {
             T.equal(edge(-5, 1200, 630), 1200, "and so is a negative one")
             T.equal(edge(800, 0, 0), ceiling, "a source of unknown size takes the ceiling")
 
+            // **A rotated photograph is sized on the axis it will DRAW at,
+            // not the one it is stored on.** `kCGImagePropertyPixelWidth` is
+            // the stored width and the decode applies the EXIF rotation, so a
+            // 4000x3000 phone photograph with a quarter-turn flag comes back
+            // portrait. Found in the log as `image: 4000x3000 -> 473x631`: the
+            // card asked for 631px of width and got 473, which nothing
+            // upscales, so it would have drawn at 236pt in a 315pt column.
+            for upright in [1, 2, 3, 4] {
+                let d = ImageCache.drawnSize(width: 4000, height: 3000, orientation: upright)
+                T.equal(d.width, 4000, "orientation \(upright) leaves the axes alone")
+            }
+            for turned in [5, 6, 7, 8] {
+                let d = ImageCache.drawnSize(width: 4000, height: 3000, orientation: turned)
+                T.equal(d.width, 3000, "orientation \(turned) swaps them")
+                T.equal(d.height, 4000, "both ways round")
+            }
+            // The measured case, end to end. Stored 4000x3000, drawn 3000x4000,
+            // a card wanting 631px of width.
+            let turned = ImageCache.drawnSize(width: 4000, height: 3000, orientation: 6)
+            let asked = edge(631, turned.width, turned.height)
+            T.equal(asked, 842, "so the long edge asked for covers the width")
+            // Rounding UP is what makes this exact rather than one short.
+            T.equal(asked * turned.width / turned.height, 631,
+                    "landing the drawn width on the column itself, not three-quarters of it")
+
             // The saving this was built for, stated as the arithmetic rather
             // than as a claim: a 1200x630 og:image drawn in a 400pt column.
             let full = 1200 * 630 * 4

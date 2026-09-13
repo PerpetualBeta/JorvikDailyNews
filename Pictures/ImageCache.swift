@@ -970,7 +970,8 @@ final class ImageCache: @unchecked Sendable {
                 }
                 break
             }
-            let corrected = max(1, Int((Double(request) * Double(target) / Double(got)).rounded(.down)))
+            let ratio: Double = Double(target) / Double(got)
+            let corrected = max(1, Int((Double(request) * ratio).rounded(.down)))
             if corrected == request || attempt == maxDecodeAttempts {
                 jdnLog("image: SVG rasteriser will not honour \(target)px — asked "
                        + "\(request)px, got \(cg.width)x\(cg.height) after "
@@ -1002,6 +1003,28 @@ final class ImageCache: @unchecked Sendable {
     ///
     /// Never above `maxPixelSize`, which stays the absolute ceiling, and never
     /// above the source's own long edge, because nothing here upscales.
+    /// The size a picture will actually have once decoded, given the EXIF
+    /// orientation the decode applies.
+    ///
+    /// **`kCGImagePropertyPixelWidth` is the STORED width, and
+    /// `kCGImageSourceCreateThumbnailWithTransform` rotates the picture on the
+    /// way out.** So a phone photograph stored 4000x3000 with a quarter-turn
+    /// flag decodes to a portrait, and sizing the request from the stored
+    /// numbers asks for the wrong axis.
+    ///
+    /// Found in the log rather than by a test: `image: 4000x3000 -> 473x631`,
+    /// a landscape source that came back portrait. The card had asked for
+    /// 631px of width and got 473, and since nothing here upscales it would
+    /// have drawn at 236pt in a 315pt column with a gap beside it. Three of
+    /// 105 decodes in one sitting, all the same photograph.
+    ///
+    /// Orientations 5 to 8 are the four involving a quarter turn; 1 to 4 are
+    /// upright or mirrored and leave the axes alone.
+    static func drawnSize(width: Int, height: Int,
+                          orientation: Int) -> (width: Int, height: Int) {
+        (5...8).contains(orientation) ? (height, width) : (width, height)
+    }
+
     static func decodeLongEdge(drawWidthPx: Int?, sourceWidth: Int, sourceHeight: Int) -> Int {
         let sourceLongEdge = max(sourceWidth, sourceHeight)
         guard let drawWidthPx, drawWidthPx > 0, sourceWidth > 0 else {
@@ -1064,7 +1087,12 @@ final class ImageCache: @unchecked Sendable {
             return nil
         }
 
-        let target = decodeLongEdge(drawWidthPx: drawWidthPx, sourceWidth: srcW, sourceHeight: srcH)
+        // Sized against what the decode will PRODUCE, not what the file
+        // stores. See `drawnSize`.
+        let upright = drawnSize(width: srcW, height: srcH,
+                                orientation: props?[kCGImagePropertyOrientation] as? Int ?? 1)
+        let target = decodeLongEdge(drawWidthPx: drawWidthPx,
+                                    sourceWidth: upright.width, sourceHeight: upright.height)
 
         var request = target
         var best: CGImage?
@@ -1081,7 +1109,8 @@ final class ImageCache: @unchecked Sendable {
                 }
                 break
             }
-            let corrected = max(1, Int((Double(request) * Double(target) / Double(got)).rounded(.down)))
+            let ratio: Double = Double(target) / Double(got)
+            let corrected = max(1, Int((Double(request) * ratio).rounded(.down)))
             if corrected == request || attempt == maxDecodeAttempts {
                 jdnLog("image: decoder will not honour \(target)px — asked \(request)px, got"
                        + " \(cg.width)x\(cg.height) after \(attempt) attempt(s); keeping it")
