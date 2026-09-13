@@ -420,6 +420,31 @@ struct ReaderView: View {
                 // declines to run unless asked. Saying "it would not open" and
                 // pointing at macOS would be a lie the reader cannot act on,
                 // and leaving them on an empty pane says nothing at all.
+                // A page that drew a picture and not one word. Every
+                // measured example was a paywall, a bot check, or a page that
+                // writes its text with scripts. The app cannot tell those
+                // apart from here and does not pretend to.
+                if case .nothingToRead = silence {
+                    jdnLog("reader: the live page had nothing to read — saying so")
+                    state = .unavailable(Problem(
+                        headline: "There is nothing to read on this page",
+                        advice: "The page arrived and drew something, but it "
+                              + "carries no text at all. That is usually a "
+                              + "paywall, a check that you are not a robot, or "
+                              + "a page that writes its words with its own "
+                              + "scripts. Which of those it is cannot be told "
+                              + "from here, so rather than guess: your browser "
+                              + "will show you what the site wants to show you."
+                              + (LivePagePolicy.allowsScripts ? "" :
+                                 " If it is the third, the Terminal command "
+                                 + "below lets pages run their scripts here."),
+                        technical: LivePagePolicy.allowsScripts ? item.link.host ?? ""
+                                 : "defaults write cc.jorviksoftware.JorvikDailyNews "
+                                 + "allowScriptsOnLivePage -bool YES",
+                        // The same page, the same setting, the same answer.
+                        canRetry: false))
+                    return
+                }
                 if case .needsScripts = silence {
                     jdnLog("reader: the live page needs its own scripts — explaining the choice")
                     state = .unavailable(Problem(
@@ -932,6 +957,17 @@ struct LiveWebView: NSViewRepresentable {
         /// asked. Telling somebody their article "would not open" and pointing
         /// at macOS would be a lie they cannot act on.
         case needsScripts
+        /// A document arrived, painted a picture or two, and produced no text
+        /// at all.
+        ///
+        /// Its own case because `needsScripts` would be a guess here and
+        /// sometimes a wrong one. Of the ten measured, four were plainly
+        /// script-built pages and two were paywalls, where "it draws itself
+        /// with scripts" is simply untrue. From inside the app the two look
+        /// identical: a document, some painted media, no words. So this says
+        /// what is known and offers the browser, rather than naming a cause it
+        /// cannot see.
+        case nothingToRead
     }
 
     let url: URL
@@ -1298,6 +1334,16 @@ struct LiveWebView: NSViewRepresentable {
             // paints nothing is the pre-existing case below, and is still
             // shown rather than called a failure.
             if !drawn.hasDrawn, !LivePagePolicy.allowsScripts {
+                // Painted something, said nothing: a wall or a script-built
+                // page, and from here they are indistinguishable. Blaming
+                // scripts would be a guess, and wrong for a paywall.
+                if drawn.paintedButWordless {
+                    jdnLog("reader: live page painted \(drawn.media) media element(s) and "
+                           + "not one character of text after \(waited)s (it \(why)) — "
+                           + "saying there is nothing to read rather than showing it")
+                    onBlank(.nothingToRead)
+                    return
+                }
                 jdnLog("reader: live page laid out nothing from \(drawn.markup) chars of "
                        + "markup after \(waited)s (it \(why)) and scripting is off — "
                        + "saying so rather than revealing an empty pane")
@@ -1339,8 +1385,14 @@ struct LiveWebView: NSViewRepresentable {
             /// is the point of keeping it.
             let markup: Int
             static let nothing = Drawn(text: 0, media: 0, markup: 0)
-            /// One picture, or roughly a sentence, laid out.
-            var hasDrawn: Bool { media >= 1 || text >= 80 }
+            /// Roughly a sentence, or a picture with at least some words
+            /// beside it. `LivePagePolicy.countsAsDrawn` carries the measured
+            /// reason the second half is not just `media >= 1`.
+            var hasDrawn: Bool { LivePagePolicy.countsAsDrawn(text: text, media: media) }
+            /// The page painted something and said nothing. A wall, or a page
+            /// that writes its words with scripts — and from here the app
+            /// cannot tell which, so it does not guess.
+            var paintedButWordless: Bool { media >= 1 && text == 0 }
             /// 39 characters is `<html><head></head><body></body></html>`, the
             /// skeleton a web view starts with. Anything more means a document
             /// arrived, whatever the layout probe says about it.

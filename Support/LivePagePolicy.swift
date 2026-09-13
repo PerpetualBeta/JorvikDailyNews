@@ -63,4 +63,32 @@ enum LivePagePolicy {
         guard WebURL.isAllowed(url) else { return false }
         return url.scheme?.lowercased() != "http"
     }
+
+    /// Roughly a sentence. A page carrying less than this and no picture has
+    /// not laid an article out, whatever its markup says.
+    static let readableTextFloor = 80
+
+    /// Whether a live page has actually put something readable on screen.
+    ///
+    /// **Media alone used to be enough, and a page can paint a picture while
+    /// carrying not one word.** Measured across 51 real live-page loads: ten
+    /// produced **zero** characters of text, and the lowest non-zero result
+    /// was **102**. Nothing ever landed between the two. Those ten were a WSJ
+    /// paywall, The Economist, two Reddit threads, thestar.com,
+    /// mastodon.social, caffenol.app, AccuWeather with 67 painted media
+    /// elements, MDPI, and `jeffbaumes.github.io/all-decks/`. Not one was a
+    /// page worth reading, and the reader showed every one of them without
+    /// comment.
+    ///
+    /// `all-decks` is on that list from before the canvas fix and has not
+    /// recurred, so that fix worked. It closed one mechanism; this closes the
+    /// rule behind it. Three of the ten happened after it shipped.
+    ///
+    /// A picture still counts, and that is the point of the second clause: a
+    /// photo essay with a caption draws. What no longer counts is a picture
+    /// with no words beside it at all.
+    static func countsAsDrawn(text: Int, media: Int) -> Bool {
+        if text >= readableTextFloor { return true }
+        return media >= 1 && text > 0
+    }
 }

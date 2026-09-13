@@ -330,6 +330,36 @@ enum QuadraticTests {
             T.expect(card * 2 < full, "a card bitmap is less than half the full-size one")
         }
 
+        T.suite("Live page: a picture with no words is not a drawn page") {
+            func drawn(_ text: Int, _ media: Int) -> Bool {
+                LivePagePolicy.countsAsDrawn(text: text, media: media)
+            }
+            // **Media alone used to be enough.** Measured across 51 real
+            // live-page loads: ten produced zero characters of text and the
+            // lowest non-zero result was 102, with nothing in between. All ten
+            // were paywalls, bot checks or script-built pages — a WSJ
+            // paywall, The Economist, two Reddit threads, mastodon.social,
+            // AccuWeather with 67 painted media elements, MDPI and the rest.
+            T.expect(!drawn(0, 1), "one picture and no words is not drawn")
+            T.expect(!drawn(0, 2), "nor is two — the MDPI case")
+            T.expect(!drawn(0, 67), "nor sixty-seven — the AccuWeather case")
+            T.expect(!drawn(0, 0), "and nothing at all certainly is not")
+
+            // A picture still counts. That is the point of keeping the second
+            // clause rather than demanding the full text floor everywhere: a
+            // photo essay with a caption draws.
+            T.expect(drawn(1, 1), "a picture with even one character is drawn")
+            T.expect(drawn(40, 3), "a captioned picture is drawn")
+
+            // Text alone, at the floor.
+            T.expect(drawn(LivePagePolicy.readableTextFloor, 0),
+                     "the text floor itself counts")
+            T.expect(!drawn(LivePagePolicy.readableTextFloor - 1, 0),
+                     "one short of it, with no picture, does not")
+            // The lowest real non-zero measurement, which must still draw.
+            T.expect(drawn(102, 0), "the smallest real page measured still draws")
+        }
+
         T.suite("Pictures: the GIF and SVG ceilings hold together") {
             T.expect(ImageCache.minimumPixels > 0, "the furniture floor is real")
         }
