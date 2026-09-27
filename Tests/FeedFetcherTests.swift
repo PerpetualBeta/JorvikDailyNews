@@ -37,6 +37,30 @@ enum FeedFetcherTests {
                      "bare href with no rel")
         }
 
+        T.suite("Atom 1.0: a relative link resolves against the feed") {
+            // jekyll-feed writes `<link href="/2026/slug/">`, which RFC 4287
+            // allows. Read as an absolute URL it has no scheme, so every entry
+            // was dropped: pixelambacht.nl gave its title and zero items from a
+            // feed carrying ten, on 2026-09-27.
+            let xml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom"><title>Relative</title>
+            <entry><title>Relative</title><link href="/2026/relative/" rel="alternate"/>
+            <updated>2026-09-25T02:00:00+02:00</updated><id>/2026/relative</id></entry>
+            <entry><title>Absolute</title><link href="https://other.example/abs"/>
+            <updated>2026-09-24T02:00:00+02:00</updated><id>abs</id></entry>
+            <entry><title>Script</title><link href="javascript:alert(1)"/>
+            <updated>2026-09-23T02:00:00+02:00</updated><id>js</id></entry>
+            </feed>
+            """
+            let out = try FeedFetcher.parse(Data(xml.utf8), from: feed("https://example.com/blog/feed.xml"))
+            let links = out.items.map(\.link.absoluteString)
+            T.expect(links.contains("https://example.com/2026/relative/"),
+                     "a relative href resolves against the feed's address (got \(links))")
+            T.expect(links.contains("https://other.example/abs"), "an absolute href is unchanged")
+            T.equal(out.items.count, 2, "a script link is still refused")
+        }
+
         T.suite("RSS 1.0: root is rdf:RDF") {
             // Shipped broken since the app was written. The root is `rdf:RDF`,
             // which matched neither flavour test, so `<link>` was never read

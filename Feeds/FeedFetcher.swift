@@ -844,16 +844,22 @@ final class RSSAtomParser: NSObject, XMLParserDelegate {
         let title = Standfirst.decodeEntities(b.title).trimmed
             .clamped(toUTF16: FeedFetcher.maxStoredTitle)
         guard !title.isEmpty else { return nil }
-        let rawLink = b.link.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let originalLink = URL(string: rawLink),
-              // **`hasPrefix` is not a scheme test.** It admitted `httpx:`,
-              // `http-custom:` and `https.zoommtg:`, all of which parse, and it
-              // carried no private-host half at all — so a feed could persist a
-              // link that Launch Services would later hand to whatever app
-              // claims that scheme. `firstExternalURL`, one function away, has
-              // always used exact equality. This is the same rule the rest of
-              // the app uses, applied where the link first enters the store.
-              WebURL.isAllowed(originalLink) else { return nil }
+        // **Resolved against the feed's own address, because Atom allows a
+        // relative link.** RFC 4287 makes `href` an IRI reference, and Jekyll's
+        // jekyll-feed writes every entry as `<link href="/2026/slug/">`. Read
+        // as an absolute URL that has no scheme and no host, so every item was
+        // dropped: pixelambacht.nl parsed to its title and zero items on
+        // 2026-09-27, from a feed carrying ten. An absolute link resolves to
+        // itself, so nothing that parsed before parses differently now.
+        //
+        // **`hasPrefix` is not a scheme test.** It admitted `httpx:`,
+        // `http-custom:` and `https.zoommtg:`, all of which parse, and it
+        // carried no private-host half at all — so a feed could persist a
+        // link that Launch Services would later hand to whatever app claims
+        // that scheme. `firstExternalURL`, one function away, has always used
+        // exact equality. `WebURL.resolve` applies the same rule the rest of
+        // the app uses, where the link first enters the store.
+        guard let originalLink = WebURL.resolve(b.link, against: feed.url) else { return nil }
 
         let bodyHTML = !b.contentEncoded.isEmpty ? b.contentEncoded : b.description
         // Link aggregators (HN, Reddit, Lobste.rs, etc.) give you the
