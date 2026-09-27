@@ -66,7 +66,8 @@ READER_SOURCES := Reader/ArticleExtractor.swift \
                   Reader/VideoLink.swift
 
 # Subscriptions: fetching, parsing, discovery, classification.
-FEEDS_SOURCES := Feeds/AddFeedSheet.swift \
+FEEDS_SOURCES := Feeds/AddFeedNotice.swift \
+                 Feeds/AddFeedSheet.swift \
                  Feeds/ArticleClassifier.swift \
                  Feeds/Feed.swift \
                  Feeds/FeedDiscovery.swift \

@@ -48,6 +48,19 @@ struct ContentView: View {
         @Bindable var bindable = store
         content
             .background(Color(nsColor: .textBackgroundColor))
+            .overlay(alignment: .bottom) {
+                if let notice = store.addFeedNotice {
+                    AddFeedNoticeView(notice: notice) { store.addFeedNotice = nil }
+                        .padding(.horizontal, Paper.horizontalPadding)
+                        .padding(.bottom, 16)
+                        .transition(.opacity)
+                        .task(id: notice.id) {
+                            try? await Task.sleep(for: AddFeedNoticeView.lifetime(of: notice))
+                            if store.addFeedNotice?.id == notice.id { store.addFeedNotice = nil }
+                        }
+                }
+            }
+            .animation(.easeInOut(duration: 0.25), value: store.addFeedNotice)
             .background {
                 BackspaceKeyMonitor {
                     guard store.selectedArticle != nil else { return false }

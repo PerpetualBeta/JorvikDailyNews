@@ -144,6 +144,21 @@ final class AppStore {
     var isImporting = false
     var lastRefreshError: String?
     var lastImportSummary: String?
+
+    /// What became of the feed just added, said once at the foot of the window.
+    ///
+    /// The Add Feed sheet closes before the new feed is fetched, so without
+    /// this a feed that fails its first fetch fails in silence.
+    struct AddFeedNotice: Identifiable, Equatable {
+        let id = UUID()
+        let text: String
+        let failed: Bool
+    }
+    var addFeedNotice: AddFeedNotice? {
+        didSet {
+            if let addFeedNotice { jdnLog("add feed: notice posted — \(addFeedNotice.text)") }
+        }
+    }
     var pageIndex: Int = 0
     var hideReadItems: Bool = UserDefaults.standard.bool(forKey: "hideReadItems") {
         didSet {
@@ -320,6 +335,16 @@ final class AppStore {
             work.cancel()
             jdnLog("refresh: ABANDONED after \(Int(Self.refreshTimeout))s — it will not publish")
         }
+        let fetchedByRefresh = feedsAwaitingAnnouncement
+        feedsAwaitingAnnouncement.removeAll()
+        for id in fetchedByRefresh { announceFirstFetch(of: id) }
+        let waiting = feedsAwaitingFirstFetch
+        feedsAwaitingFirstFetch.removeAll()
+        for id in waiting {
+            if let feed = feedStore.feeds.first(where: { $0.id == id }) {
+                await fetchNewFeed(feed)
+            }
+        }
     }
 
     /// How long a refresh is given before it is abandoned.
@@ -380,28 +405,12 @@ final class AppStore {
         var errors: [String] = []
 
         for (feed, result) in results {
+            recordFetchResult(feed, result)
             switch result {
             case .success(let outcome):
                 allItems.append(contentsOf: outcome.fetched.items)
-                if outcome.resolvedURL != feed.url {
-                    feedStore.updateURL(feedId: feed.id, url: outcome.resolvedURL)
-                }
-                if !outcome.fetched.title.isEmpty && feed.title != outcome.fetched.title {
-                    feedStore.updateTitle(feedId: feed.id, title: outcome.fetched.title)
-                }
-                // The newest date this feed is currently offering, which is
-                // what dormancy is measured against. `distantPast` is the
-                // fetcher's stand-in for an undated item, so a feed whose
-                // every item is undated records nothing rather than reading
-                // as two thousand years old.
-                let newest = outcome.fetched.items.map(\.publishedAt).max()
-                feedStore.recordFetchSuccess(
-                    feedId: feed.id,
-                    newestItemAt: newest == Date.distantPast ? nil : newest,
-                    siteLink: outcome.fetched.siteLink)
             case .failure(let error):
                 errors.append("\(feed.url.host ?? feed.url.absoluteString): \(error.localizedDescription)")
-                feedStore.recordFetchFailure(feedId: feed.id)
             }
         }
 
@@ -446,13 +455,7 @@ final class AppStore {
         // from today's paper on the next refresh.
         if let existing = editionStore.today,
            Calendar.current.isDate(existing.date, inSameDayAs: Date()) {
-            let activeFeedIds = Set(feedStore.feeds.map { $0.id })
-            var priorItems: [FeedItem] = []
-            if let lead = existing.lead { priorItems.append(lead) }
-            priorItems.append(contentsOf: existing.secondaries)
-            priorItems.append(contentsOf: existing.briefs)
-            priorItems.append(contentsOf: existing.sections.flatMap { $0.items })
-            let carried = priorItems.filter { activeFeedIds.contains($0.feedId) }
+            let carried = carriedItems(from: existing)
             allItems.append(contentsOf: carried)
             jdnLog("refresh: carried over \(carried.count) from the existing edition")
         } else if let existing = editionStore.today,
@@ -596,6 +599,31 @@ final class AppStore {
         }
     }
 
+    /// Write what one fetch learned about its feed back to the store.
+    private func recordFetchResult(_ feed: Feed, _ result: Result<FetchOutcome, Error>) {
+        switch result {
+        case .success(let outcome):
+            if outcome.resolvedURL != feed.url {
+                feedStore.updateURL(feedId: feed.id, url: outcome.resolvedURL)
+            }
+            if !outcome.fetched.title.isEmpty && feed.title != outcome.fetched.title {
+                feedStore.updateTitle(feedId: feed.id, title: outcome.fetched.title)
+            }
+            // The newest date this feed is currently offering, which is
+            // what dormancy is measured against. `distantPast` is the
+            // fetcher's stand-in for an undated item, so a feed whose
+            // every item is undated records nothing rather than reading
+            // as two thousand years old.
+            let newest = outcome.fetched.items.map(\.publishedAt).max()
+            feedStore.recordFetchSuccess(
+                feedId: feed.id,
+                newestItemAt: newest == Date.distantPast ? nil : newest,
+                siteLink: outcome.fetched.siteLink)
+        case .failure:
+            feedStore.recordFetchFailure(feedId: feed.id)
+        }
+    }
+
     /// Ensure the built edition's lead has an image that actually loads within
     /// a reasonable time — warming the cache so it renders instantly. A slow
     /// or dead lead image is marked failed and the edition rebuilt, which
@@ -693,10 +721,155 @@ final class AppStore {
     /// candidate is tried, which is what the eight attempts were always for.
     private nonisolated static let leadCandidateDeadline: TimeInterval = 20
 
-    func addFeed(url: URL, section: String) async {
+    /// Save a new subscription and fetch it on its own, in the background.
+    ///
+    /// **This used to await a full refresh**, so adding one feed waited for
+    /// every subscription. Measured from the log on 2026-09-10 and 11 with 242
+    /// feeds: 46.8 to 70.8 s, against 1.2 s to fetch the new feed itself. The
+    /// Add Feed sheet stayed open for all of it, still saying it was looking
+    /// for a feed.
+    func addFeed(url: URL, section: String) {
         let feed = Feed(url: url, section: section.trimmingCharacters(in: .whitespaces))
         feedStore.add(feed)
-        await refreshAndPublish()
+        Task { await fetchNewFeed(feed) }
+    }
+
+    /// Feeds added while a full refresh was under way. That refresh took its
+    /// list of feeds before they existed, so it will not fetch them.
+    private var feedsAwaitingFirstFetch: [UUID] = []
+
+    /// New feeds whose first fetch was left to a full refresh, to be announced
+    /// once it finishes.
+    private var feedsAwaitingAnnouncement: [UUID] = []
+
+    /// Fetch one newly added feed and fold its items into today's edition.
+    ///
+    /// Only the new feed's items are enriched. The rest of the edition was
+    /// enriched by the refresh that built it, and asking again would cost up
+    /// to `enrichCapPerSection` fetches per section for one new subscription.
+    private func fetchNewFeed(_ feed: Feed) async {
+        let host = feed.url.host ?? feed.url.absoluteString
+        if isRefreshing {
+            feedsAwaitingFirstFetch.append(feed.id)
+            jdnLog("add feed: \(host) waits for the refresh in flight")
+            return
+        }
+        // No edition for today to fold into, so this is a day rollover or a
+        // first launch, and only the full refresh handles those correctly.
+        guard let today = editionStore.today,
+              Calendar.current.isDate(today.date, inSameDayAs: Date()) else {
+            feedsAwaitingAnnouncement.append(feed.id)
+            await refreshAndPublish()
+            return
+        }
+        let started = Date()
+        let (_, result) = await Self.fetchSelfHealing(feed, fetcher: fetcher, discovery: discovery)
+        jdnLog("add feed: \(host) fetch answered in "
+               + String(format: "%.1f", Date().timeIntervalSince(started)) + "s")
+        // Removed again while it was fetching.
+        guard feedStore.feeds.contains(where: { $0.id == feed.id }) else { return }
+        recordFetchResult(feed, result)
+        let outcome: FetchOutcome
+        switch result {
+        case .success(let fetched):
+            outcome = fetched
+        case .failure(let error):
+            jdnLog("add feed: \(host) failed its first fetch — the next refresh will try again")
+            // `localizedDescription` ends in a full stop from Foundation and
+            // without one from this app's own errors.
+            var reason = error.localizedDescription
+            if !reason.hasSuffix(".") { reason += "." }
+            addFeedNotice = AddFeedNotice(
+                text: "Couldn\u{2019}t fetch \(host): \(reason) "
+                    + "It will be tried again at the next refresh.",
+                failed: true)
+            return
+        }
+
+        let sectionByFeed = Dictionary(uniqueKeysWithValues: feedStore.feeds.map { ($0.id, $0.section) })
+        var takenPerSection: [String: Int] = [:]
+        var topSlice: [FeedItem] = []
+        var tail: [FeedItem] = []
+        for item in outcome.fetched.items.sorted(by: { $0.publishedAt > $1.publishedAt }) {
+            let section = resolvedSection(for: item, sectionByFeed: sectionByFeed)
+            let taken = takenPerSection[section, default: 0]
+            if taken < Self.enrichCapPerSection {
+                takenPerSection[section] = taken + 1
+                topSlice.append(item)
+            } else {
+                tail.append(item)
+            }
+        }
+        enrichmentAttempted.formUnion(topSlice.map(\.itemId))
+        let enrichment = await enricher.enrich(topSlice)
+        allowRetry(of: enrichment.retryable)
+
+        // A refresh that began during the awaits above listed its feeds after
+        // this one was added, so it will publish a paper that includes it.
+        // Publishing here as well would race it.
+        guard !isRefreshing else {
+            jdnLog("add feed: \(host) left to the refresh that started meanwhile")
+            feedsAwaitingAnnouncement.append(feed.id)
+            return
+        }
+        // Read again: the edition may have been rebuilt during the awaits.
+        guard let base = editionStore.today,
+              Calendar.current.isDate(base.date, inSameDayAs: Date()) else {
+            feedsAwaitingAnnouncement.append(feed.id)
+            await refreshAndPublish()
+            return
+        }
+        let merged = enrichment.items + tail + carriedItems(from: base)
+        var edition = builder.build(from: merged, date: Date())
+        edition = await validatedLeadEdition(edition, from: merged)
+        guard !isRefreshing else {
+            feedsAwaitingAnnouncement.append(feed.id)
+            return
+        }
+
+        if !edition.isEmpty {
+            PictureSignatureStore.shared.flush()
+            editionStore.save(edition)
+            recomputeVisibleEdition()
+            if pageIndex >= totalPages { pageIndex = 0 }
+        }
+        let elapsed = String(format: "%.1f", Date().timeIntervalSince(started))
+        jdnLog("add feed: \(host) published with \(outcome.fetched.items.count) items "
+               + "in \(elapsed)s — \(edition.itemCount) items in the edition")
+        announceFirstFetch(of: feed.id)
+    }
+
+    /// Say what the new feed's first fetch did, from what the store now
+    /// records rather than from any one code path, so a feed whose fetch fell
+    /// to a full refresh is reported the same way as one fetched on its own.
+    private func announceFirstFetch(of feedId: UUID) {
+        guard let feed = feedStore.feeds.first(where: { $0.id == feedId }) else { return }
+        let name = feed.title ?? feed.url.host ?? feed.url.absoluteString
+        guard feed.lastSuccessfulFetchAt != nil, feed.lastFailedFetchAt == nil else {
+            addFeedNotice = AddFeedNotice(
+                text: "Couldn\u{2019}t fetch \(name). It will be tried again at the next refresh.",
+                failed: true)
+            return
+        }
+        // Today's items only, because that is all an edition holds.
+        let today = editionStore.today.map {
+            carriedItems(from: $0).filter { $0.feedId == feedId }.count
+        } ?? 0
+        let text = today == 0
+            ? "Added \(name) to \(feed.section). Nothing from it today yet."
+            : "Added \(name) to \(feed.section): \(today) article\(today == 1 ? "" : "s") today."
+        addFeedNotice = AddFeedNotice(text: text, failed: false)
+    }
+
+    /// Every item `edition` holds from a feed that is still subscribed.
+    private func carriedItems(from edition: Edition) -> [FeedItem] {
+        let activeFeedIds = Set(feedStore.feeds.map { $0.id })
+        var items: [FeedItem] = []
+        if let lead = edition.lead { items.append(lead) }
+        items.append(contentsOf: edition.secondaries)
+        items.append(contentsOf: edition.briefs)
+        items.append(contentsOf: edition.sections.flatMap { $0.items })
+        return items.filter { activeFeedIds.contains($0.feedId) }
     }
 
     /// Discover a feed from an arbitrary URL (feed URL or page URL), then add it.
@@ -718,7 +891,7 @@ final class AppStore {
             throw FeedDiscoveryError.alreadyAdded(existingTitle: label)
         }
 
-        await addFeed(url: first.url, section: section)
+        addFeed(url: first.url, section: section)
         return first
     }
 
