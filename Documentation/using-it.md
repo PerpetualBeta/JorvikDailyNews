@@ -16,6 +16,8 @@
 | Scroll by viewport | `PgUp` / `PgDn` |
 | Back to paper (from reader) | `esc` |
 
+A Back or Forward swipe does the same as `command` `left` and `command` `right` on the paper, and Back returns to the paper from the reader. That includes a three-finger swipe on the trackpad, and a mouse's side buttons when a tool such as [MacSideButtons](https://github.com/edwinlai/MacSideButtons) turns them into swipes.
+
 ## Adding feeds
 
 `command` `N` → paste a feed URL *or a site's home page* → optionally tag with a section → Add. The app auto-discovers feeds: paste `https://arstechnica.com` and it finds the feed via `<link rel="alternate">` in the page head. If the page declares no feed, common paths (`/feed`, `/rss`, `/atom.xml`, `/feed.xml`, …) are probed as a fallback. Duplicates are rejected after resolution — you can't accidentally add the same subscription twice.

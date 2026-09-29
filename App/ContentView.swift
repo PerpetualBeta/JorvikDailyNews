@@ -68,6 +68,27 @@ struct ContentView: View {
                     return true
                 }
             }
+            .background {
+                // Back and Forward as a swipe event, which is how a remapper
+                // such as MacSideButtons sends a mouse's side buttons. They do
+                // what the keys already do.
+                SwipeMonitor { direction in
+                    if store.selectedArticle != nil {
+                        guard direction == .back else { return false }
+                        store.selectedArticle = nil
+                        return true
+                    }
+                    switch direction {
+                    case .back:
+                        guard store.pageIndex > 0 else { return false }
+                        store.previousPage()
+                    case .forward:
+                        guard store.pageIndex < store.totalPages - 1 else { return false }
+                        store.nextPage()
+                    }
+                    return true
+                }
+            }
             .task { await store.onLaunch() }
             .sheet(isPresented: $bindable.showAddFeedSheet) {
                 AddFeedSheet()
@@ -319,6 +340,73 @@ private struct BackspaceKeyMonitor: NSViewRepresentable {
                     return event
                 }
                 return nil
+            }
+        }
+
+        func stop() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+    }
+}
+
+/// Hands a horizontal swipe to `action` as Back or Forward. Only swipes over
+/// this view's own window count, and not while a sheet covers it, so a swipe
+/// over Settings or Add Feed never turns a page behind it.
+private struct SwipeMonitor: NSViewRepresentable {
+    enum Direction { case back, forward }
+
+    let action: (Direction) -> Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.view = view
+        context.coordinator.start()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.action = action
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    final class Coordinator {
+        var action: (Direction) -> Bool
+        weak var view: NSView?
+        private var monitor: Any?
+
+        init(action: @escaping (Direction) -> Bool) {
+            self.action = action
+        }
+
+        func start() {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .swipe) { [weak self] event in
+                guard let self,
+                      let window = self.view?.window,
+                      event.window === window,
+                      window.attachedSheet == nil else {
+                    return event
+                }
+                // A swipe arrives as a pair. The first carries no direction,
+                // and acting on it as well would turn two pages.
+                let direction: Direction
+                if event.deltaX > 0 {
+                    direction = .back
+                } else if event.deltaX < 0 {
+                    direction = .forward
+                } else {
+                    return event
+                }
+                return self.action(direction) ? nil : event
             }
         }
 
