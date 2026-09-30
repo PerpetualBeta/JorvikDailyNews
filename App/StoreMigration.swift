@@ -20,8 +20,12 @@ import Foundation
 /// user, with no way back.
 ///
 /// So the entitlements carry a read-only exception for the old path and this
-/// copies across it. The exception should be deleted a release after everyone
-/// has upgraded; nothing else in the app reads outside the container.
+/// copies across it. The exception is kept permanently, on purpose. Nothing
+/// can say when the last pre-sandbox installation has upgraded, since the app
+/// has no telemetry, and Sparkle offers a straggler the newest version
+/// directly, so removing it would one day hand someone an empty paper with no
+/// way back. It costs read access to one folder, used once. Decided 2026-09-30.
+/// Nothing else in the app reads outside the container.
 enum StoreMigration {
 
     /// Files worth carrying. Named rather than copied wholesale so a stray

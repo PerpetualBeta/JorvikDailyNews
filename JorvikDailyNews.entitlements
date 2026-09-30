@@ -64,9 +64,14 @@
        ~/Library/Application Support/JorvikDailyNews and all unreadable from
        inside a container without this.
 
-       READ-ONLY, and temporary in the real sense: it exists to move data in
-       one direction and should be deleted a release after everybody has
-       upgraded. StoreMigration writes a marker so the copy happens once. -->
+       READ-ONLY, one folder, and KEPT DELIBERATELY despite the name. Apple
+       calls every exception "temporary"; this one stays. There is no way to
+       know when the last 1.4.x installation has upgraded (the app has no
+       telemetry, by design), Sparkle offers a straggler the newest version
+       directly, and without this that user opens the app to an empty paper
+       with their data unreachable. Keeping it costs read access to this one
+       folder, used once: StoreMigration writes a marker and never reads here
+       again. Decided 2026-09-30. -->
   <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
   <array>
     <string>/Library/Application Support/JorvikDailyNews/</string>
