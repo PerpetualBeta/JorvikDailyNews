@@ -284,8 +284,13 @@ struct ContentView: View {
                         .environment(store)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if store.totalPages > 1 {
+                        // Its natural width, always. Without this the row
+                        // squeezes the pill to make room for a long address,
+                        // and at the minimum window width the longest page
+                        // title is cut off. The address is what gives way.
                         PageIndicator()
                             .environment(store)
+                            .fixedSize()
                     }
                     Color.clear
                         .frame(maxWidth: .infinity, maxHeight: 0)
@@ -496,12 +501,21 @@ private struct PageIndicator: View {
             .disabled(store.pageIndex == 0)
             .help("Previous page (\u{2318}\u{2190})")
 
-            Text(label)
-                .font(.custom("Charter", size: 11))
-                .kerning(1.5)
-                .foregroundStyle(.primary)
-                .monospacedDigit()
-                .padding(.horizontal, 8)
+            // Every page's label stacked in one place, all but the current one
+            // hidden. A ZStack is as wide as its widest member, so the pill is
+            // sized for the longest label in the paper and the buttons either
+            // side stay put from page to page instead of following the title.
+            // Built from the real page titles, so adding or renaming a section
+            // re-sizes it with no width to tune. It also absorbs the page number
+            // gaining a digit, which fixed-width figures alone do not.
+            ZStack {
+                ForEach(Array(store.allPageTitles.enumerated()), id: \.offset) { index, _ in
+                    labelText(for: index)
+                        .opacity(index == store.pageIndex ? 1 : 0)
+                        .accessibilityHidden(index != store.pageIndex)
+                }
+            }
+            .padding(.horizontal, 8)
 
             Button {
                 store.nextPage()
@@ -524,8 +538,13 @@ private struct PageIndicator: View {
         )
     }
 
-    private var label: String {
-        "PAGE \(store.pageIndex + 1) OF \(store.totalPages) \u{00B7} \(store.currentPageTitle.uppercased())"
+    private func labelText(for index: Int) -> some View {
+        Text("PAGE \(index + 1) OF \(store.totalPages) \u{00B7} \(store.pageTitle(at: index).uppercased())")
+            .font(.custom("Charter", size: 11))
+            .kerning(1.5)
+            .foregroundStyle(.primary)
+            .monospacedDigit()
+            .lineLimit(1)
     }
 }
 

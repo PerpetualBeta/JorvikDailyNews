@@ -188,7 +188,13 @@ final class AppStore {
         return max(1, 1 + edition.sections.count)
     }
 
-    var currentPageTitle: String {
+    var currentPageTitle: String { pageTitle(at: pageIndex) }
+
+    /// The title of every page in the paper, in order. The page pill sizes
+    /// itself to the widest of these so its buttons do not move between pages.
+    var allPageTitles: [String] { (0..<totalPages).map(pageTitle(at:)) }
+
+    func pageTitle(at pageIndex: Int) -> String {
         guard let edition = visibleEdition ?? editionStore.today else { return "Front Page" }
         if pageIndex == 0 { return "Front Page" }
         let idx = pageIndex - 1
