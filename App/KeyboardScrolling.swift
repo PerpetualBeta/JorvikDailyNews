@@ -142,6 +142,41 @@ final class KeyboardScroller {
         // file; `scroll(to:)` lands exactly.
         clip.scroll(to: origin)
         scrollView.reflectScrolledClipView(clip)
+
+        if clamped == maxOffset {
+            followTheEnd(of: scrollView, lastMax: maxOffset, rounds: 0)
+        }
+    }
+}
+
+extension KeyboardScroller {
+    /// Keep going until the bottom really is the bottom.
+    ///
+    /// The reader's content is a `LazyVStack`: SwiftUI lays out only what is
+    /// near the screen and estimates the height of the rest. Scrolling to the
+    /// end of that estimate makes SwiftUI lay out the real last paragraphs,
+    /// they are usually taller than estimated, and the document grows under
+    /// you. Measured on an article-shaped harness: End landed at 26,868 of what
+    /// had become 27,064, so 196 points short, which is what End looked like in
+    /// the reader. The paper is not lazy and never showed it.
+    ///
+    /// So after landing on the bottom, lay the document out again and, if it
+    /// grew, follow it down, until its height stops changing. That happens as
+    /// soon as the last paragraphs are real, a round or two in practice. The
+    /// round limit is only a guard against content that never settles.
+    fileprivate func followTheEnd(of scrollView: NSScrollView, lastMax: CGFloat, rounds: Int) {
+        guard rounds < 20 else { return }
+        DispatchQueue.main.async {
+            guard let document = scrollView.documentView else { return }
+            document.layoutSubtreeIfNeeded()
+            let clip = scrollView.contentView
+            let newMax = max(0, document.frame.height - clip.bounds.height)
+            guard abs(newMax - lastMax) > 0.5 else { return }
+            let y = document.isFlipped ? newMax : 0
+            clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+            scrollView.reflectScrolledClipView(clip)
+            self.followTheEnd(of: scrollView, lastMax: newMax, rounds: rounds + 1)
+        }
     }
 }
 
