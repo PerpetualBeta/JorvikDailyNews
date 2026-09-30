@@ -214,6 +214,9 @@ struct ContentView: View {
     /// window shows more of a photograph instead of letterboxing it.
     @State private var pageHeight: CGFloat = 0
 
+    /// Keyboard navigation through the stories. See `KeyNavController`.
+    @State private var keyNav = KeyNavController()
+
     @ViewBuilder
     private func paper(for edition: Edition) -> some View {
         ScrollViewReader { proxy in
@@ -236,6 +239,12 @@ struct ContentView: View {
                 // End, Page Up, Page Down, space and the arrows for the paper
                 // and the reader alike.
                 .background(ScrollViewAnchor(role: .paper))
+                // Every story reports its frame against this, for KeyNav. The
+                // content's own space, so the frames do not change on scroll.
+                .coordinateSpace(name: KeyNav.space)
+                .onPreferenceChange(KeyNavFramesKey.self) { frames in
+                    keyNav.frames = frames
+                }
             }
             // A background never affects layout, so this reads the viewport
             // without being able to feed back into it.
@@ -264,6 +273,21 @@ struct ContentView: View {
             .animation(.easeInOut(duration: 0.18), value: store.pageIndex)
             .onChange(of: store.pageIndex) { _, _ in
                 proxy.scrollTo("top", anchor: .top)
+                keyNav.pageTurned()
+            }
+            // Return and a click both open a story; either way it is the one to
+            // come back to.
+            .onChange(of: store.selectedArticle?.itemId) { _, opened in
+                if let opened { keyNav.articleOpened(opened) }
+            }
+            .onChange(of: store.totalPages, initial: true) { _, pages in
+                // The paper's own bottom margin: room for the page pill, or
+                // the plain margin when there is only one page.
+                keyNav.bottomMargin = pages > 1 ? 72 : 32
+            }
+            .onAppear {
+                keyNav.store = store
+                KeyboardScroller.shared.paperKeyHandler = { [keyNav] event in keyNav.handle(event) }
             }
             // Floating page-indicator as an overlay on the ScrollView's
             // frame. Overlay alignment is relative to the viewport, so

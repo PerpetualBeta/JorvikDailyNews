@@ -33,6 +33,7 @@ APP_SOURCES := App/AppStore.swift \
 
 # The newspaper itself: masthead, front page, section pages, cards.
 PAPER_SOURCES := Paper/Edition.swift \
+                 Paper/KeyNav.swift \
                  Paper/EditionBuilder.swift \
                  Paper/FrontPage.swift \
                  Paper/MasonryColumns.swift \

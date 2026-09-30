@@ -71,6 +71,7 @@ struct StoryCard: View {
         .opacity(isRead ? 0.55 : 1.0)
         .storySectionContextMenu(for: item)
         .storyLinkHover(for: item)
+        .keyNavTarget(for: item)
     }
 
     /// Height estimate used by the masonry distributor to choose which column

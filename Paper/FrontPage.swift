@@ -172,6 +172,7 @@ private struct LeadStoryView: View {
         .opacity(isRead ? 0.55 : 1.0)
         .storySectionContextMenu(for: item)
         .storyLinkHover(for: item)
+        .keyNavTarget(for: item)
     }
 
     @ViewBuilder

@@ -46,6 +46,41 @@ final class KeyboardScroller {
         return stored > 0 ? stored : 40
     }
 
+    /// KeyNav's key handler. Consulted before scrolling, only while the paper
+    /// is in front. Returns true for a key it used.
+    var paperKeyHandler: ((NSEvent) -> Bool)?
+
+    /// The part of the paper's content currently on screen, in the paper's
+    /// content coordinates (top-left origin).
+    func paperVisibleRect() -> CGRect? {
+        guard let paper, let document = paper.documentView else { return nil }
+        let clip = paper.contentView.bounds
+        let maxOffset = max(0, document.frame.height - clip.height)
+        let top = document.isFlipped ? clip.origin.y : maxOffset - clip.origin.y
+        return CGRect(x: clip.origin.x, y: top, width: clip.width, height: clip.height)
+    }
+
+    /// Scroll the paper by the least amount that shows `rect` whole, with `top`
+    /// and `bottom` points clear around it. Nothing moves if it already is. A
+    /// story taller than the space available is shown from its top.
+    func revealInPaper(_ rect: CGRect, top: CGFloat, bottom: CGFloat) {
+        guard let paper, let document = paper.documentView,
+              let visible = paperVisibleRect() else { return }
+        let clip = paper.contentView
+        let maxOffset = max(0, document.frame.height - visible.height)
+        var wanted = visible.minY
+        if rect.height + top + bottom > visible.height || rect.minY - top < visible.minY {
+            wanted = rect.minY - top
+        } else if rect.maxY + bottom > visible.maxY {
+            wanted = rect.maxY + bottom - visible.height
+        }
+        let clamped = min(max(wanted, 0), maxOffset)
+        guard abs(clamped - visible.minY) > 0.5 else { return }
+        let y = document.isFlipped ? clamped : maxOffset - clamped
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+        paper.reflectScrolledClipView(clip)
+    }
+
     func register(_ scrollView: NSScrollView, as role: Role) {
         switch role {
         case .paper: paper = scrollView
@@ -68,8 +103,15 @@ final class KeyboardScroller {
     private func installMonitorIfNeeded() {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let move = self.move(for: event),
-                  let target = self.target(for: event) else { return event }
+            guard let self, let target = self.target(for: event) else { return event }
+            // KeyNav goes first while the paper is in front, so that in KeyNav
+            // mode the arrows move the highlight instead of scrolling. It never
+            // sees keys while an article is open: there the reader's own keys,
+            // Esc for Back to Paper among them, are left alone.
+            if target === self.paper, let keyNav = self.paperKeyHandler, keyNav(event) {
+                return nil
+            }
+            guard let move = self.move(for: event) else { return event }
             self.perform(move, on: target)
             return nil
         }

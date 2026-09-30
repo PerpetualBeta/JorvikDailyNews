@@ -144,6 +144,10 @@ final class AppStore {
     /// The article under the pointer, if any, so the window can show where it
     /// comes from. See `LinkStatusStrip`.
     var hoveredLink: URL?
+
+    /// KeyNav mode, and the story it has highlighted. See `KeyNavController`.
+    var keyNavActive = false
+    var keyNavItemId: String?
     var isRefreshing = false
     var isImporting = false
     var lastRefreshError: String?
