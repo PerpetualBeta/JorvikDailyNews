@@ -13,8 +13,11 @@
 | Previous Page | `command` `left` |
 | Next Page | `command` `right` |
 | Scroll to top / bottom | `Home` / `End` |
-| Scroll by viewport | `PgUp` / `PgDn` |
+| Scroll down / up a screen | `PgDn` / `PgUp`, or `space` / `shift` `space` |
+| Scroll down / up a little | `down` / `up` |
 | Back to paper (from reader) | `esc` |
+
+The scrolling keys work the same on the paper and in an article. A screen keeps a sliver of the previous one in view, as a Mac document does, and they leave text fields alone, so typing a space in a search or Add Feed field types a space.
 
 A Back or Forward swipe does the same as `command` `left` and `command` `right` on the paper, and Back returns to the paper from the reader. That includes a three-finger swipe on the trackpad, and a mouse's side buttons when a tool such as [MacSideButtons](https://github.com/edwinlai/MacSideButtons) turns them into swipes.
 
