@@ -239,12 +239,6 @@ struct ContentView: View {
                 // End, Page Up, Page Down, space and the arrows for the paper
                 // and the reader alike.
                 .background(ScrollViewAnchor(role: .paper))
-                // Every story reports its frame against this, for KeyNav. The
-                // content's own space, so the frames do not change on scroll.
-                .coordinateSpace(name: KeyNav.space)
-                .onPreferenceChange(KeyNavFramesKey.self) { frames in
-                    keyNav.frames = frames
-                }
             }
             // A background never affects layout, so this reads the viewport
             // without being able to feed back into it.
@@ -287,6 +281,7 @@ struct ContentView: View {
             }
             .onAppear {
                 keyNav.store = store
+                KeyNavAnchors.shared.changed = { [keyNav] in keyNav.storiesChanged() }
                 KeyboardScroller.shared.paperKeyHandler = { [keyNav] event in keyNav.handle(event) }
             }
             // Floating page-indicator as an overlay on the ScrollView's

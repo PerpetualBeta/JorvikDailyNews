@@ -8,11 +8,65 @@ import SwiftUI
 // exactly as a click would, and Esc turns it off. See `KeyNavController` for
 // how it fits around the reader and the other keys.
 
-/// Where every story on the current page sits, in the paper's scroll content.
-struct KeyNavFramesKey: PreferenceKey {
-    static let defaultValue: [String: CGRect] = [:]
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+/// Where every story on the current page sits, read from the stories
+/// themselves at the moment it is needed.
+///
+/// Each story carries an invisible AppKit view, and its frame in the paper's
+/// scroll content is where the story is on screen. A SwiftUI preference was
+/// used first and went stale: when the masonry reshuffled its columns twice in
+/// one update, 16 ms apart, the second set of frames was never delivered, and
+/// every arrow after it steered by the first, into the wrong column.
+@MainActor
+final class KeyNavAnchors {
+    static let shared = KeyNavAnchors()
+
+    /// Called once the set of stories has changed, after the change settles.
+    var changed: (() -> Void)?
+
+    private final class Weak { weak var view: NSView?; init(_ view: NSView) { self.view = view } }
+    /// Every view a story has, newest last. A story reshuffled into another
+    /// column gets a new view, and for a moment it can have both: they join
+    /// and leave in no fixed order, so each view is removed only by its own
+    /// leaving, and the story is gone only when all of its views are.
+    private var views: [String: [Weak]] = [:]
+    private var notifyPending = false
+
+    func register(_ id: String, _ view: NSView) {
+        var list = (views[id] ?? []).filter { $0.view != nil && $0.view !== view }
+        list.append(Weak(view))
+        views[id] = list
+        notify()
+    }
+
+    func unregister(_ id: String, _ view: NSView) {
+        guard let list = views[id], list.contains(where: { $0.view === view }) else { return }
+        let rest = list.filter { $0.view != nil && $0.view !== view }
+        views[id] = rest.isEmpty ? nil : rest
+        notify()
+    }
+
+    /// Every story's frame, in the paper's content: top-down, as the scroll
+    /// offset is measured.
+    func frames() -> [String: CGRect] {
+        guard let document = KeyboardScroller.shared.paperDocument else { return [:] }
+        var result: [String: CGRect] = [:]
+        for (id, list) in views {
+            guard let view = list.last(where: { $0.view?.window === document.window })?.view else { continue }
+            var rect = view.convert(view.bounds, to: document)
+            if !document.isFlipped { rect.origin.y = document.bounds.height - rect.maxY }
+            result[id] = rect
+        }
+        return result
+    }
+
+    /// One call per run of changes, not one per story.
+    private func notify() {
+        guard !notifyPending else { return }
+        notifyPending = true
+        DispatchQueue.main.async { [weak self] in
+            self?.notifyPending = false
+            self?.changed?()
+        }
     }
 }
 
@@ -28,8 +82,6 @@ enum KeyNavDirection { case up, down, left, right }
 /// the same column and step between the lead and the grid; left and right move
 /// to the neighbouring column at about the same height.
 enum KeyNav {
-    static let space = "keyNavPaper"
-
     /// The first story in reading order: topmost, then leftmost.
     static func first(in frames: [String: CGRect]) -> String? {
         frames.min { readingOrder($0.value, $1.value) }?.key
@@ -122,7 +174,7 @@ enum KeyNav {
     }
 }
 
-/// Reports a story's frame to KeyNav and draws the highlight when it is the
+/// Registers a story with KeyNav and draws the highlight when it is the
 /// highlighted one.
 ///
 /// The highlight is an outline drawn outside the card with clearance, and
@@ -145,12 +197,7 @@ private struct KeyNavTarget: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(key: KeyNavFramesKey.self,
-                                           value: [item.itemId: geo.frame(in: .named(KeyNav.space))])
-                }
-            )
+            .background(KeyNavAnchor(id: item.itemId))
             .overlay {
                 if highlighted {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -162,12 +209,60 @@ private struct KeyNavTarget: ViewModifier {
     }
 }
 
+/// The invisible view that stands for one story in `KeyNavAnchors`. It takes
+/// the story's size and position and nothing else: it draws nothing and lets
+/// every click and hover through to the story.
+private struct KeyNavAnchor: NSViewRepresentable {
+    let id: String
+
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.id = id
+        return view
+    }
+
+    func updateNSView(_ nsView: AnchorView, context: Context) {
+        nsView.id = id
+    }
+
+    static func dismantleNSView(_ nsView: AnchorView, coordinator: ()) {
+        nsView.id = nil
+    }
+
+    final class AnchorView: NSView {
+        var id: String? {
+            didSet {
+                guard id != oldValue else { return }
+                if let oldValue { KeyNavAnchors.shared.unregister(oldValue, self) }
+                attach()
+            }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            attach()
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        private func attach() {
+            guard let id else { return }
+            if window == nil {
+                KeyNavAnchors.shared.unregister(id, self)
+            } else {
+                KeyNavAnchors.shared.register(id, self)
+            }
+        }
+    }
+}
+
 /// Drives KeyNav from the keyboard. One per paper; hands its key handler to
 /// `KeyboardScroller`, which only consults it while the paper is in front.
 @MainActor
 final class KeyNavController {
     weak var store: AppStore?
-    var frames: [String: CGRect] = [:] { didSet { framesChanged() } }
+    /// Read afresh every time, never kept: see `KeyNavAnchors`.
+    private var frames: [String: CGRect] { KeyNavAnchors.shared.frames() }
     /// Where the highlighted story was when it was last seen, so that if it
     /// disappears (read, with hide-read on) the one filling its slot takes over.
     private var lastRect: CGRect?
@@ -229,6 +324,7 @@ final class KeyNavController {
 
     private func move(_ direction: KeyNavDirection) {
         guard let store else { return }
+        let frames = frames
         // If scrolling with space or Page Down has taken the highlight off the
         // screen, carry on from the first story in view rather than jumping back.
         if let id = store.keyNavItemId, let rect = frames[id],
@@ -257,7 +353,8 @@ final class KeyNavController {
     }
 
     /// Keeps the highlight on a real story as the page changes under it.
-    private func framesChanged() {
+    func storiesChanged() {
+        let frames = frames
         guard let store, store.keyNavActive, !frames.isEmpty else { return }
         if let id = store.keyNavItemId, let rect = frames[id] {
             lastRect = rect

@@ -50,14 +50,26 @@ final class KeyboardScroller {
     /// is in front. Returns true for a key it used.
     var paperKeyHandler: ((NSEvent) -> Bool)?
 
-    /// The part of the paper's content currently on screen, in the paper's
-    /// content coordinates (top-left origin).
+    /// The paper's scroll content, which KeyNav measures its stories against.
+    var paperDocument: NSView? { paper?.documentView }
+
+    /// The part of the paper that can be seen, top-down in its content. The
+    /// content runs on under the translucent title bar, 52 points of it, and
+    /// the scroll view's insets say how much is covered: that part is not
+    /// visible, and a story revealed into it was being left under the bar.
     func paperVisibleRect() -> CGRect? {
         guard let paper, let document = paper.documentView else { return nil }
         let clip = paper.contentView.bounds
-        let maxOffset = max(0, document.frame.height - clip.height)
-        let top = document.isFlipped ? clip.origin.y : maxOffset - clip.origin.y
-        return CGRect(x: clip.origin.x, y: top, width: clip.width, height: clip.height)
+        let insets = paper.contentInsets
+        return CGRect(x: clip.origin.x, y: topDownOffset(paper, document) + insets.top,
+                      width: clip.width, height: clip.height - insets.top - insets.bottom)
+    }
+
+    /// The clip view's offset measured from the top of the content, whichever
+    /// way up the content is.
+    private func topDownOffset(_ paper: NSScrollView, _ document: NSView) -> CGFloat {
+        let clip = paper.contentView.bounds
+        return document.isFlipped ? clip.origin.y : document.frame.height - clip.height - clip.origin.y
     }
 
     /// Scroll the paper by the least amount that shows `rect` whole, with `top`
@@ -67,16 +79,20 @@ final class KeyboardScroller {
         guard let paper, let document = paper.documentView,
               let visible = paperVisibleRect() else { return }
         let clip = paper.contentView
-        let maxOffset = max(0, document.frame.height - visible.height)
+        let insets = paper.contentInsets
         var wanted = visible.minY
         if rect.height + top + bottom > visible.height || rect.minY - top < visible.minY {
             wanted = rect.minY - top
         } else if rect.maxY + bottom > visible.maxY {
             wanted = rect.maxY + bottom - visible.height
         }
-        let clamped = min(max(wanted, 0), maxOffset)
-        guard abs(clamped - visible.minY) > 0.5 else { return }
-        let y = document.isFlipped ? clamped : maxOffset - clamped
+        // From the visible top to the clip's own offset, then kept within the
+        // range the scroll view allows, which reaches into the insets.
+        let lowest = -insets.top
+        let highest = max(lowest, document.frame.height - clip.bounds.height + insets.bottom)
+        let offset = min(max(wanted - insets.top, lowest), highest)
+        guard abs(offset - topDownOffset(paper, document)) > 0.5 else { return }
+        let y = document.isFlipped ? offset : document.frame.height - clip.bounds.height - offset
         clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
         paper.reflectScrolledClipView(clip)
     }
