@@ -484,7 +484,7 @@ private struct LinkStatusStrip: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        if let link = store.hoveredLink, store.addFeedNotice == nil {
+        if let link = shownLink, store.addFeedNotice == nil {
             Text(Self.display(link))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -501,6 +501,16 @@ private struct LinkStatusStrip: View {
                 .allowsHitTesting(false)
                 .help(link.absoluteString)
         }
+    }
+
+    /// The pointer's story or KeyNav's highlighted one, whichever moved last.
+    /// Pressing an arrow shows the highlight; moving onto a card shows that
+    /// card; leaving the card falls back to the highlight rather than going
+    /// blank. With KeyNav off, only the pointer counts.
+    private var shownLink: URL? {
+        guard store.keyNavActive, let keyNav = store.keyNavLink else { return store.hoveredLink }
+        if store.linkFromKeyboard { return keyNav }
+        return store.hoveredLink ?? keyNav
     }
 
     static func display(_ url: URL) -> String {

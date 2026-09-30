@@ -144,6 +144,7 @@ private struct StoryLinkHover: ViewModifier {
         content.onHover { inside in
             if inside {
                 store.hoveredLink = item.link
+                store.linkFromKeyboard = false
             } else if store.hoveredLink == item.link {
                 store.hoveredLink = nil
             }

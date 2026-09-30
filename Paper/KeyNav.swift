@@ -247,6 +247,10 @@ final class KeyNavController {
 
     private func highlight(_ id: String) {
         store?.keyNavItemId = id
+        // The address strip follows the highlight, the way it follows the
+        // pointer: in KeyNav the highlight is where you are pointing.
+        store?.keyNavLink = item(id)?.link
+        store?.linkFromKeyboard = true
         guard let rect = frames[id] else { return }
         lastRect = rect
         KeyboardScroller.shared.revealInPaper(rect, top: topMargin, bottom: bottomMargin)

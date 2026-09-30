@@ -148,6 +148,11 @@ final class AppStore {
     /// KeyNav mode, and the story it has highlighted. See `KeyNavController`.
     var keyNavActive = false
     var keyNavItemId: String?
+    /// The highlighted story's address, for the address strip, and whether the
+    /// keyboard moved more recently than the pointer. The strip shows whichever
+    /// of the two moved last. See `LinkStatusStrip`.
+    var keyNavLink: URL?
+    var linkFromKeyboard = false
     var isRefreshing = false
     var isImporting = false
     var lastRefreshError: String?
