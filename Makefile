@@ -25,6 +25,7 @@ SWIFT_FRAMEWORKS := Cocoa SwiftUI WebKit JavaScriptCore AVKit AVFoundation Visio
 
 # The entry point, the shell, and the store everything hangs off.
 APP_SOURCES := App/AppStore.swift \
+               App/KeyboardScrolling.swift \
                App/ContentView.swift \
                App/DayRollover.swift \
                App/JorvikDailyNewsApp.swift \

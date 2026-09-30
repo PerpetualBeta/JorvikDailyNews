@@ -232,6 +232,10 @@ struct ContentView: View {
                         .transition(.opacity)
                     Color.clear.frame(height: 0.1).id("bottom")
                 }
+                // Hands this scroll view to KeyboardScroller, which does Home,
+                // End, Page Up, Page Down, space and the arrows for the paper
+                // and the reader alike.
+                .background(ScrollViewAnchor(role: .paper))
             }
             // A background never affects layout, so this reads the viewport
             // without being able to feed back into it.
@@ -242,9 +246,11 @@ struct ContentView: View {
                     }
                 }
             )
-            // Let the scroll view accept key presses. Home/End scroll to
-            // anchors; PgUp/PgDn/space fall through to the underlying
-            // NSScrollView which handles them natively once focused.
+            // Focus is kept for its effect on the paper as front-most view.
+            // Keyboard scrolling does NOT come from it: the belief that Page Up,
+            // Page Down and space would fall through to the NSScrollView once
+            // this was focused was wrong, and they reached nothing. See
+            // KeyboardScroller.
             .focusable()
             .focusEffectDisabled()
             .focused($scrollFocused)
@@ -254,16 +260,6 @@ struct ContentView: View {
             .onAppear { scrollFocused = store.selectedArticle == nil }
             .onChange(of: store.selectedArticle == nil) { _, paperIsFront in
                 scrollFocused = paperIsFront
-            }
-            .onKeyPress(.home) {
-                guard store.selectedArticle == nil else { return .ignored }
-                proxy.scrollTo("top", anchor: .top)
-                return .handled
-            }
-            .onKeyPress(.end) {
-                guard store.selectedArticle == nil else { return .ignored }
-                proxy.scrollTo("bottom", anchor: .bottom)
-                return .handled
             }
             .animation(.easeInOut(duration: 0.18), value: store.pageIndex)
             .onChange(of: store.pageIndex) { _, _ in

@@ -146,6 +146,9 @@ struct NativeReaderView: View {
                     view(for: block)
                 }
             }
+            // Hands this scroll view to KeyboardScroller for Home, End, Page
+            // Up, Page Down, space and the arrows.
+            .background(ScrollViewAnchor(role: .reader))
             .frame(maxWidth: Style.column, alignment: .leading)
             .padding(.horizontal, Style.sidePadding)
             .padding(.top, Style.topPadding)
