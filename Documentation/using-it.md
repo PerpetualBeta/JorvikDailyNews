@@ -15,9 +15,15 @@
 | Scroll to top / bottom | `Home` / `End` |
 | Scroll down / up a screen | `PgDn` / `PgUp`, or `space` / `shift` `space` |
 | Scroll down / up a little | `down` / `up` |
+| Start KeyNav on the paper | `tab` |
+| Move between stories (KeyNav) | `up` / `down` / `left` / `right` |
+| Open the highlighted story (KeyNav) | `return` |
+| Leave KeyNav | `esc` |
 | Back to paper (from reader) | `esc` |
 
 The scrolling keys work the same on the paper and in an article. A screen keeps a sliver of the previous one in view, as a Mac document does, and they leave text fields alone, so typing a space in a search or Add Feed field types a space.
+
+**KeyNav** lets you read the paper without the mouse. Press `tab` on the paper and the first story is outlined, the lead on the front page. The arrow keys move the outline to the nearest story in that direction: `up` and `down` stay in the column, `left` and `right` step to the column beside it. The page scrolls to keep the outlined story in view. `return` opens it just as a click would. Come back from the article and the outline is on the story you just read, or, with Unread only on, on whichever story has taken its place. `esc` leaves KeyNav; in an article it still takes you back to the paper first.
 
 A Back or Forward swipe does the same as `command` `left` and `command` `right` on the paper, and Back returns to the paper from the reader. That includes a three-finger swipe on the trackpad, and a mouse's side buttons when a tool such as [MacSideButtons](https://github.com/edwinlai/MacSideButtons) turns them into swipes.
 
