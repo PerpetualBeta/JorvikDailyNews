@@ -280,9 +280,18 @@ struct ContentView: View {
                 // stays centred and a long address truncates inside its own
                 // half instead of running underneath the pill.
                 HStack(alignment: .bottom, spacing: 12) {
-                    LinkStatusStrip()
-                        .environment(store)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // The column must exist even when nothing is hovered.
+                    // With no link the strip draws nothing, SwiftUI drops an
+                    // empty view from the row, and the empty column on the
+                    // right then takes all the spare width and shoves the pill
+                    // left. The zero-height clear view keeps this column in
+                    // the row, so the two outer columns always balance.
+                    ZStack(alignment: .bottomLeading) {
+                        Color.clear.frame(maxHeight: 0)
+                        LinkStatusStrip()
+                            .environment(store)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     if store.totalPages > 1 {
                         // Its natural width, always. Without this the row
                         // squeezes the pill to make room for a long address,
