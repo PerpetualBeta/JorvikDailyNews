@@ -20,8 +20,6 @@ A Back or Forward swipe does the same as `command` `left` and `command` `right` 
 
 Point at any teaser and its address appears in the bottom-left corner of the window, the way a browser shows where a link goes. It shows the site and the path, without the query string, which in a feed is nearly always tracking, and the full address is available as a tooltip. Clicking still opens the article in the reader; the address is where it comes from.
 
-The previous and next buttons in the page indicator stay in the same place on every page, so you can click through the paper without chasing them. The indicator is sized for the longest section title in the edition.
-
 ## Adding feeds
 
 `command` `N` → paste a feed URL *or a site's home page* → optionally tag with a section → Add. The app auto-discovers feeds: paste `https://arstechnica.com` and it finds the feed via `<link rel="alternate">` in the page head. If the page declares no feed, common paths (`/feed`, `/rss`, `/atom.xml`, `/feed.xml`, …) are probed as a fallback. Duplicates are rejected after resolution — you can't accidentally add the same subscription twice.
