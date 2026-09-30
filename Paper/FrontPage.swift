@@ -171,6 +171,7 @@ private struct LeadStoryView: View {
         .contentShape(Rectangle())
         .opacity(isRead ? 0.55 : 1.0)
         .storySectionContextMenu(for: item)
+        .storyLinkHover(for: item)
     }
 
     @ViewBuilder

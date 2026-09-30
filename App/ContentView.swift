@@ -274,11 +274,24 @@ struct ContentView: View {
             // the pill is always bottom-centred regardless of the
             // scroll content's settled size.
             .overlay(alignment: .bottom) {
-                if store.totalPages > 1 {
-                    PageIndicator()
+                // Three columns: the hovered link on the left, the page pill,
+                // and an empty column the same width as the first. The two
+                // outer columns share the leftover space equally, so the pill
+                // stays centred and a long address truncates inside its own
+                // half instead of running underneath the pill.
+                HStack(alignment: .bottom, spacing: 12) {
+                    LinkStatusStrip()
                         .environment(store)
-                        .padding(.bottom, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if store.totalPages > 1 {
+                        PageIndicator()
+                            .environment(store)
+                    }
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: 0)
                 }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
             }
         }
     }
@@ -416,6 +429,53 @@ private struct SwipeMonitor: NSViewRepresentable {
                 self.monitor = nil
             }
         }
+    }
+}
+
+/// Where the article under the pointer comes from, shown bottom-left the way a
+/// browser shows a hovered link.
+///
+/// A click opens the article in JDN's own reader rather than a browser, so this
+/// is the article's source rather than somewhere the click will take you, and
+/// the wording on screen is just the address for that reason.
+///
+/// Shown as host and path. The scheme and a leading `www.` say nothing a reader
+/// needs. The query is dropped because in a feed it is almost always tracking
+/// (`utm_source` and friends), and with middle truncation a long query would
+/// survive at the expense of the path, which is the part that says what the
+/// article is.
+///
+/// Stands aside while the add-feed notice is up, which uses the same edge.
+private struct LinkStatusStrip: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        if let link = store.hoveredLink, store.addFeedNotice == nil {
+            Text(Self.display(link))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(.regularMaterial)
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                )
+                .allowsHitTesting(false)
+                .help(link.absoluteString)
+        }
+    }
+
+    static func display(_ url: URL) -> String {
+        guard var host = url.host() else { return url.absoluteString }
+        if host.hasPrefix("www.") { host.removeFirst(4) }
+        var path = url.path()
+        if path == "/" { path = "" }
+        if path.hasSuffix("/") { path.removeLast() }
+        return host + path
     }
 }
 

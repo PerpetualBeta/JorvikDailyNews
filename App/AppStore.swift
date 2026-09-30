@@ -140,6 +140,10 @@ final class AppStore {
     var showOPMLImporter = false
     var showOPMLExporter = false
     var selectedArticle: FeedItem?
+
+    /// The article under the pointer, if any, so the window can show where it
+    /// comes from. See `LinkStatusStrip`.
+    var hoveredLink: URL?
     var isRefreshing = false
     var isImporting = false
     var lastRefreshError: String?

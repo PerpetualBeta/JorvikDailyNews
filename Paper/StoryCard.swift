@@ -70,6 +70,7 @@ struct StoryCard: View {
         .contentShape(Rectangle())
         .opacity(isRead ? 0.55 : 1.0)
         .storySectionContextMenu(for: item)
+        .storyLinkHover(for: item)
     }
 
     /// Height estimate used by the masonry distributor to choose which column
@@ -118,6 +119,34 @@ struct StoryCard: View {
         let drawn = min(columnWidth, pixels / scale)
         let natural = drawn * img.size.height / img.size.width
         return min(natural, cap ?? natural)
+    }
+}
+
+/// Report the card under the pointer to the store, so the window can show the
+/// article's address the way a browser shows a hovered link.
+///
+/// Clearing is conditional: moving from one card straight onto the next sends
+/// the second card's `true` and the first card's `false` in either order, and
+/// an unconditional clear would blank the strip while the pointer is plainly
+/// over an article.
+extension View {
+    func storyLinkHover(for item: FeedItem) -> some View {
+        modifier(StoryLinkHover(item: item))
+    }
+}
+
+private struct StoryLinkHover: ViewModifier {
+    @Environment(AppStore.self) private var store
+    let item: FeedItem
+
+    func body(content: Content) -> some View {
+        content.onHover { inside in
+            if inside {
+                store.hoveredLink = item.link
+            } else if store.hoveredLink == item.link {
+                store.hoveredLink = nil
+            }
+        }
     }
 }
 
