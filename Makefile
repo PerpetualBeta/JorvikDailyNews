@@ -34,6 +34,7 @@ APP_SOURCES := App/AppStore.swift \
 # The newspaper itself: masthead, front page, section pages, cards.
 PAPER_SOURCES := Paper/Edition.swift \
                  Paper/KeyNav.swift \
+                 Paper/KeyNavGeometry.swift \
                  Paper/EditionBuilder.swift \
                  Paper/FrontPage.swift \
                  Paper/MasonryColumns.swift \
@@ -210,6 +211,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Standfirsts/Standfirst.swift \
                 Paper/EditionBuilder.swift \
                 Paper/Edition.swift \
+                Paper/KeyNavGeometry.swift \
                 Support/Log.swift \
                 Pictures/ImageCache.swift
 
@@ -237,6 +239,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/LegacyIDTests.swift \
                 Tests/BaseHrefTests.swift \
                 Tests/QuadraticTests.swift \
+                Tests/KeyNavTests.swift \
                 Tests/main.swift
 
 TEST_BIN := .build/tests

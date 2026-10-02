@@ -50,6 +50,11 @@ final class KeyboardScroller {
     /// is in front. Returns true for a key it used.
     var paperKeyHandler: ((NSEvent) -> Bool)?
 
+    /// Told after the paper has moved by a page or to an end, so KeyNav can
+    /// bring its highlight back onto the screen. Not told for the arrows: in
+    /// KeyNav mode they move the highlight, and outside it there is none.
+    var paperPaged: (() -> Void)?
+
     /// The paper's scroll content, which KeyNav measures its stories against.
     var paperDocument: NSView? { paper?.documentView }
 
@@ -129,6 +134,9 @@ final class KeyboardScroller {
             }
             guard let move = self.move(for: event) else { return event }
             self.perform(move, on: target)
+            if target === self.paper, move != .lineUp, move != .lineDown {
+                self.paperPaged?()
+            }
             return nil
         }
     }
