@@ -80,6 +80,11 @@ final class PictureSignatureStore: @unchecked Sendable {
     func record(_ signature: PictureSignature, for imageURL: URL) {
         lock.lock(); defer { lock.unlock() }
         let key = Self.key(for: imageURL)
+        // A picture decoded again, as it is on every rebuild and scroll, records
+        // the signature already held. Marking that dirty rewrote the whole file
+        // (2.8 MB at the 6,000-entry cap, measured 2026-10-05) with identical
+        // contents, so only a new or changed entry counts.
+        guard signatures[key] != signature else { return }
         if signatures[key] == nil { order.append(key) }
         signatures[key] = signature
         dirty = true

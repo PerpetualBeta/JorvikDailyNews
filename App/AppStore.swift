@@ -592,6 +592,9 @@ final class AppStore {
         jdnLog("refresh: published \(edition.itemCount) items "
                + "of \(eligible) eligible from \(allItems.count) fetched "
                + "in \(elapsed)s of \(Int(Self.refreshTimeout))s allowed")
+        // What the fetch cache saved this hour: a 304 costs a few hundred bytes
+        // where a download costs the whole document, written to disk.
+        jdnLog(BoundedFetch.cacheSummary())
         // **One line naming what has stopped working, not one per attempt.**
         // Nine feeds failed on every refresh for a day and the only trace was
         // a line per feed per attempt, which reads as noise rather than as a

@@ -91,11 +91,60 @@ enum BoundedFetch {
     /// Two minutes is far past any of these reads — the largest is a 32 MB
     /// markup limit and the enricher asks for 32 KB — and far inside the
     /// 300 s refresh watchdog.
+    ///
+    /// **It has its own disk cache, sized to hold every feed between refreshes.**
+    /// Without one it used the app's default cache, measured 2026-10-05 at 12 MB
+    /// on disk. One refresh pushes about 14 MB of feeds and pages through it, so
+    /// an hour later only 41 of the 149 feeds were still there: everything was
+    /// written to disk and almost none of it was there to be reused. The app
+    /// never asks "has this changed?" itself. `URLSession` does, by sending the
+    /// stored `ETag` or `Last-Modified`, but only for a response it still holds,
+    /// and a feed that answers 304 costs a few hundred bytes instead of the
+    /// whole document, both on the wire and on disk. That refresh wrote 25 MB.
     static let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForResource = 120
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("JorvikDailyNews/Fetches", isDirectory: true)
+        // No memory copy: each body is parsed once and the result is kept, so a
+        // second in-memory copy of the bytes would buy nothing.
+        config.urlCache = URLCache(memoryCapacity: 0, diskCapacity: cacheBytes, directory: dir)
+        config.requestCachePolicy = .useProtocolCachePolicy
+        jdnLog("fetch cache: \(ByteCountFormatter.string(fromByteCount: Int64(cacheBytes), countStyle: .file)) on disk")
         return URLSession(configuration: config)
     }()
+
+    /// The largest feed or article body the app has downloaded, from its log.
+    static let largestRealMarkupBody = 4_969_342
+
+    /// The fetch cache's size on disk.
+    ///
+    /// `URLSession` only stores a response smaller than about 5% of the disk
+    /// cache (Apple's documentation for
+    /// `urlSession(_:dataTask:willCacheResponse:completionHandler:)`), so the
+    /// largest real body needs twenty times its size before it can be kept at
+    /// all. That is the default, rounded up to a whole megabyte. Read once, at
+    /// the first fetch. A knob, so it can be tuned without a rebuild:
+    ///
+    ///     defaults write cc.jorviksoftware.JorvikDailyNews fetchCacheMaxBytes -int 209715200
+    static var cacheBytes: Int {
+        let stored = UserDefaults.standard.integer(forKey: "fetchCacheMaxBytes")
+        if stored > 0 { return stored }
+        let megabyte = 1024 * 1024
+        let needed = largestRealMarkupBody * 20
+        return (needed + megabyte - 1) / megabyte * megabyte
+    }
+
+    /// What the fetch cache did since the last call, for the refresh log, and
+    /// resets the count. Covers every fetch on `session`: the refresh's feeds
+    /// and page heads, feed discovery, and the articles opened since.
+    static func cacheSummary() -> String {
+        let t = CacheTally.shared.drain()
+        let mb = ByteCountFormatter.string(fromByteCount: Int64(t.downloadedBytes), countStyle: .file)
+        return "fetch cache since the last refresh: \(t.downloaded + t.notModified + t.fromCache) "
+            + "fetch(es); \(t.downloaded) downloaded (\(mb)), \(t.notModified) not modified (304), "
+            + "\(t.fromCache) still fresh in the cache"
+    }
 
     static func data(for request: URLRequest,
                      on session: URLSession,
@@ -110,7 +159,7 @@ enum BoundedFetch {
         // Every hop, not just the first. Without this the check above is
         // cosmetic: URLSession follows up to 20 redirects on its own and a
         // `Location` header pointing at the local network was followed.
-        let guarded = RedirectGuard(wrapping: delegate)
+        let guarded = RedirectGuard(wrapping: session === Self.session ? CacheTally.Counting(wrapping: delegate) : delegate)
         let (stream, response) = try await session.bytes(for: request, delegate: guarded)
 
         // Belt and braces. The delegate refuses a hop it is asked about; this
@@ -162,5 +211,69 @@ enum BoundedFetch {
             throw Failure.tooLarge(limit: limit)
         }
         return (body, response)
+    }
+}
+
+/// Counts what each finished fetch on `BoundedFetch.session` cost, so the
+/// effect of the fetch cache is measured rather than assumed.
+///
+/// `URLSessionTaskMetrics` is the only honest source, as `ImageCache` found:
+/// a 304 reaches the caller as a 200 carrying the cached body, so the caller
+/// cannot tell a revalidated feed from a downloaded one.
+final class CacheTally: @unchecked Sendable {
+    static let shared = CacheTally()
+
+    struct Counts {
+        var downloaded = 0
+        var downloadedBytes = 0
+        var notModified = 0
+        var fromCache = 0
+    }
+
+    private let lock = NSLock()
+    private var counts = Counts()
+
+    func record(_ metrics: URLSessionTaskMetrics) {
+        guard let last = metrics.transactionMetrics.last else { return }
+        let revalidated = metrics.transactionMetrics.contains {
+            ($0.response as? HTTPURLResponse)?.statusCode == 304
+        }
+        lock.lock(); defer { lock.unlock() }
+        if last.resourceFetchType == .localCache && !revalidated {
+            counts.fromCache += 1
+        } else if revalidated {
+            counts.notModified += 1
+        } else {
+            counts.downloaded += 1
+            counts.downloadedBytes += Int(last.countOfResponseBodyBytesReceived)
+        }
+    }
+
+    func drain() -> Counts {
+        lock.lock(); defer { lock.unlock() }
+        let c = counts
+        counts = Counts()
+        return c
+    }
+
+    /// The delegate that feeds the tally, passing everything through to the
+    /// caller's own delegate, as `RedirectGuard` does.
+    final class Counting: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        private let wrapped: URLSessionTaskDelegate?
+
+        init(wrapping wrapped: URLSessionTaskDelegate?) {
+            self.wrapped = wrapped
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        didFinishCollecting metrics: URLSessionTaskMetrics) {
+            CacheTally.shared.record(metrics)
+            wrapped?.urlSession?(session, task: task, didFinishCollecting: metrics)
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        didCompleteWithError error: (any Error)?) {
+            wrapped?.urlSession?(session, task: task, didCompleteWithError: error)
+        }
     }
 }
