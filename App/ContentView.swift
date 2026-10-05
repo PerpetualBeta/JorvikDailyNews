@@ -284,6 +284,7 @@ struct ContentView: View {
                 KeyNavAnchors.shared.changed = { [keyNav] in keyNav.storiesChanged() }
                 KeyboardScroller.shared.paperKeyHandler = { [keyNav] event in keyNav.handle(event) }
                 KeyboardScroller.shared.paperPaged = { [keyNav] in keyNav.paperPaged() }
+                KeyboardScroller.shared.isArticleOpen = { [store] in store.selectedArticle != nil }
             }
             // Floating page-indicator as an overlay on the ScrollView's
             // frame. Overlay alignment is relative to the viewport, so

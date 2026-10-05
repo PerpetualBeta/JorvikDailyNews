@@ -917,7 +917,7 @@ struct ReaderWebView: NSViewRepresentable {
                     guard !Task.isCancelled, let web else { return }
                     chars = ReaderFailureSimulation.isOn ? 39
                         : (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
-                    if chars >= floor { onDrew(); return }
+                    if chars >= floor { web.takeKeyboardFocus(); onDrew(); return }
                 }
                 guard !Task.isCancelled, let web else { return }
                 jdnLog("reader: loadHTMLString produced only \(chars) chars of"
@@ -937,6 +937,7 @@ struct ReaderWebView: NSViewRepresentable {
                         : (try? await web.evaluateJavaScript(probe)) as? Int ?? 0
                     if after >= floor {
                         jdnLog("reader: \(ReaderBytesHandler.scheme): rendered it — \(after) chars")
+                        web.takeKeyboardFocus()
                         onDrew()
                         return
                     }
@@ -1312,6 +1313,7 @@ struct LiveWebView: NSViewRepresentable {
                         let waited = String(format: "%.1f", Date().timeIntervalSince(started))
                         jdnLog("reader: live page drew \(drawn.text) char(s) of text and "
                                + "\(drawn.media) media element(s) after \(waited)s")
+                        web.takeKeyboardFocus()
                         onDrew()
                         return
                     }
@@ -1339,12 +1341,13 @@ struct LiveWebView: NSViewRepresentable {
                           Date().timeIntervalSince(stoppedLoading) >= Self.settle
                     else { continue }
                     Self.finish(drawn, after: started, why: "finished loading",
-                                onBlank: onBlank, onDrew: onDrew)
+                                onBlank: onBlank, onDrew: { [weak web] in web?.takeKeyboardFocus(); onDrew() })
                     return
                 }
                 guard !Task.isCancelled, let web else { return }
                 Self.finish(await Self.measure(web), after: started,
-                            why: "was still loading", onBlank: onBlank, onDrew: onDrew)
+                            why: "was still loading", onBlank: onBlank,
+                            onDrew: { [weak web] in web?.takeKeyboardFocus(); onDrew() })
             }
         }
 
@@ -2045,5 +2048,16 @@ private struct SystemTranslation: ViewModifier {
         #else
         content
         #endif
+    }
+}
+
+extension WKWebView {
+    /// Gives the article the keyboard once it is on screen, so Page Up, Page
+    /// Down, space, the arrows, Home and End scroll it. A web view only scrolls
+    /// for keys while it is first responder, and the keyboard scroller now
+    /// leaves them alone while an article is open (see
+    /// `KeyboardScroller.isArticleOpen`).
+    func takeKeyboardFocus() {
+        window?.makeFirstResponder(self)
     }
 }

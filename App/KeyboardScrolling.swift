@@ -55,6 +55,18 @@ final class KeyboardScroller {
     /// KeyNav mode they move the highlight, and outside it there is none.
     var paperPaged: (() -> Void)?
 
+    /// Whether an article is open, asked when no native reader has registered.
+    ///
+    /// **The keys scrolled the hidden paper.** `target(for:)` picked the
+    /// native reader if one was on screen and the paper otherwise, so an
+    /// article drawn any other way (a web view when the JavaScriptCore rung
+    /// fails, a PDF, a video, the live page) sent Page Up, Page Down, space,
+    /// the arrows, Home and End to the paper behind it, and swallowed them. The
+    /// article did not move and nothing said why. Found 2026-10-05 on
+    /// thejollyteapot.com, the one article that hour drawn by WebKit, and the
+    /// likeliest cause of every earlier "the keys stopped working" in the reader.
+    var isArticleOpen: () -> Bool = { false }
+
     /// The paper's scroll content, which KeyNav measures its stories against.
     var paperDocument: NSView? { paper?.documentView }
 
@@ -161,7 +173,11 @@ final class KeyboardScroller {
 
     /// The scroll view in front, or nil if the key belongs to something else.
     private func target(for event: NSEvent) -> NSScrollView? {
-        let front = (reader?.window != nil ? reader : nil) ?? paper
+        let native = reader?.window != nil ? reader : nil
+        // An article that is not drawn natively has keys of its own. Leave
+        // them to whatever has focus there rather than scroll the paper behind.
+        if native == nil, isArticleOpen() { return nil }
+        let front = native ?? paper
         guard let front, let window = front.window,
               event.window === window, window.isKeyWindow,
               window.attachedSheet == nil else { return nil }
