@@ -64,6 +64,7 @@ READER_SOURCES := Reader/ArticleExtractor.swift \
                   Reader/SVGSafety.swift \
                   Reader/VideoPreflight.swift \
                   Reader/ReaderBlock.swift \
+                  Reader/ArticleTranslator.swift \
                   Reader/ReaderLede.swift \
                   Reader/ReaderSheet.swift \
                   Reader/VideoLink.swift
@@ -203,6 +204,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Pictures/PagePictures.swift \
                 App/DayRollover.swift \
                 Reader/ReaderBlock.swift \
+                Reader/ArticleTranslator.swift \
                 Reader/BaseHref.swift \
                 Storage/ReadStore.swift \
                 Feeds/ArticleClassifier.swift \
@@ -216,6 +218,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Pictures/ImageCache.swift
 
 TEST_HARNESS := Tests/TestRunner.swift \
+                Tests/TranslatableTextTests.swift \
                 Tests/OPMLImportTests.swift \
                 Tests/RedirectGuardTests.swift \
                 Tests/ReaderLedeTests.swift \

@@ -21,6 +21,8 @@ struct NativeReaderView: View {
     /// The picture the paper already holds for this item, drawn above the
     /// article when the extracted text opens with none. See `ReaderLede`.
     var hero: URL? = nil
+    /// The headline as translated, when the reader is showing a translation.
+    var translatedTitle: String? = nil
 
     /// The email link awaiting the reader's decision, if any.
     @State private var pendingEmail: MailtoLink?
@@ -187,7 +189,7 @@ struct NativeReaderView: View {
                 .tracking(Style.bylineTracking)
                 .foregroundStyle(Palette.byline(dark))
             // Double-decoded where that cannot produce markup. See decodeTitle.
-            Text(Standfirst.decodeTitle(article.title ?? sourceTitle))
+            Text(translatedTitle ?? Standfirst.decodeTitle(article.title ?? sourceTitle))
                 .font(.custom(Style.display, size: Style.h1))
                 .foregroundStyle(Palette.heading(dark))
                 .lineSpacing(Style.h1 * 0.15)

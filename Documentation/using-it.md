@@ -78,6 +78,8 @@ The reader header always shows where the material comes from: the feed's name, a
 
 **Re-classify on the fly.** The header's section menu shows the article's current section ticked; pick another to move it *and* train the classifier, exactly as the right-click "Move to…" menu on the paper does — no need to leave the reader.
 
+**Translate an article.** When an article is in another language, the header shows **Translate from** that language, Romanian for example. Click it and the article turns into your language a paragraph at a time, the headline first, so you can start reading before it has finished; click **Show Original** to go back. The menu beside the button has **Always Translate Articles**, which translates every article in another language as it opens. It all happens on this Mac. macOS's own translator does it where it knows the language (it covers about 25, and asks once to download each pair), from macOS 15. For a language it does not know, Apple Intelligence does it instead, from macOS 26 with Apple Intelligence turned on; the button's tooltip says so, because that translation is approximate. A translated paragraph is plain text: its links and bold come back with **Show Original**. Code and tables are left as they are, and a paragraph Apple Intelligence declines to translate stays in the original. On a Mac where neither can translate the article, the button does not appear.
+
 **Exclude a source.** The header's **Exclude Source** button drops every item pointing at the current article's host from the paper and reflows immediately. The aggregator feed that surfaced it keeps flowing — only items pointing at that host disappear. Useful for muting a domain that a dozen feeds all keep linking to.
 
 ## When the reader can't extract an article

@@ -3,6 +3,9 @@ import WebKit
 import AVKit
 import AVFoundation
 import AppKit
+#if canImport(Translation)
+import Translation
+#endif
 
 /// Reader view rendered inline inside the main window (not a modal sheet) —
 /// the newspaper "turns to" the article, and Back returns to the paper.
@@ -19,6 +22,13 @@ struct ReaderView: View {
     /// The article's current section, shown in (and editable from) the header
     /// re-classify menu. Seeded from the resolved section when the reader opens.
     @State private var section: String = ""
+    /// The article's translation, if it is in another language. See
+    /// `ArticleTranslation`.
+    @State private var translation = ArticleTranslation()
+    /// Translate every article in another language as it opens, rather than
+    /// waiting for the button. Off by default: a translation is approximate
+    /// at best when the model does it, and the reader should choose that.
+    @AppStorage("translateAutomatically") private var translateAutomatically = false
     @State private var newSectionPrompt = false
     @State private var newSectionName = ""
     /// Set once a load has been running long enough that silence reads as a
@@ -153,6 +163,8 @@ struct ReaderView: View {
 
             Spacer()
 
+            translateControl
+
             sectionMenu
 
             Button {
@@ -187,6 +199,40 @@ struct ReaderView: View {
     /// (and ticks) the article's current section so the user can see what it's
     /// filed under, and picking another section pins + trains the classifier
     /// exactly as the right-click "Move to…" menu on the paper does.
+    /// Translate from the article's language, or back to the original.
+    ///
+    /// One click does the obvious thing; the menu beside it holds the
+    /// remembered "always" switch, so the reader has no settings window to
+    /// visit for it.
+    @ViewBuilder private var translateControl: some View {
+        switch translation.phase {
+        case .unavailable:
+            EmptyView()
+        case .translating(let done, let total):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Translating \(done) of \(total)\u{2026}")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        case .offered, .failed, .translated:
+            let showing = translation.showing && translation.phase == .translated
+            Menu {
+                Toggle("Always Translate Articles", isOn: $translateAutomatically)
+            } label: {
+                Label(showing ? "Show Original" : "Translate from \(translation.sourceName)",
+                      systemImage: "translate")
+            } primaryAction: {
+                if showing { translation.showing = false } else { translation.translate() }
+            }
+            .fixedSize()
+            .help(translation.engine == .model
+                  ? "Translated on this Mac by Apple Intelligence. \(translation.sourceName) is not one of its listed languages, so treat the result as approximate."
+                  : "Translated on this Mac by macOS. Nothing is sent anywhere.")
+        }
+    }
+
     private var sectionMenu: some View {
         Menu {
             ForEach(store.allSections, id: \.self) { s in
@@ -289,7 +335,7 @@ struct ReaderView: View {
           if let blocks = article.blocks?.numbered(), !blocks.isEmpty,
              Self.rendererPreference != "webkit" {
               NativeReaderView(article: article,
-                               blocks: blocks,
+                               blocks: translation.blocks(blocks),
                                sourceTitle: item.sourceTitle,
                                // Where the page actually came from, so a
                                // relative link resolves against the article's
@@ -304,10 +350,17 @@ struct ReaderView: View {
                                // lede photograph outside the <article> element,
                                // so Readability drops it and the reader opened
                                // with nothing while the card had the picture.
-                               hero: item.imageURL)
+                               hero: item.imageURL,
+                               translatedTitle: translation.showing
+                                   ? translation.title(Standfirst.decodeTitle(article.title ?? item.sourceTitle))
+                                   : nil)
                   .task(id: "native-\(item.itemId)") {
                       jdnLog("reader: drawn natively — \(blocks.count) block(s), no web view")
+                      await translation.prepare(title: Standfirst.decodeTitle(article.title ?? item.sourceTitle),
+                                                blocks: blocks)
+                      if translateAutomatically, translation.phase == .offered { translation.translate() }
                   }
+                  .modifier(SystemTranslation(translation: translation))
           } else {
           ZStack {
             ReaderWebView(html: renderHTML(article), baseURL: item.link, onBlank: { detail in
@@ -1968,5 +2021,29 @@ extension String {
 enum ReaderFailureSimulation {
     static var isOn: Bool {
         UserDefaults.standard.object(forKey: "simulateBlankReader") as? Bool ?? false
+    }
+}
+
+/// Attaches the system translator where macOS has one.
+///
+/// `.translationTask` exists from macOS 15 and the app supports macOS 14, so
+/// it is applied behind an availability check. It runs when the translation's
+/// configuration is set, asking macOS to download the language pair first if
+/// it must, and hands the session to `ArticleTranslation.run(session:)`.
+private struct SystemTranslation: ViewModifier {
+    let translation: ArticleTranslation
+
+    func body(content: Content) -> some View {
+        #if canImport(Translation)
+        if #available(macOS 15, *) {
+            content.translationTask(translation.systemConfiguration) { session in
+                await translation.run(session: session)
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
     }
 }
