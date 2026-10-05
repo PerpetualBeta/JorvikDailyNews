@@ -92,15 +92,15 @@ enum BoundedFetch {
     /// markup limit and the enricher asks for 32 KB — and far inside the
     /// 300 s refresh watchdog.
     ///
-    /// **It has its own disk cache, sized to hold every feed between refreshes.**
+    /// **It has its own disk cache, sized to hold the pages between refreshes.**
     /// Without one it used the app's default cache, measured 2026-10-05 at 12 MB
-    /// on disk. One refresh pushes about 14 MB of feeds and pages through it, so
+    /// on disk. One refresh pushed about 14 MB of feeds and pages through it, so
     /// an hour later only 41 of the 149 feeds were still there: everything was
-    /// written to disk and almost none of it was there to be reused. The app
-    /// never asks "has this changed?" itself. `URLSession` does, by sending the
-    /// stored `ETag` or `Last-Modified`, but only for a response it still holds,
-    /// and a feed that answers 304 costs a few hundred bytes instead of the
-    /// whole document, both on the wire and on disk. That refresh wrote 25 MB.
+    /// written to disk and almost none of it was there to be reused. `URLSession`
+    /// asks "has this changed?" by sending the stored `ETag` or `Last-Modified`,
+    /// but only for a response it still holds. Feeds have since moved to
+    /// `feedSession`, which asks that question itself without storing them, so
+    /// this cache now holds the page heads the enricher reads and the articles.
     static let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForResource = 120
@@ -111,6 +111,20 @@ enum BoundedFetch {
         config.urlCache = URLCache(memoryCapacity: 0, diskCapacity: cacheBytes, directory: dir)
         config.requestCachePolicy = .useProtocolCachePolicy
         jdnLog("fetch cache: \(ByteCountFormatter.string(fromByteCount: Int64(cacheBytes), countStyle: .file)) on disk")
+        return URLSession(configuration: config)
+    }()
+
+    /// Feeds only: the same ceilings as `session`, and no cache at all.
+    ///
+    /// `FeedFetcher` asks "has this changed?" itself and keeps what it needs in
+    /// memory, so a disk cache here would only write every changed feed to disk
+    /// again. With no cache, `URLSession` hands a 304 straight back to the
+    /// caller instead of merging it into a stored copy.
+    static let feedSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 120
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config)
     }()
 
@@ -135,13 +149,15 @@ enum BoundedFetch {
         return (needed + megabyte - 1) / megabyte * megabyte
     }
 
-    /// What the fetch cache did since the last call, for the refresh log, and
-    /// resets the count. Covers every fetch on `session`: the refresh's feeds
-    /// and page heads, feed discovery, and the articles opened since.
+    /// What the fetches cost since the last call, for the refresh log, and
+    /// resets the count. Covers every fetch on `session` and `feedSession`: the
+    /// refresh's feeds and page heads, feed discovery, and the articles opened
+    /// since. A feed's 304 is `FeedFetcher`'s own question; a page's comes
+    /// from the fetch cache.
     static func cacheSummary() -> String {
         let t = CacheTally.shared.drain()
         let mb = ByteCountFormatter.string(fromByteCount: Int64(t.downloadedBytes), countStyle: .file)
-        return "fetch cache since the last refresh: \(t.downloaded + t.notModified + t.fromCache) "
+        return "fetches since the last refresh: \(t.downloaded + t.notModified + t.fromCache) "
             + "fetch(es); \(t.downloaded) downloaded (\(mb)), \(t.notModified) not modified (304), "
             + "\(t.fromCache) still fresh in the cache"
     }
@@ -159,7 +175,8 @@ enum BoundedFetch {
         // Every hop, not just the first. Without this the check above is
         // cosmetic: URLSession follows up to 20 redirects on its own and a
         // `Location` header pointing at the local network was followed.
-        let guarded = RedirectGuard(wrapping: session === Self.session ? CacheTally.Counting(wrapping: delegate) : delegate)
+        let counted = session === Self.session || session === Self.feedSession
+        let guarded = RedirectGuard(wrapping: counted ? CacheTally.Counting(wrapping: delegate) : delegate)
         let (stream, response) = try await session.bytes(for: request, delegate: guarded)
 
         // Belt and braces. The delegate refuses a hop it is asked about; this

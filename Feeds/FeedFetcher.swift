@@ -22,6 +22,55 @@ enum FeedFetchError: Error, LocalizedError {
     }
 }
 
+/// The validators and compressed body of each feed's last good answer.
+///
+/// Compressed because every feed is held: measured on one refresh's bodies,
+/// zlib took 11.8 MB to 2.8 MB, decompressing all of them in 10 ms. LZFSE is
+/// Apple's faster equivalent. A feed whose server sends neither `ETag` nor
+/// `Last-Modified` is not held, because nothing could ever answer 304 for it.
+final class RememberedFeeds: @unchecked Sendable {
+    struct Entry {
+        let etag: String?
+        let lastModified: String?
+        let compressed: Data
+
+        func body() -> Data? {
+            try? (compressed as NSData).decompressed(using: .lzfse) as Data
+        }
+    }
+
+    private let lock = NSLock()
+    private var entries: [URL: Entry] = [:]
+
+    func entry(for url: URL) -> Entry? {
+        lock.lock(); defer { lock.unlock() }
+        return entries[url]
+    }
+
+    func store(_ body: Data, for url: URL, etag: String?, lastModified: String?) {
+        let compressed = (etag != nil || lastModified != nil)
+            ? try? (body as NSData).compressed(using: .lzfse) as Data
+            : nil
+        lock.lock(); defer { lock.unlock() }
+        if let compressed {
+            entries[url] = Entry(etag: etag, lastModified: lastModified, compressed: compressed)
+        } else {
+            entries[url] = nil
+        }
+    }
+
+    /// Bytes held, for the refresh log.
+    var heldBytes: Int {
+        lock.lock(); defer { lock.unlock() }
+        return entries.values.reduce(0) { $0 + $1.compressed.count }
+    }
+
+    var count: Int {
+        lock.lock(); defer { lock.unlock() }
+        return entries.count
+    }
+}
+
 struct FetchedFeed {
     let title: String
     let items: [FeedItem]
@@ -36,6 +85,25 @@ struct FetchedFeed {
 }
 
 final class FeedFetcher: Sendable {
+    /// Each feed's last answer, so the next fetch can ask whether it changed.
+    private let remembered = RememberedFeeds()
+
+    /// Fetches and parses a feed, asking the server first whether it changed.
+    ///
+    /// **Conditional requests, done here rather than left to `URLCache`.** A
+    /// feed that answers 304 costs a few hundred bytes instead of the whole
+    /// document. Leaving that to the fetch cache worked for the network (56 of
+    /// 315 fetches answered 304 on 2026-10-05) but stored every feed that did
+    /// change on disk, uncompressed: 14.9 MB of the 27.9 MB one refresh wrote.
+    /// So feeds go on `BoundedFetch.feedSession`, which has no disk cache, and
+    /// the validators and body are kept in memory, the body compressed.
+    ///
+    /// On a 304 the remembered body is parsed again, against the feed as it is
+    /// now, rather than handing back the last result. Parsing reads the feed's
+    /// title, section and `lastSuccessfulFetchAt`, which can change between
+    /// refreshes, so a stored result could go stale where the same bytes
+    /// through the same parse cannot. Memory only: the first refresh after a
+    /// launch downloads every feed, exactly as before.
     func fetch(_ feed: Feed) async throws -> FetchedFeed {
         var request = URLRequest(url: feed.url)
         request.setValue(
@@ -44,14 +112,37 @@ final class FeedFetcher: Sendable {
         )
         request.setValue("application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 20
+        let prior = remembered.entry(for: feed.url)
+        if let prior {
+            if let etag = prior.etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+            if let modified = prior.lastModified {
+                request.setValue(modified, forHTTPHeaderField: "If-Modified-Since")
+            }
+        }
 
-        let (data, response) = try await BoundedFetch.data(for: request, on: BoundedFetch.session,
+        let (data, response) = try await BoundedFetch.data(for: request, on: BoundedFetch.feedSession,
                                                            limit: BoundedFetch.markupLimit)
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+        let http = response as? HTTPURLResponse
+        if http?.statusCode == 304, let prior, let body = prior.body() {
+            return try Self.parse(body, from: feed)
+        }
+        if let http, http.statusCode != 200 {
             throw FeedFetchError.invalidResponse(http.statusCode)
         }
 
-        return try Self.parse(data, from: feed)
+        let parsed = try Self.parse(data, from: feed)
+        // Only a body that parsed is worth asking about next time, and only a
+        // server that sends a validator can answer the question.
+        remembered.store(data, for: feed.url,
+                         etag: http?.value(forHTTPHeaderField: "ETag"),
+                         lastModified: http?.value(forHTTPHeaderField: "Last-Modified"))
+        return parsed
+    }
+
+    /// What is held for conditional requests, for the refresh log.
+    var rememberedSummary: String {
+        let held = ByteCountFormatter.string(fromByteCount: Int64(remembered.heldBytes), countStyle: .memory)
+        return "\(remembered.count) feed(s) held for 304s, \(held) compressed in memory"
     }
 
     /// Turn bytes into a feed, with no network involved.

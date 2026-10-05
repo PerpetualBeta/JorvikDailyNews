@@ -140,5 +140,32 @@ enum FeedFetcherTests {
             T.equal(FeedFetcher.clamped(now.addingTimeInterval(86_400), now: now), now,
                     "a feed never read before still clamps to now")
         }
+
+        // A 304 is answered by parsing the remembered body again, so the body
+        // must come back exactly, or a "not modified" feed would change.
+        T.suite("Remembered feeds: a body comes back byte for byte") {
+            let body = T.fixture("rss2-minimal.xml")
+            let url = URL(string: "https://example.com/feed.xml")!
+            let store = RememberedFeeds()
+            store.store(body, for: url, etag: "\"abc\"", lastModified: nil)
+            let entry = store.entry(for: url)
+            T.equal(entry?.etag, "\"abc\"", "the ETag is kept to send as If-None-Match")
+            T.equal(entry?.body(), body, "the body decompresses to the same bytes")
+            let again = try FeedFetcher.parse(entry?.body() ?? Data(), from: feed())
+            let first = try FeedFetcher.parse(body, from: feed())
+            T.equal(again.items.map(\.title), first.items.map(\.title), "and parses to the same items")
+        }
+
+        T.suite("Remembered feeds: no validator, nothing held") {
+            let body = T.fixture("rss2-minimal.xml")
+            let url = URL(string: "https://example.com/feed.xml")!
+            let store = RememberedFeeds()
+            store.store(body, for: url, etag: nil, lastModified: nil)
+            T.expect(store.entry(for: url) == nil, "nothing could answer 304, so nothing is held")
+            store.store(body, for: url, etag: nil, lastModified: "Mon, 05 Oct 2026 15:00:00 GMT")
+            T.expect(store.entry(for: url) != nil, "Last-Modified alone is enough")
+            store.store(body, for: url, etag: nil, lastModified: nil)
+            T.expect(store.entry(for: url) == nil, "a server that stops sending validators is dropped")
+        }
     }
 }
