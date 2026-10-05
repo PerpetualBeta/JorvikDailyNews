@@ -32,7 +32,13 @@ Lines are appended to
 ~/Library/Containers/cc.jorviksoftware.JorvikDailyNews/Data/Library/Logs/Jorvik Daily News/jorvikdailynews.log
 ```
 
-in a directory only you can read. It is inside the container because the app is sandboxed; before 1.4.9 it was at `~/Library/Logs/Jorvik Daily News/`, and a log from an older build will still be there. Each run starts with a header recording the app and macOS versions, so the log identifies itself without anyone having to ask. To turn it off again:
+in a directory only you can read. It is inside the container because the app is sandboxed; before 1.4.9 it was at `~/Library/Logs/Jorvik Daily News/`, and a log from an older build will still be there. Each run starts with a header recording the app and macOS versions, so the log identifies itself without anyone having to ask. From 1.9.0 the log is rotated when it passes 4 MB: the older lines move to `jorvikdailynews.log.1`, which replaces any earlier one, so the two files together never pass 8 MB. The new file starts with the same header and a line saying that it was rotated. For a long diagnostic session, raise the limit (in bytes):
+
+```
+defaults write cc.jorviksoftware.JorvikDailyNews debugLogMaxBytes -int 20971520
+```
+
+To turn logging off again:
 
 ```
 defaults delete cc.jorviksoftware.JorvikDailyNews debugLogging
