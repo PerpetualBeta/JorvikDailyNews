@@ -233,8 +233,16 @@ final class AppStore {
     /// same treatment. When hide-read is on, reflow the paper so the next
     /// unread item fills the vacated slot by the time the reader closes.
     func openArticle(_ item: FeedItem) {
-        readStore.markRead(item.itemId)
+        markRead(item)
         selectedArticle = item
+    }
+
+    /// Mark an article read without opening it: KeyNav's delete key. The same
+    /// marking `openArticle` does, so a story read either way looks the same,
+    /// and with hide-read on it leaves the paper the same way, its slot filled
+    /// by the next unread item.
+    func markRead(_ item: FeedItem) {
+        readStore.markRead(item.itemId)
         if hideReadItems {
             recomputeVisibleEdition()
         }

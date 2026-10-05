@@ -196,6 +196,18 @@ final class KeyNavController {
             lastRect = frames[id]
             store.openArticle(item)
             return true
+        case 51, 117:  // Delete (backspace), forward delete
+            // Mark the outlined story read without opening it (Jonathan,
+            // 2026-10-04). With hide-read on it leaves the paper, and
+            // `storiesChanged` moves the outline to whichever story fills its
+            // slot: `lastRect` is set first so that it knows which slot that is.
+            // With hide-read off the story stays, dimmed as read, and so does
+            // the outline. Only reached on the paper in KeyNav: in the reader,
+            // delete still means Back to Paper.
+            guard let id = store.keyNavItemId, let item = item(id) else { return true }
+            lastRect = frames[id]
+            store.markRead(item)
+            return true
         case 126: move(.up); return true
         case 125: move(.down); return true
         case 123: move(.left); return true
