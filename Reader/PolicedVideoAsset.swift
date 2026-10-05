@@ -73,6 +73,7 @@ final class PolicedVideoAsset {
         init(origin: URL) {
             self.origin = origin
             let config = URLSessionConfiguration.default
+            config.keepCookiesInMemory()
             // The same wall-clock bound the rest of the app's sinks carry.
             // `timeoutIntervalForResource` on `URLSession.shared` is 604,800 s.
             config.timeoutIntervalForResource = 600

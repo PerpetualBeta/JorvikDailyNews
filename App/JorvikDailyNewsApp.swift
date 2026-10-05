@@ -38,6 +38,13 @@ struct JorvikDailyNewsApp: App {
         let defaultCacheBytes = URLCache.shared.currentDiskUsage
         URLCache.shared.removeAllCachedResponses()
         jdnLog("default URL cache: emptied, \(ByteCountFormatter.string(fromByteCount: Int64(defaultCacheBytes), countStyle: .file)) were held")
+        // Every session now keeps its cookies in memory (`keepCookiesInMemory`),
+        // so the shared store on disk only holds what earlier versions saved:
+        // 1,049 cookies from 571 sites, measured 2026-10-05. Emptied at each
+        // launch, which also catches anything a framework still puts there.
+        let storedCookies = HTTPCookieStorage.shared.cookies?.count ?? 0
+        HTTPCookieStorage.shared.removeCookies(since: .distantPast)
+        jdnLog("cookies: \(storedCookies) removed from the shared store; fetches keep theirs in memory only")
 
         // Tugboat-cooperative dock visibility. Listens for hide/show
         // toggles broadcast by Tugboat and self-applies via setActivationPolicy.

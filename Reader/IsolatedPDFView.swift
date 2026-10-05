@@ -217,6 +217,7 @@ enum PDFDownload {
     /// idle one. The 42-second case below is comfortably inside this.
     static let session: URLSession = {
         let config = URLSessionConfiguration.default
+        config.keepCookiesInMemory()
         config.timeoutIntervalForResource = 600
         return URLSession(configuration: config)
     }()

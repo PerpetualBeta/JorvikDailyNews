@@ -126,6 +126,7 @@ enum VideoPreflight {
     /// taking half a minute.
     private static let session: URLSession = {
         let config = URLSessionConfiguration.default
+        config.keepCookiesInMemory()
         config.timeoutIntervalForResource = 30
         return URLSession(configuration: config)
     }()

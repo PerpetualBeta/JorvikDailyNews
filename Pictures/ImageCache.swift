@@ -84,6 +84,7 @@ final class ImageCache: @unchecked Sendable {
     /// hit rate is not predictable in advance, which is why it is logged.
     private static let session: URLSession = {
         let config = URLSessionConfiguration.default
+        config.keepCookiesInMemory()
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("JorvikDailyNews/Images", isDirectory: true)
         config.urlCache = URLCache(memoryCapacity: 0,

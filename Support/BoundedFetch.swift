@@ -18,6 +18,25 @@ import Foundation
 /// forgotten call site away from reading `file:///etc/passwd` — which it did,
 /// returning 9,344 bytes, with the HTTP status check skipped because a file
 /// response is not an `HTTPURLResponse`.
+extension URLSessionConfiguration {
+    /// Cookies for this session's life, in memory, never on disk.
+    ///
+    /// `.default` saves every cookie a server sets to the app's shared store,
+    /// a file in the container. Measured 2026-10-05: **1,049 cookies from 571
+    /// sites**, Amazon, YouTube and Bloomberg among them, none of any use to a
+    /// feed reader and several of them trackers. Refusing cookies outright
+    /// would break the sites that set one and redirect to themselves expecting
+    /// it back, consent walls and bot checks, which would then loop. So each
+    /// session gets its own in-memory store, the same as an ephemeral session's
+    /// and the reader's WebKit views: cookies work within a run and are gone at
+    /// quit. Checked with a probe against a local server: the in-memory store
+    /// took the cookie and the shared store never saw it, and every `.ephemeral`
+    /// configuration hands out a separate store.
+    func keepCookiesInMemory() {
+        httpCookieStorage = URLSessionConfiguration.ephemeral.httpCookieStorage
+    }
+}
+
 enum BoundedFetch {
 
     // MARK: - Ceilings
@@ -103,6 +122,7 @@ enum BoundedFetch {
     /// this cache now holds the page heads the enricher reads and the articles.
     static let session: URLSession = {
         let config = URLSessionConfiguration.default
+        config.keepCookiesInMemory()
         config.timeoutIntervalForResource = 120
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("JorvikDailyNews/Fetches", isDirectory: true)
@@ -122,6 +142,7 @@ enum BoundedFetch {
     /// caller instead of merging it into a stored copy.
     static let feedSession: URLSession = {
         let config = URLSessionConfiguration.default
+        config.keepCookiesInMemory()
         config.timeoutIntervalForResource = 120
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
