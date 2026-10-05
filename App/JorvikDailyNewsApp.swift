@@ -30,6 +30,14 @@ struct JorvikDailyNewsApp: App {
         // identically to a run where no picture happened to load.
         jdnLog(ImageCache.configSummary)
         jdnLog(ArticleExtractor.configSummary)
+        // The app's default URL cache held the feeds and pages until
+        // 2026-10-05, when those fetches moved to `BoundedFetch`'s own caches.
+        // All that still lands in it is the odd PDF or video check, so it is
+        // emptied at each launch rather than left holding 12 MB (measured that
+        // day) that nothing will read again.
+        let defaultCacheBytes = URLCache.shared.currentDiskUsage
+        URLCache.shared.removeAllCachedResponses()
+        jdnLog("default URL cache: emptied, \(ByteCountFormatter.string(fromByteCount: Int64(defaultCacheBytes), countStyle: .file)) were held")
 
         // Tugboat-cooperative dock visibility. Listens for hide/show
         // toggles broadcast by Tugboat and self-applies via setActivationPolicy.
