@@ -60,15 +60,69 @@ final class IsolatedPDFModel {
 
     private let client = PDFRenderClient()
 
-    /// Rendered at twice the layout width, so a Retina display has real pixels
-    /// rather than an upscale. Higher costs helper time and memory for no
-    /// visible gain.
-    private static let renderScale: CGFloat = 2
-
-    private func key(_ page: Int, _ width: CGFloat) -> String {
+    /// Pages are rendered at the scale of the display the reader is on, which
+    /// the view passes in, so a Retina display has real pixels and any other
+    /// display gets no more than it can show.
+    ///
+    /// **This was a fixed 2, and it cost four times the memory on a 1x
+    /// display.** A page in a 1,230-point window on a 2560 × 1440 screen came
+    /// back about 2,400 × 3,300 pixels, some 32 MB decoded, so the 256 MB
+    /// cache held about eight pages. Reading "The Machine Stops" (25 pages),
+    /// the pages past the seventh never appeared (2026-10-06): see `pinned`
+    /// for why an evicted page stayed blank.
+    private func key(_ page: Int, _ width: CGFloat, _ scale: CGFloat) -> String {
         // Bucketed to whole points: a fractional width change from a window
         // resize should not invalidate every page.
-        "\(page)@\(Int(width.rounded()))"
+        "\(page)@\(Int(width.rounded()))x\(scale)"
+    }
+
+    /// The pages on screen, each with the image it is showing, held outside
+    /// the cache so the cache can never take one away.
+    ///
+    /// **A dropped page stayed blank for ever.** The cache evicts when it is
+    /// full, it does not say which page it will pick, and each page's `.task`
+    /// runs once while its page and width stay the same. So a page that was
+    /// evicted while still on screen showed its placeholder and nothing asked
+    /// for it again. Asking again on every eviction was considered and is
+    /// worse: at a high zoom two visible pages that do not fit together would
+    /// evict each other and re-render for as long as they were on screen.
+    /// Holding what is visible here bounds memory by what is visible, which
+    /// the cache's limit was never able to do on its own; the cache keeps the
+    /// rest, for scrolling back.
+    private var pinned: [Int: (key: String, image: NSImage)] = [:]
+
+    /// Pages whose views are on screen now, told by the view.
+    @ObservationIgnored private var onScreen: Set<Int> = []
+
+    func pageAppeared(_ page: Int) { onScreen.insert(page) }
+
+    func pageDisappeared(_ page: Int) {
+        onScreen.remove(page)
+        pinned[page] = nil
+    }
+
+    private func store(_ image: NSImage, page: Int, key k: String) {
+        rendered.setObject(image, forKey: k as NSString, cost: Self.cost(of: image))
+        if onScreen.contains(page) { pinned[page] = (k, image) }
+        stored &+= 1
+    }
+
+    /// Told by the cache before it drops a page, for the log only: how often
+    /// the limit is reached says whether it is the right size. The cache can
+    /// call it from any thread.
+    private final class EvictionWatcher: NSObject, NSCacheDelegate {
+        private let lock = NSLock()
+        private var count = 0
+        func cache(_ cache: NSCache<AnyObject, AnyObject>, willEvictObject obj: Any) {
+            let n = lock.withLock { count += 1; return count }
+            jdnLog("pdf: the page cache was full and dropped a page off screen "
+                   + "(\(n) so far in this document)")
+        }
+    }
+    @ObservationIgnored private let evictionWatcher = EvictionWatcher()
+
+    init() {
+        rendered.delegate = evictionWatcher
     }
 
     /// Bumped whenever a page is stored, so the view has something observed to
@@ -84,12 +138,14 @@ final class IsolatedPDFModel {
     /// Found on a 10-page PDF that Safari opened without trouble.
     private var stored = 0
 
-    func image(page: Int, width: CGFloat) -> NSImage? {
+    func image(page: Int, width: CGFloat, scale: CGFloat) -> NSImage? {
         // The read is the point: it registers this view's dependency on
         // `stored`, so the redraw happens when a page arrives. Written so it
         // cannot be mistaken for a leftover and deleted.
         guard stored >= 0 else { return nil }
-        return rendered.object(forKey: key(page, width) as NSString)
+        let k = key(page, width, scale)
+        if let shown = pinned[page], shown.key == k { return shown.image }
+        return rendered.object(forKey: k as NSString)
     }
 
     /// Called when the download turns out to be a web page. The reader takes
@@ -155,7 +211,7 @@ final class IsolatedPDFModel {
     /// Returns whether it worked. Once only: a document that kills two helpers
     /// in a row is a document, not an idle timeout, and saying so is then the
     /// right answer rather than an endless reconnection loop.
-    private func reopenAndRetry(page: Int, width: CGFloat) async -> Bool {
+    private func reopenAndRetry(page: Int, width: CGFloat, scale: CGFloat) async -> Bool {
         guard let bytes = openedBytes else { return false }
         jdnLog("pdf: the helper went away — handing the document to a new one")
         client.reopen()
@@ -163,11 +219,8 @@ final class IsolatedPDFModel {
             let doc = try await client.open(bytes)
             guard doc.pageCount > 0 else { return false }
             sizes = doc.sizes
-            let image = try await client.render(page: page, width: width,
-                                                scale: Self.renderScale)
-            rendered.setObject(image, forKey: key(page, width) as NSString,
-                               cost: Self.cost(of: image))
-            stored &+= 1
+            let image = try await client.render(page: page, width: width, scale: scale)
+            store(image, page: page, key: key(page, width, scale))
             jdnLog("pdf: recovered — page \(page) drawn by the new helper")
             return true
         } catch {
@@ -176,22 +229,27 @@ final class IsolatedPDFModel {
     }
 
     /// Renders one page, once.
-    func render(page: Int, width: CGFloat) async {
-        let k = key(page, width)
-        guard rendered.object(forKey: k as NSString) == nil, !inFlight.contains(k) else { return }
+    func render(page: Int, width: CGFloat, scale: CGFloat) async {
+        let k = key(page, width, scale)
+        if pinned[page]?.key == k { return }
+        if let cached = rendered.object(forKey: k as NSString) {
+            // Still cached: hold it while it is on screen, in case the cache
+            // picks it next.
+            if onScreen.contains(page) { pinned[page] = (k, cached) }
+            return
+        }
+        guard !inFlight.contains(k) else { return }
         inFlight.insert(k)
         defer { inFlight.remove(k) }
         do {
-            let image = try await client.render(page: page, width: width,
-                                                scale: Self.renderScale)
-            rendered.setObject(image, forKey: k as NSString, cost: Self.cost(of: image))
-            stored &+= 1
+            let image = try await client.render(page: page, width: width, scale: scale)
+            store(image, page: page, key: k)
         } catch let failure as PDFRenderClient.Failure {
             // A helper that has gone is usually launchd reclaiming an idle
             // one, not PDFKit falling over. Hand the same bytes to a new
             // helper and draw the page again; only say something if that
             // fails too.
-            if case .helperStopped = failure, await reopenAndRetry(page: page, width: width) {
+            if case .helperStopped = failure, await reopenAndRetry(page: page, width: width, scale: scale) {
                 return
             }
             if case .helperStopped = failure {
@@ -335,6 +393,8 @@ struct IsolatedPDFPages: View {
     let pageCount: Int
     /// 1.0 fits the pane's width. Zoom multiplies it, and the helper re-renders.
     @Binding var zoom: CGFloat
+    /// Pixels per point on the display the reader is on: 1 or 2 today.
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geo in
@@ -344,7 +404,7 @@ struct IsolatedPDFPages: View {
                         let width = max(80, (geo.size.width - 24) * zoom)
                         let height = pageHeight(index, width: width)
                         ZStack {
-                            if let image = model.image(page: index, width: width) {
+                            if let image = model.image(page: index, width: width, scale: displayScale) {
                                 Image(nsImage: image)
                                     .resizable()
                                     .frame(width: width, height: height)
@@ -359,13 +419,21 @@ struct IsolatedPDFPages: View {
                                     .overlay(ProgressView().controlSize(.small))
                             }
                         }
-                        .task(id: "\(index)@\(Int(width.rounded()))") {
-                            await model.render(page: index, width: width)
+                        .onAppear { model.pageAppeared(index) }
+                        .onDisappear { model.pageDisappeared(index) }
+                        .task(id: "\(index)@\(Int(width.rounded()))x\(displayScale)") {
+                            await model.render(page: index, width: width, scale: displayScale)
                         }
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
+                // Hands this scroll view to KeyboardScroller for Home, End,
+                // Page Up, Page Down, space and the arrows, as the native
+                // reader does. Without it no key moved a PDF: the pages are a
+                // SwiftUI ScrollView, which takes no keys of its own, and the
+                // scroller leaves every unregistered article alone.
+                .background(ScrollViewAnchor(role: .reader))
             }
         }
         .background(Color(nsColor: .textBackgroundColor))

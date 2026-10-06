@@ -65,6 +65,11 @@ final class KeyboardScroller {
     /// article did not move and nothing said why. Found 2026-10-05 on
     /// thejollyteapot.com, the one article that hour drawn by WebKit, and the
     /// likeliest cause of every earlier "the keys stopped working" in the reader.
+    ///
+    /// A web view takes the keys itself once it has focus. The PDF viewer
+    /// cannot: its pages are a SwiftUI ScrollView, so it registers as the
+    /// reader, as the native reader does. Before it did, no key moved a PDF
+    /// at all (2026-10-06, "The Machine Stops" from cs.ucdavis.edu).
     var isArticleOpen: () -> Bool = { false }
 
     /// The paper's scroll content, which KeyNav measures its stories against.
