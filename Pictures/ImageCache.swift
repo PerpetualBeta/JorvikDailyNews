@@ -209,8 +209,10 @@ final class ImageCache: @unchecked Sendable {
     /// instead of anchoring the front page on a picture that will never come.
     static let picturesKey = "showPictures"
 
+    /// Boss Mode turns pictures off too, through this same gate, so that it
+    /// stops the downloads as well as the drawing.
     static var picturesEnabled: Bool {
-        UserDefaults.standard.object(forKey: picturesKey) as? Bool ?? true
+        (UserDefaults.standard.object(forKey: picturesKey) as? Bool ?? true) && !BossMode.isOnNow
     }
 
     /// Longest edge, in pixels, a picture is kept at.
@@ -399,6 +401,9 @@ final class ImageCache: @unchecked Sendable {
     /// picture decoded for a 400pt column. A hit is only a hit if it answers
     /// the question that was asked.
     func cachedImage(for url: URL, wideEnoughFor drawWidthPx: Int?) -> NSImage? {
+        // Gated like its sibling. It was not, so a picture already in the
+        // cache still drew with pictures off.
+        guard Self.picturesEnabled else { return nil }
         guard let img = images.object(forKey: url as NSURL) else { return nil }
         guard holds(url, atLeast: drawWidthPx) else { return nil }
         return img

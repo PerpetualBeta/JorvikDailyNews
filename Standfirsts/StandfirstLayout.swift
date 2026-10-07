@@ -446,3 +446,23 @@ extension Standfirst {
 
     private static let cache = PlanCache()
 }
+
+/// Boss Mode's type cap, here beside the metrics it is taken from rather
+/// than in `BossMode.swift`, which the tests compile without this file.
+extension BossMode {
+    /// The largest type Boss Mode allows: an ordinary story's headline on the
+    /// paper, `Standfirst.Metrics.cardHeadline`.
+    ///
+    /// **Without pictures, the big type was what gave the paper away.** The
+    /// masthead (64 pt), the lead (38 pt) and an article's headline (42 pt)
+    /// could be read from ten metres behind the screen (2026-10-06). Capped
+    /// at the size most of the paper's headlines already are, nothing on
+    /// screen is easier to read from across a room than an ordinary story.
+    nonisolated static let largestType = Standfirst.Metrics.cardHeadline.size
+
+    /// `size`, or `largestType` if Boss Mode is on and `size` is larger. Read
+    /// in a view's body, so the view redraws when Boss Mode changes.
+    func type(_ size: CGFloat) -> CGFloat {
+        isOn ? min(size, Self.largestType) : size
+    }
+}

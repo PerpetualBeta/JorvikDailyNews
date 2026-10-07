@@ -5,6 +5,7 @@ print("")
 
 VideoLinkTests.run()
 TranslatableTextTests.run()
+BossModeTests.run()
 PDFContentTypeTests.run()
 PDFPageSizesTests.run()
 SVGSafetyTests.run()

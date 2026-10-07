@@ -33,7 +33,7 @@ struct SectionPageView: View {
                         .foregroundStyle(.secondary)
                 }
                 Text(page.name)
-                    .font(.custom("Didot", size: 56))
+                    .font(.custom("Didot", size: BossMode.shared.type(56)))
                     .kerning(2)
             }
             Rectangle().fill(Color.primary).frame(height: 3)

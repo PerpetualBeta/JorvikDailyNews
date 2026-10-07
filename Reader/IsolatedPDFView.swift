@@ -264,6 +264,13 @@ final class IsolatedPDFModel {
         }
     }
 
+    /// A page's text, for Boss Mode. Nil for a page with none, such as a
+    /// scan, and for a helper that has gone, which the client cannot tell
+    /// apart; both read as a page with no text.
+    func text(page: Int) async -> String? {
+        await client.text(page: page)
+    }
+
     func close() { client.close() }
 }
 
@@ -449,5 +456,78 @@ struct IsolatedPDFPages: View {
         // 400 digits parses to a finite 1e75 — about 7e119 at a 700 pt pane.
         guard PDFPageSizes.isUsable(size) else { return width * 1.414 }
         return width * (size.height / size.width)
+    }
+}
+
+/// Boss Mode's PDF: the document's own text, page by page, set like an
+/// article, instead of pictures of its pages.
+///
+/// The text comes from the same sandboxed helper that draws the pages, so
+/// PDFKit still never runs in the app. A page is asked for as it comes near
+/// the screen, as a page image is.
+struct IsolatedPDFText: View {
+    let model: IsolatedPDFModel
+    let pageCount: Int
+    @Environment(\.colorScheme) private var scheme
+
+    private typealias Style = NativeReaderView.Style
+    private typealias Palette = NativeReaderView.Palette
+
+    var body: some View {
+        let dark = scheme == .dark
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(0..<pageCount, id: \.self) { index in
+                    if index > 0 {
+                        Divider().padding(.vertical, Style.ruleGap)
+                    }
+                    PDFPageText(model: model, index: index, dark: dark)
+                }
+            }
+            // The page keys, as for the page images and the native reader.
+            .background(ScrollViewAnchor(role: .reader))
+            .frame(maxWidth: Style.column, alignment: .leading)
+            .padding(.horizontal, Style.sidePadding)
+            .padding(.top, Style.topPadding)
+            .padding(.bottom, Style.bottomPadding)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Palette.background(dark))
+    }
+}
+
+private struct PDFPageText: View {
+    let model: IsolatedPDFModel
+    let index: Int
+    let dark: Bool
+    @State private var text: String?
+    @State private var answered = false
+
+    private typealias Style = NativeReaderView.Style
+    private typealias Palette = NativeReaderView.Palette
+
+    var body: some View {
+        Group {
+            if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(text)
+                    .font(.custom(Style.serif, size: Style.body))
+                    .lineSpacing(Style.body * (Style.lineHeight - 1))
+                    .foregroundStyle(Palette.text(dark))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if answered {
+                // Usually a scanned page, which is a picture with no text in it.
+                Text("Page \(index + 1) has no text to show.")
+                    .font(.custom(Style.serif, size: Style.body * Style.smallerScale).italic())
+                    .foregroundStyle(Palette.caption(dark))
+            } else {
+                ProgressView().controlSize(.small)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .task {
+            text = await model.text(page: index)
+            answered = true
+        }
     }
 }

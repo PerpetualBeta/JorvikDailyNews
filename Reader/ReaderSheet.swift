@@ -415,6 +415,15 @@ struct ReaderView: View {
             })
 
         case .video(let target):
+            if BossMode.shared.isOn {
+                // Words only, and none of them "Boss Mode": a notice that
+                // names it would say what the reader is hiding.
+                ReaderNotice(problem: Problem(
+                    headline: "Video not shown",
+                    advice: "This link is a video. Open it in your browser to watch it.",
+                    technical: item.link.host ?? "video",
+                    canRetry: false), link: item.link, retry: { })
+            } else {
             switch target {
             case .youTube(let id):
                 player(Self.youTubeEmbedHTML(id),
@@ -426,6 +435,7 @@ struct ReaderView: View {
                        what: "Vimeo \(id)")
             case .native(let mediaURL):
                 NativeVideoView(url: mediaURL)
+            }
             }
 
         case .failed(let failure):
@@ -571,6 +581,10 @@ struct ReaderView: View {
               // instead of 2,873, and nothing at all for the first few
               // seconds. It would also have been useless once revealed.
               .frame(maxWidth: .infinity, maxHeight: .infinity)
+              // A new web view when Boss Mode changes. A rule list applies to
+              // the loads after it is added, so the page has to be loaded
+              // again for its pictures to go, or to come back.
+              .id(BossMode.shared.isOn)
 
               if !liveDrew {
                   LivePageCover(host: item.link.host ?? "the original page",
@@ -578,7 +592,7 @@ struct ReaderView: View {
               }
               }
             }
-            .task(id: "live-\(item.itemId)") { liveDrew = false }
+            .task(id: "live-\(item.itemId)-\(BossMode.shared.isOn)") { liveDrew = false }
 
         case .unavailable(let problem):
             ReaderNotice(problem: problem,
@@ -1065,6 +1079,14 @@ struct LiveWebView: NSViewRepresentable {
             } else {
                 jdnLog("live page: no private-address blocklist — subresources are unrestricted")
             }
+            if BossMode.shared.isOn {
+                if let list = await LiveWebView.bossModeBlocker() {
+                    web?.configuration.userContentController.add(list)
+                } else {
+                    // Said, not hidden: the page would show its pictures.
+                    jdnLog("live page: Boss Mode list would not compile — pictures will show")
+                }
+            }
             guard let web, web.url == nil else { return }
             web.load(URLRequest(url: url))
             context.coordinator.watch(web, onBlank: onBlank, onDrew: onDrew)
@@ -1126,6 +1148,33 @@ struct LiveWebView: NSViewRepresentable {
     /// The identifier carries a version, because `lookUpContentRuleList`
     /// returns whatever was compiled before: without it, a machine that
     /// compiled the old rules would keep them for ever.
+    /// Boss Mode's list: no pictures, video, audio or SVG documents are
+    /// fetched, and the elements that would hold them are hidden, so the page
+    /// does not show empty boxes and broken-picture marks in their place.
+    /// Background pictures are blocked by the same `image` rule.
+    static func bossModeBlocker() async -> WKContentRuleList? {
+        let identifier = "cc.jorviksoftware.JorvikDailyNews.bossmode.v1"
+        guard let store = WKContentRuleListStore.default() else { return nil }
+        if let found = await withCheckedContinuation({ (c: CheckedContinuation<WKContentRuleList?, Never>) in
+            store.lookUpContentRuleList(forIdentifier: identifier) { list, _ in c.resume(returning: list) }
+        }) { return found }
+        let rules = """
+            [{"trigger":{"url-filter":".*","resource-type":["image","media","svg-document"]},\
+            "action":{"type":"block"}},\
+            {"trigger":{"url-filter":".*"},\
+            "action":{"type":"css-display-none",\
+            "selector":"img, picture, video, audio, iframe, embed, object, canvas, svg"}}]
+            """
+        return await withCheckedContinuation { (c: CheckedContinuation<WKContentRuleList?, Never>) in
+            store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: rules) { list, error in
+                if let error {
+                    jdnLog("live page: Boss Mode list would not compile — \(error.localizedDescription)")
+                }
+                c.resume(returning: list)
+            }
+        }
+    }
+
     static func privateAddressBlocker() async -> WKContentRuleList? {
         let identifier = "cc.jorviksoftware.JorvikDailyNews.liveprivate.v4"
         guard let store = WKContentRuleListStore.default() else { return nil }
@@ -1583,8 +1632,13 @@ private struct PDFReader: View {
         ZStack {
             switch model.state {
             case .ready(let pageCount):
-                IsolatedPDFPages(model: model, pageCount: pageCount, zoom: $zoom)
-                    .overlay(alignment: .bottomTrailing) { zoomControls }
+                if BossMode.shared.isOn {
+                    // Text, so no zoom: the reader's type size is the size.
+                    IsolatedPDFText(model: model, pageCount: pageCount)
+                } else {
+                    IsolatedPDFPages(model: model, pageCount: pageCount, zoom: $zoom)
+                        .overlay(alignment: .bottomTrailing) { zoomControls }
+                }
 
             case .failed(let why):
                 // Previously this was a white page: `defer { onLoaded() }`

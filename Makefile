@@ -94,6 +94,7 @@ STORAGE_SOURCES := Storage/EditionStore.swift \
 
 # Small things with no home of their own.
 SUPPORT_SOURCES := Support/BoundedFetch.swift \
+                   Support/BossMode.swift \
                    Support/Clamping.swift \
                    Support/HTMLTags.swift \
                    Support/FirstAnswer.swift \
@@ -198,6 +199,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Support/HTMLTags.swift \
                 Support/FirstAnswer.swift \
                 Support/LivePagePolicy.swift \
+                Support/BossMode.swift \
                 Reader/EmbeddedArticle.swift \
                 Pictures/PictureSignature.swift \
                 Pictures/PictureSignatureStore.swift \
@@ -219,6 +221,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
 
 TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/TranslatableTextTests.swift \
+                Tests/BossModeTests.swift \
                 Tests/OPMLImportTests.swift \
                 Tests/RedirectGuardTests.swift \
                 Tests/ReaderLedeTests.swift \

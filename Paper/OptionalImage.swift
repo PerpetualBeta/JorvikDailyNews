@@ -203,6 +203,12 @@ struct OptionalImage: View {
 
     var body: some View {
         Group {
+            if BossMode.shared.isOn {
+                // Read here so the view observes it: a picture already on
+                // screen goes the moment Boss Mode is turned on, not at its
+                // next load.
+                EmptyView()
+            } else {
             switch state {
             case .loading:
                 box(height: placeholderHeight) { skeleton }
@@ -214,8 +220,12 @@ struct OptionalImage: View {
                 // below rises into the vacated space — no awkward whitespace.
                 EmptyView()
             }
+            }
         }
-        .task(id: url) { await load() }
+        // Boss Mode is part of the id so that turning it off loads the
+        // picture again. Pictures stay off for the whole of Boss Mode, so a
+        // load started then would only find nothing.
+        .task(id: "\(url.absoluteString)|\(BossMode.shared.isOn)") { await load() }
     }
 
     /// A box as wide as the column offers and no wider, with its content laid
@@ -329,6 +339,12 @@ struct OptionalImage: View {
     }
 
     private func load() async {
+        // Not a failure, so `onFailure` is not told: the lead's handler
+        // recomputes the paper, and pictures being off is not news to it.
+        guard ImageCache.picturesEnabled else {
+            state = .failed
+            return
+        }
         // Synchronous hit — already decoded (covers an `init` that seeded
         // `.loaded`). The async `image(for:)` coalesces with any prefetch /
         // sibling view fetching the same URL, so the image is downloaded once.

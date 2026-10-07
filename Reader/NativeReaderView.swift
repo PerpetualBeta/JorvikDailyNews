@@ -41,9 +41,10 @@ struct NativeReaderView: View {
 
     // MARK: Measurements, all from reader.css
 
-    /// `fileprivate` rather than `private` so `InlineSVG` at the foot of this
-    /// file can use the same measurements. One renderer, one column width.
-    fileprivate enum Style {
+    /// Not private, so `InlineSVG` at the foot of this file and Boss Mode's
+    /// PDF text (`IsolatedPDFText`) use the same measurements. One reader, one
+    /// column width.
+    enum Style {
         static let column: CGFloat = 680        // article max-width
         static let sidePadding: CGFloat = 32    // article padding
         static let topPadding: CGFloat = 56     // article margin-top
@@ -93,7 +94,8 @@ struct NativeReaderView: View {
     }
 
     /// The palette, both schemes, straight from the stylesheet's two halves.
-    private enum Palette {
+    /// Not private, for the same reason as `Style`.
+    enum Palette {
         static func background(_ dark: Bool) -> Color {
             dark ? Color(white: 0x11 / 255.0) : Color(white: 0xfa / 255.0)
         }
@@ -134,7 +136,9 @@ struct NativeReaderView: View {
             // all of them in one main-thread pass.
             LazyVStack(alignment: .leading, spacing: 0) {
                 header
-                if let lede {
+                // Boss Mode drops the slot, not only the picture in it, or its
+                // padding would leave a gap under the headline.
+                if let lede, !BossMode.shared.isOn {
                     // Above the first block, below the headline, which is where
                     // a newspaper puts it. Uncapped, like every other picture in
                     // the reader, so it keeps its own shape.
@@ -190,9 +194,9 @@ struct NativeReaderView: View {
                 .foregroundStyle(Palette.byline(dark))
             // Double-decoded where that cannot produce markup. See decodeTitle.
             Text(translatedTitle ?? Standfirst.decodeTitle(article.title ?? sourceTitle))
-                .font(.custom(Style.display, size: Style.h1))
+                .font(.custom(Style.display, size: headingSize(1)))
                 .foregroundStyle(Palette.heading(dark))
-                .lineSpacing(Style.h1 * 0.15)
+                .lineSpacing(headingSize(1) * 0.15)
                 .padding(.top, 12)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -225,11 +229,14 @@ struct NativeReaderView: View {
                 .padding(.top, Style.body * Style.headingTopGap)
                 .padding(.bottom, Style.body * Style.headingBottomGap)
 
+        // Boss Mode drops a picture with its caption, which reads as a stray
+        // line of italics without it, and inline SVG, which `ImageCache`'s
+        // gate never covered because AppKit draws it here.
         case .image:
-            picture(block)
+            if !BossMode.shared.isOn { picture(block) }
 
         case .svg:
-            inlineSVG(block)
+            if !BossMode.shared.isOn { inlineSVG(block) }
 
         case .list:
             VStack(alignment: .leading, spacing: Style.body * Style.listItemGap) {
@@ -287,13 +294,15 @@ struct NativeReaderView: View {
         return markers[min(depth, markers.count - 1)]
     }
 
+    /// Capped in Boss Mode, the article's headline with the rest.
     private func headingSize(_ level: Int) -> CGFloat {
-        switch level {
+        let size: CGFloat = switch level {
         case 1: Style.h1
         case 2: Style.h2
         case 3: Style.h3
         default: Style.h4
         }
+        return BossMode.shared.type(size)
     }
 
     // MARK: Runs

@@ -32,6 +32,8 @@ A newspaper is the other shape. It publishes for a day, it is finite, and you fi
 
 **It translates, on your Mac.** An article in another language offers **Translate from** that language in the reader's header, and turns into yours a paragraph at a time. macOS's own translator does it for the languages it knows; Apple Intelligence does the rest, labelled approximate. Nothing is sent anywhere. See [Using it](Documentation/using-it.md).
 
+**It has a Boss Mode.** F6 turns off every picture and video, shows PDFs as text and brings the big headlines down to the size of the small ones, so the screen is quiet text that cannot be read from across the room. Nothing on screen says it is on. See [Using it](Documentation/using-it.md).
+
 **It handles what is not an article.** Videos play in-app, PDFs render in a sandboxed helper with their size and progress shown, and a page that only builds itself in JavaScript falls back to the real page. That fallback is measured rather than assumed: if the page lays out nothing to read, you get an explanation and a button to your browser instead of a blank sheet.
 
 **It tells you when a feed has gone quiet.** A line under the dateline when a feed has been unreachable for over a day, and a separate one, said once, when a feed answers perfectly and has published nothing for a year. Manage Feeds keeps the standing list, with a compass button that opens each site rather than its XML. Both are printer's notes, not badges: there are no unread counts in this app and nothing nags.

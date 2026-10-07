@@ -13,7 +13,7 @@ struct Masthead: View {
     var body: some View {
         VStack(spacing: 6) {
             Text("Jorvik Daily News")
-                .font(.custom("Didot", size: 64))
+                .font(.custom("Didot", size: BossMode.shared.type(64)))
                 .kerning(1)
                 .fixedSize()
             Text("Nuntii ex orbe terrarum")

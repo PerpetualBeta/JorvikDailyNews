@@ -285,6 +285,10 @@ struct ContentView: View {
                 KeyboardScroller.shared.paperKeyHandler = { [keyNav] event in keyNav.handle(event) }
                 KeyboardScroller.shared.paperPaged = { [keyNav] in keyNav.paperPaged() }
                 KeyboardScroller.shared.isArticleOpen = { [store] in store.selectedArticle != nil }
+                // Laid out again without pictures, or with them, so the
+                // columns are measured for what they now hold.
+                BossMode.shared.onChange = { [store] in store.recomputeVisibleEdition() }
+                BossModeMenu.shared.install()
             }
             // Floating page-indicator as an overlay on the ScrollView's
             // frame. Overlay alignment is relative to the viewport, so

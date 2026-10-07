@@ -134,7 +134,7 @@ private struct LeadStoryView: View {
     /// short enough to sit beside the picture. There has to be a picture to sit
     /// beside, so a text-only lead stays stacked.
     private var setsAcross: Bool {
-        guard item.imageURL != nil, !item.summary.isEmpty else { return false }
+        guard item.imageURL != nil, !BossMode.shared.isOn, !item.summary.isEmpty else { return false }
         let deck = Standfirst.plan(item.summary, width: width, metrics: .lead, maxLines: Self.summaryMaxLines)
         return deck.columns.filter { !$0.isEmpty }.count <= 1
     }
@@ -199,9 +199,13 @@ private struct LeadStoryView: View {
     }
 
     private func headline(width: CGFloat) -> some View {
-        Text(Standfirst.bindingRunt(item.displayTitle, width: width, metrics: .leadHeadline))
-            .font(.custom("Didot", size: 38))
-            .lineSpacing(4)
+        // Boss Mode sets the lead as an ordinary story's headline. The runt
+        // is measured in the metrics it is drawn in, or it would break the
+        // line for type of another size.
+        let metrics: Standfirst.Metrics = BossMode.shared.isOn ? .cardHeadline : .leadHeadline
+        return Text(Standfirst.bindingRunt(item.displayTitle, width: width, metrics: metrics))
+            .font(.custom(metrics.fontName, size: metrics.size))
+            .lineSpacing(metrics.lineSpacing)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
     }

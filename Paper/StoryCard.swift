@@ -108,7 +108,10 @@ struct StoryCard: View {
     /// sharpens as pictures arrive, and items must not hop columns while the
     /// reader is looking at them.
     private static func imageHeight(_ item: FeedItem, columnWidth: CGFloat) -> CGFloat {
-        guard let url = item.imageURL, columnWidth > 0 else { return 0 }
+        // With pictures off there is no picture, so none is measured. Counting
+        // the cap for each one left every card a picture's height too tall
+        // until the columns were measured again.
+        guard ImageCache.picturesEnabled, let url = item.imageURL, columnWidth > 0 else { return 0 }
         let cap = ImageCap.card
         guard let img = ImageCache.shared.cachedImage(for: url),
               img.size.width > 0, img.size.height > 0

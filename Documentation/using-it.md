@@ -62,6 +62,20 @@ Every row there also carries a compass button that opens the **site** in your br
 
 Toggle in the toolbar. When on, read items are removed from the paper and the front page reflows — the next unread story takes the lead slot, secondaries refill, etc. When off, read items stay visible at 55% opacity as a "you've been here" affordance.
 
+## Boss Mode
+
+Press **F6** (fn-F6 on a keyboard set to media keys) and the app shows text and nothing else. Press it again to go back. It stays on after you quit until you turn it off. The menu item is **View ▸ Boss Mode**, and it is in the menu only while you hold option.
+
+With Boss Mode on:
+
+- **No pictures**, on the paper, in the lead or in an article, and none are downloaded. A picture's caption and an article's inline SVG go too. The paper is laid out again without them, and the lead is chosen from the stories as if no story had a picture.
+- **No big type.** The masthead, the lead, section titles and an article's headline are set no larger than an ordinary story's headline on the paper (Didot 20 pt), so nothing on the screen can be read from across a room more easily than the rest.
+- **A video** shows "Video not shown" and **Open in Browser** instead of a player.
+- **A PDF** shows its own text, page by page, in the reader's type, instead of pictures of its pages. A page with no text in it, such as a scan, says so.
+- **The live page** is loaded with its pictures, video and SVG blocked, and their empty boxes hidden.
+
+Nothing on the screen says that Boss Mode is on.
+
 ## Reader pane
 
 Clicking a headline replaces the paper with an inline reader view (not a separate window). Mozilla Readability extracts the article's main content, and **the reader draws it directly in SwiftUI — there is no web view in the article path at all**. Charter at a 680 px column, dark-mode aware, with every measurement taken from the stylesheet the HTML renderer used to apply.
