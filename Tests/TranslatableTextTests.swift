@@ -39,6 +39,35 @@ enum TranslatableTextTests {
             T.equal(pieces[5].key, TranslationKey(block: 5, part: .caption), "a caption is translated")
         }
 
+        T.suite("Translation: an article's language is read from its prose, not its opening line") {
+            // The real headline and caption from ServeTheHome's article (2026-10-09), which are
+            // mostly model numbers, followed by English paragraphs written for this test. On macOS
+            // 27.0.1 the old way, one recogniser call on the pieces joined, called this Indonesian:
+            // the recogniser judges from the opening and the opening is the headline.
+            let english = [
+                "Gigabyte W775-V10-L01 Hands-on Bringing NVIDIA GB300 Deskside",
+                "GIGABYTE W775-V10-L01-Front Angled 3",
+                "This workstation puts a data-centre class accelerator under a desk. It needs a single wall socket, a quiet room and a good deal of patience while it starts, but once it is running it behaves much like any other tower computer, only far faster at the work it was built for.",
+                "The case is plain and large. There are no lights on the front, the handles are solid metal, and the side panel comes away without tools, which makes the inside easy to reach when a drive or a memory module has to be changed.",
+                "External Hardware Overview",
+                "On the back there are several network ports, a few USB connectors and a single video output. Most people will reach it over the network rather than plug in a screen, and the vendor clearly expects exactly that.",
+            ]
+            T.equal(TranslatableText.language(of: english), .english,
+                    "English prose under a headline of model numbers is English")
+
+            // The other way round: the same kind of headline over Romanian prose must still be
+            // Romanian, or the weighting would just be a bias towards English.
+            let romanian = [
+                "Gigabyte W775-V10-L01 GB300",
+                "La început, inginerii au construit o stație de lucru foarte puternică pentru birou. Ea are nevoie de o singură priză, de o cameră liniștită și de multă răbdare la pornire, dar apoi funcționează ca orice alt calculator.",
+                "Carcasa este simplă și mare. Nu există lumini în față, mânerele sunt din metal, iar panoul lateral se scoate fără unelte, ceea ce face interiorul ușor de atins.",
+            ]
+            T.equal(TranslatableText.language(of: romanian), .romanian,
+                    "Romanian prose under a headline of model numbers is still Romanian")
+
+            T.equal(TranslatableText.language(of: []), nil, "no pieces, no language")
+        }
+
         T.suite("Translation: a translated block is drawn as its translation") {
             let original = article()
             let translated = TranslatableText.apply([

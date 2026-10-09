@@ -81,11 +81,9 @@ final class ArticleTranslation {
     func prepare(title: String?, blocks: [ReaderBlock]) async {
         reset()
         pieces = TranslatableText.pieces(title: title, blocks: blocks, titleKey: titleKey)
-        let sample = pieces.prefix(Self.detectionPieces).map(\.text).joined(separator: "\n")
-        guard sample.count >= Self.detectionMinimumCharacters else { return }
-        let recogniser = NLLanguageRecognizer()
-        recogniser.processString(sample)
-        guard let detected = recogniser.dominantLanguage, detected != .undetermined else { return }
+        let sample = pieces.prefix(Self.detectionPieces).map(\.text)
+        guard sample.joined(separator: "\n").count >= Self.detectionMinimumCharacters else { return }
+        guard let detected = TranslatableText.language(of: sample), detected != .undetermined else { return }
         let language = Locale.Language(identifier: detected.rawValue)
         guard language.languageCode != Self.target.languageCode else { return }
         source = language
@@ -291,6 +289,33 @@ enum TranslatableText {
             }
         }
         return out.map { (key: $0.0, text: $0.1) }
+    }
+
+    /// The language of an article's opening pieces: each piece asked on its own, and the answers
+    /// added up weighted by the piece's length, so a 640-character paragraph counts ten times as
+    /// much as a 61-character headline.
+    ///
+    /// **Not one call on the pieces joined together.** `NLLanguageRecognizer` judges from roughly
+    /// the opening of what it is given and barely reads the rest. Measured on 2026-10-09 on
+    /// ServeTheHome's "Gigabyte W775-V10-L01 Hands-on": the first eight pieces joined were 3,100
+    /// characters, 2,952 of them plain English paragraphs, and the recogniser answered Indonesian
+    /// 0.453, English 0.125, with exactly the same scores from the first 100 characters as from all
+    /// 3,100. Those 100 were the headline and an image caption, mostly model numbers. The same
+    /// pieces in reverse order read as English 0.998, and each long paragraph alone read as
+    /// English at 0.927 or more. So the opening decided it, and the opening was the least prose
+    /// on the page. Asked one piece at a time, every paragraph is read, and the length weighting
+    /// lets prose outvote a headline and a caption.
+    static func language(of texts: [String]) -> NLLanguage? {
+        var score: [NLLanguage: Double] = [:]
+        for text in texts {
+            let recogniser = NLLanguageRecognizer()
+            recogniser.processString(text)
+            let weight = Double(text.count)
+            for (language, probability) in recogniser.languageHypotheses(withMaximum: 5) {
+                score[language, default: 0] += probability * weight
+            }
+        }
+        return score.max { $0.value < $1.value }?.key
     }
 
     private static func add(_ runs: [ReaderBlock.Run]?, _ key: TranslationKey,
