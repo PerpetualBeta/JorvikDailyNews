@@ -72,7 +72,17 @@ struct JorvikDailyNewsApp: App {
                     JorvikAboutView.showWindow(
                         appName: "Jorvik Daily News",
                         repoName: "JorvikDailyNews",
-                        productPage: "apps/jorvik-daily-news"
+                        productPage: "apps/dailynews",
+                        credits: [
+                            JorvikCredit(
+                                name: "thechurchofthechad-dotcom",
+                                contribution: L10n.string(
+                                    "credits.chad",
+                                    defaultValue: "the logs that found why articles would not load"
+                                ),
+                                url: URL(string: "https://github.com/thechurchofthechad-dotcom")
+                            )
+                        ]
                     )
                 }
                 Button("Check for Updates\u{2026}") {
