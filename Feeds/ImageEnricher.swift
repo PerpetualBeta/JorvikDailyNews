@@ -171,11 +171,26 @@ struct ImageEnricher: Sendable {
         request.timeoutInterval = timeout
 
         let fetched: Data
+        let response: URLResponse
         do {
-            (fetched, _) = try await BoundedFetch.data(for: request, on: BoundedFetch.session, limit: BoundedFetch.headLimit,
+            (fetched, response) = try await BoundedFetch.data(for: request, on: BoundedFetch.session, limit: BoundedFetch.headLimit,
                                                   truncating: true)
         } catch {
             return PageMeta(failure: "fetch failed: \(error.localizedDescription)")
+        }
+        // An error page's metadata describes the error page, not the article.
+        // On 2026-10-19 every lucasaguiar.xyz post in Hacker News: Newest
+        // answered 404 with the site's home page, so each one gained the home
+        // page's banner as its picture and led the front page under it, one
+        // after another, all the same picture. 206 is a success here: the
+        // request asks for a byte range. A server error or a rate limit may
+        // pass, so those are retried like a failed fetch; anything else is not.
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let code = http.statusCode
+            if code >= 500 || code == 429 {
+                return PageMeta(failure: "fetch failed: status \(code)")
+            }
+            return PageMeta(failure: "status \(code) — not the article, so its metadata is not used")
         }
         let limited = fetched.prefix(maxBytes)
         guard let html = String(data: limited, encoding: .utf8)
