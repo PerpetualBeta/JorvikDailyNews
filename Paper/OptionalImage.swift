@@ -268,7 +268,15 @@ private struct LoadedImage: View {
         Color.clear
             .frame(maxWidth: .infinity)
             .frame(height: height)
-            .overlay { content() }
+            // Top-aligned, because `cropOffset` measures from the top of the
+            // picture. The default alignment is centre, which from 2026-09-05
+            // to 2026-10-19 placed every cropped picture by its middle and then
+            // applied the offset on top of that. A face near the top, offset 0,
+            // came out as a centred crop with the head above the window
+            // (spectrum.ieee.org's robot portrait, logged at offset 0 and drawn
+            // from 45% down). Horizontally it still centres a picture narrower
+            // than its column.
+            .overlay(alignment: .top) { content() }
             .clipped()
             .background(widthProbe)
     }
