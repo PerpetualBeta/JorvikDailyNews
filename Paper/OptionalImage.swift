@@ -141,6 +141,35 @@ enum ImageCap {
 struct OptionalImage: View {
     let url: URL
     let maxHeight: CGFloat?
+    let drawWidth: CGFloat?
+    let onFailure: (() -> Void)?
+
+    init(url: URL, maxHeight: CGFloat? = nil, drawWidth: CGFloat? = nil,
+         onFailure: (() -> Void)? = nil) {
+        self.url = url
+        self.maxHeight = maxHeight
+        self.drawWidth = drawWidth
+        self.onFailure = onFailure
+    }
+
+    /// One view per URL. Where a caller keeps the same view and hands it a new
+    /// URL, SwiftUI keeps the old `@State`: the previous picture stays drawn
+    /// until the new one has downloaded. On 2026-10-19 the front page's lead
+    /// changed after a dismissal and showed the old lead's picture under the new
+    /// headline for 22 seconds, the time `brennan.day` took to serve its
+    /// full-size picture. With the URL as the identity, a new URL is a new view,
+    /// and its `init` seeds from the cache: a picture held at any size is drawn
+    /// on the first frame and replaced when the full-size one arrives.
+    var body: some View {
+        LoadedImage(url: url, maxHeight: maxHeight, drawWidth: drawWidth, onFailure: onFailure)
+            .id(url)
+    }
+}
+
+/// The view `OptionalImage` draws, one per URL. See `OptionalImage`.
+private struct LoadedImage: View {
+    let url: URL
+    let maxHeight: CGFloat?
     /// Called when the image fails to load (bad URL, non-2xx, undecodable, or
     /// tracker-sized). The lead uses this to demote itself when its image
     /// can't be shown; ordinary cards leave it nil and just collapse.
