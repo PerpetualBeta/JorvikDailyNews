@@ -242,6 +242,7 @@ final class AppStore {
     /// and with hide-read on it leaves the paper the same way, its slot filled
     /// by the next unread item.
     func markRead(_ item: FeedItem) {
+        jdnLog("read: \(item.displayTitle)")
         readStore.markRead(item.itemId)
         if hideReadItems {
             recomputeVisibleEdition()
@@ -1028,7 +1029,7 @@ final class AppStore {
     /// the current pause + hide-read filters. Used whenever a filter changes
     /// or a fresh edition is saved. The on-disk edition is never a
     /// filtered view — only this in-memory representation is.
-    func recomputeVisibleEdition() {
+    func recomputeVisibleEdition(caller: String = #function) {
         guard let base = editionStore.today else {
             visibleEdition = nil
             return
@@ -1084,7 +1085,12 @@ final class AppStore {
             return updated
         }
 
+        let previousLead = visibleEdition?.lead
         visibleEdition = builder.build(from: kept, date: base.date)
+        if let lead = visibleEdition?.lead, lead.itemId != previousLead?.itemId {
+            jdnLog("lead: \(previousLead?.displayTitle ?? "none") -> \(lead.displayTitle)"
+                + " (\(lead.imageURL?.host ?? "no picture"), reader \(selectedArticle == nil ? "closed" : "open"), from \(caller))")
+        }
         if pageIndex >= totalPages { pageIndex = 0 }
         topUpEnrichment(for: kept)
     }

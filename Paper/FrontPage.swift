@@ -185,7 +185,10 @@ private struct LeadStoryView: View {
             OptionalImage(
                 url: img,
                 maxHeight: heroCap,
-                onFailure: { store.recomputeVisibleEdition() }
+                onFailure: {
+                    jdnLog("lead: picture failed for \(item.displayTitle) (\(img.host ?? "?")), recomputing")
+                    store.recomputeVisibleEdition()
+                }
             )
             .frame(maxWidth: .infinity)
         }

@@ -262,6 +262,7 @@ struct ContentView: View {
             // / PgUp / PgDn and scroll itself behind the article.
             .onAppear { scrollFocused = store.selectedArticle == nil }
             .onChange(of: store.selectedArticle == nil) { _, paperIsFront in
+                if paperIsFront { jdnLog("reader: closed, lead is \(store.visibleEdition?.lead?.displayTitle ?? "none")") }
                 scrollFocused = paperIsFront
             }
             .animation(.easeInOut(duration: 0.18), value: store.pageIndex)
