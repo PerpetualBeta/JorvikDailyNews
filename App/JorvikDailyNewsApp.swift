@@ -59,6 +59,11 @@ struct JorvikDailyNewsApp: App {
         )
     }
 
+    /// Whether a text field or text view has the keyboard.
+    private static var editingText: Bool {
+        NSApp.keyWindow?.firstResponder is NSText
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -89,6 +94,27 @@ struct JorvikDailyNewsApp: App {
                     NSRunningApplication.current.activate(options: [.activateAllWindows])
                     sparkleUpdater.checkForUpdates(nil)
                 }
+            }
+            // Undo and Redo take back read marks. While text is being edited
+            // they go to the text instead, which is what the standard items
+            // these replace would have done.
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") {
+                    if Self.editingText {
+                        NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+                    } else if !store.undoRead() {
+                        NSSound.beep()
+                    }
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                Button("Redo") {
+                    if Self.editingText {
+                        NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
+                    } else if !store.redoRead() {
+                        NSSound.beep()
+                    }
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .newItem) {
                 Button("Add Feed\u{2026}") {

@@ -90,7 +90,8 @@ PICTURES_SOURCES := Pictures/ImageCache.swift \
 # The four files on disk.
 STORAGE_SOURCES := Storage/EditionStore.swift \
                    Storage/FeedStore.swift \
-                   Storage/ReadStore.swift
+                   Storage/ReadStore.swift \
+                   Storage/ReadHistory.swift
 
 # Small things with no home of their own.
 SUPPORT_SOURCES := Support/BoundedFetch.swift \
@@ -209,6 +210,7 @@ TEST_SOURCES := Reader/VideoLink.swift \
                 Reader/ArticleTranslator.swift \
                 Reader/BaseHref.swift \
                 Storage/ReadStore.swift \
+                Storage/ReadHistory.swift \
                 Feeds/ArticleClassifier.swift \
                 Feeds/Feed.swift \
                 Feeds/FeedFetcher.swift \
@@ -243,6 +245,7 @@ TEST_HARNESS := Tests/TestRunner.swift \
                 Tests/WalkerTests.swift \
                 Tests/ReaderBlockTests.swift \
                 Tests/LegacyIDTests.swift \
+                Tests/ReadHistoryTests.swift \
                 Tests/BaseHrefTests.swift \
                 Tests/QuadraticTests.swift \
                 Tests/KeyNavTests.swift \

@@ -8,6 +8,7 @@ final class AppStore {
     let feedStore = FeedStore()
     let editionStore = EditionStore()
     let readStore = ReadStore()
+    let readHistory = ReadHistory()
     let classifier = ArticleClassifier()
     private let fetcher = FeedFetcher()
     private let discovery = FeedDiscovery()
@@ -53,6 +54,12 @@ final class AppStore {
     /// Its story goes on the page without a second preflight, which is what
     /// stops a picture the cache will not report as held from fetching for ever.
     private var leadPreflightDone: URL?
+
+    /// Marks Undo has taken back this session, newest last, for Redo.
+    private var undoneReads: [ReadHistory.Entry] = []
+    /// A lead Undo has brought back. The next paper puts it in the lead in
+    /// place of the one showing, which would otherwise be kept.
+    private var leadToRestore: String?
 
     /// How long a new lead may wait for its picture before it goes on the page
     /// anyway. A failure measured on 2026-10-22 took 323 ms (HTTP 400), so this
@@ -271,10 +278,63 @@ final class AppStore {
     /// by the next unread item.
     func markRead(_ item: FeedItem) {
         jdnLog("read: \(item.displayTitle)")
+        if !readStore.isRead(item.itemId) {
+            readHistory.record(item.itemId,
+                               wasLead: pageIndex == 0 && visibleEdition?.lead?.itemId == item.itemId)
+            // A new mark starts a new branch, as in any editor: what was
+            // undone before it can no longer be redone.
+            undoneReads.removeAll()
+        }
         readStore.markRead(item.itemId)
         if hideReadItems {
             recomputeVisibleEdition()
         }
+    }
+
+    /// Take back the newest of today's read marks: the story returns to the
+    /// paper, to the lead if that is where it was, with the KeyNav outline on
+    /// it. Repeated, it walks back through the whole day. False when there was
+    /// nothing to take back.
+    @discardableResult
+    func undoRead() -> Bool {
+        while let entry = readHistory.popLatest() {
+            // Already unread some other way: nothing left to take back.
+            guard readStore.isRead(entry.itemId) else { continue }
+            readStore.markUnread(entry.itemId)
+            undoneReads.append(entry)
+            jdnLog("undo: read mark taken back (\(entry.wasLead ? "the lead" : "a card"))")
+            if entry.wasLead { leadToRestore = entry.itemId }
+            if hideReadItems { recomputeVisibleEdition() }
+            if keyNavActive, let item = editionItem(entry.itemId) {
+                keyNavItemId = item.itemId
+                keyNavLink = item.link
+                linkFromKeyboard = true
+            }
+            return true
+        }
+        return false
+    }
+
+    /// Put back the read mark Undo last took away. Only for this session: a
+    /// relaunch keeps the read marks, not the redo list.
+    @discardableResult
+    func redoRead() -> Bool {
+        guard let entry = undoneReads.popLast() else { return false }
+        readStore.markRead(entry.itemId)
+        readHistory.record(entry.itemId, wasLead: entry.wasLead)
+        jdnLog("redo: read mark put back")
+        if hideReadItems { recomputeVisibleEdition() }
+        return true
+    }
+
+    /// Looked up in today's whole edition, not the visible one: a restored
+    /// lead may still be waiting on its picture (`preflightLead`), and the
+    /// outline goes on it as soon as it is drawn.
+    private func editionItem(_ id: String) -> FeedItem? {
+        guard let edition = editionStore.today else { return nil }
+        let all = [edition.lead].compactMap { $0 } + edition.secondaries + edition.briefs
+            + edition.sections.flatMap(\.items)
+        return all.first { $0.itemId == id }
     }
 
     func goToPage(_ index: Int) {
@@ -1117,12 +1177,13 @@ final class AppStore {
         // Today's lead stays put across rebuilds; a new day's paper picks afresh.
         let sameDay = visibleEdition?.date == Calendar.current.startOfDay(for: base.date)
         let built = builder.build(from: kept, date: base.date,
-                                  keepingLead: sameDay ? visibleEdition?.lead?.itemId : nil)
+                                  keepingLead: leadToRestore ?? (sameDay ? visibleEdition?.lead?.itemId : nil))
         if let url = leadNeedingPreflight(built) {
             preflightLead(url)
             return
         }
         leadPreflight = nil
+        leadToRestore = nil
         visibleEdition = built
         if let lead = visibleEdition?.lead, lead.itemId != previousLead?.itemId {
             jdnLog("lead: \(previousLead?.displayTitle ?? "none") -> \(lead.displayTitle)"
