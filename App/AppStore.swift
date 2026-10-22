@@ -1190,6 +1190,7 @@ final class AppStore {
                 + " (\(lead.imageURL?.host ?? "no picture"), reader \(selectedArticle == nil ? "closed" : "open"), from \(caller))")
         }
         if pageIndex >= totalPages { pageIndex = 0 }
+        prefetchNextLeads(after: built)
         topUpEnrichment(for: kept)
     }
 
@@ -1246,6 +1247,55 @@ final class AppStore {
     private static func fetchLeadPicture(_ url: URL, widthPx: Int, limit: TimeInterval) async -> Bool? {
         await FirstAnswer.of(limit, fallback: nil) {
             await ImageCache.shared.image(for: url, drawWidthPx: widthPx) != nil
+        }
+    }
+
+    /// How many of the next likely leads have their pictures fetched ahead.
+    /// Each delete on the lead uses one, so this covers a short run of deletes
+    /// without fetching for stories nobody reaches. A knob:
+    ///
+    ///     defaults write cc.jorviksoftware.JorvikDailyNews leadPrefetchCount -int 3
+    static let leadPrefetchCountDefault = 3
+    static var leadPrefetchCount: Int {
+        let stored = UserDefaults.standard.integer(forKey: "leadPrefetchCount")
+        return stored > 0 ? stored : leadPrefetchCountDefault
+    }
+
+    private var leadPrefetch: Task<Void, Never>?
+
+    /// Fetch, one at a time, the pictures of the stories most likely to be the
+    /// next lead, so the wait in `preflightLead` usually finds them already in
+    /// the cache. A newer paper replaces the list; a download already started
+    /// finishes, because it ends up in the cache either way.
+    ///
+    /// In the builder's own order of preference: stories with a picture and a
+    /// standfirst first, then stories with only a picture, across the whole
+    /// paper. Taking only the first kind, and only from the front-page cards,
+    /// fetched nothing once those ran out: on 2026-10-22 the first seven
+    /// deletes found their picture waiting (8 to 68 ms), then every lead was a
+    /// picture-only Show HN story and the waits went back to 1.5 s.
+    private func prefetchNextLeads(after edition: Edition) {
+        leadPrefetch?.cancel()
+        guard ImageCache.picturesEnabled, !BossMode.shared.isOn else { return }
+        let widthPx = Self.leadPreflightWidthPx
+        let pool = edition.secondaries + edition.briefs + edition.sections.flatMap(\.items)
+        let preferred = pool.filter { EditionBuilder.canAnchorLead($0) }
+            + pool.filter { EditionBuilder.hasUsableImage($0) && !EditionBuilder.canAnchorLead($0) }
+        var seen = Set<URL>()
+        let urls = preferred
+            .compactMap(\.imageURL)
+            .filter { seen.insert($0).inserted }
+            .filter { ImageCache.shared.cachedImage(for: $0, wideEnoughFor: widthPx) == nil }
+            .prefix(Self.leadPrefetchCount)
+        guard !urls.isEmpty else { return }
+        leadPrefetch = Task {
+            for url in urls {
+                guard !Task.isCancelled else { return }
+                let started = Date()
+                let image = await ImageCache.shared.image(for: url, drawWidthPx: widthPx)
+                jdnLog("lead: fetched ahead in \(Int(Date().timeIntervalSince(started) * 1000)) ms, "
+                       + "\(image == nil ? "failed" : "loaded") (\(url.host ?? "?"))")
+            }
         }
     }
 
