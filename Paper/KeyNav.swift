@@ -162,6 +162,23 @@ final class KeyNavController {
     /// Where the highlighted story was when it was last seen, so that if it
     /// disappears (read, with hide-read on) the one filling its slot takes over.
     private var lastRect: CGRect?
+    /// Whether the highlighted story was the lead when it was last seen. The
+    /// lead is a slot of its own, so when it goes the new lead takes over, not
+    /// whichever card is nearest: a lead set without a picture centres its
+    /// headline, and a column card's corner was nearer (2026-10-22).
+    private var lastWasLead = false
+
+    /// The lead on the page, when the front page is the one showing.
+    private var shownLead: String? {
+        guard let store, store.pageIndex == 0 else { return nil }
+        return (store.visibleEdition ?? store.editionStore.today)?.lead?.itemId
+    }
+
+    /// Note where a story is, and whether it is the lead.
+    private func remember(_ id: String, at rect: CGRect?) {
+        lastRect = rect
+        lastWasLead = id == shownLead
+    }
 
     /// The paper's own margins: 32 above the page, 72 below it when the page
     /// pill is showing, which is exactly the space the pill needs. A story kept
@@ -193,7 +210,7 @@ final class KeyNavController {
         switch event.keyCode {
         case 36, 76:  // Return, Enter
             guard let id = store.keyNavItemId, let item = item(id) else { return true }
-            lastRect = frames[id]
+            remember(id, at: frames[id])
             store.openArticle(item)
             return true
         case 51, 117:  // Delete (backspace), forward delete
@@ -205,7 +222,7 @@ final class KeyNavController {
             // the outline. Only reached on the paper in KeyNav: in the reader,
             // delete still means Back to Paper.
             guard let id = store.keyNavItemId, let item = item(id) else { return true }
-            lastRect = frames[id]
+            remember(id, at: frames[id])
             store.markRead(item)
             return true
         case 126: move(.up); return true
@@ -221,13 +238,14 @@ final class KeyNavController {
     func pageTurned() {
         store?.keyNavItemId = nil
         lastRect = nil
+        lastWasLead = false
     }
 
     /// A story was opened, by Return or by a click: that is where to come back to.
     func articleOpened(_ id: String) {
         guard store?.keyNavActive == true else { return }
         store?.keyNavItemId = id
-        lastRect = frames[id]
+        remember(id, at: frames[id])
     }
 
     private func move(_ direction: KeyNavDirection) {
@@ -270,7 +288,7 @@ final class KeyNavController {
         store?.keyNavLink = item(id)?.link
         store?.linkFromKeyboard = true
         guard let rect = frames[id] else { return }
-        lastRect = rect
+        remember(id, at: rect)
         if reveal { KeyboardScroller.shared.revealInPaper(rect, top: topMargin, bottom: bottomMargin) }
     }
 
@@ -278,12 +296,20 @@ final class KeyNavController {
     func storiesChanged() {
         let frames = frames
         guard let store, store.keyNavActive, !frames.isEmpty else { return }
-        if let id = store.keyNavItemId, let rect = frames[id] {
-            lastRect = rect
+        // A story that has left the edition is gone even while its view is
+        // still fading out and reporting a frame, or the lead being replaced
+        // would be remembered as an ordinary card.
+        if let id = store.keyNavItemId, let rect = frames[id], item(id) != nil {
+            remember(id, at: rect)
             return
         }
-        // Gone (read, with hide-read on) or never set (a new page).
-        let replacement = lastRect.flatMap { KeyNav.nearest(to: $0, in: frames) } ?? KeyNav.first(in: frames)
+        // Gone (read, with hide-read on) or never set (a new page). A lead
+        // that went is replaced by the new lead; anything else by the story
+        // now nearest its slot.
+        let newLead = lastWasLead ? shownLead.flatMap { frames[$0] != nil ? $0 : nil } : nil
+        let replacement = newLead
+            ?? lastRect.flatMap { KeyNav.nearest(to: $0, in: frames) }
+            ?? KeyNav.first(in: frames)
         if let replacement { highlight(replacement) }
     }
 
