@@ -80,6 +80,7 @@ final class BossModeMenu: NSObject {
 
     private var optionTimer: Timer?
     private var installed = false
+    private var keyMonitor: Any?
 
     func install() {
         guard !installed else { return }
@@ -96,6 +97,7 @@ final class BossModeMenu: NSObject {
             centre.addObserver(self, selector: #selector(menusChanged(_:)), name: name, object: nil)
         }
         attach()
+        installKeyMonitor()
         jdnLog("boss mode: \(item.menu == nil ? "NOT in" : "in") the \(item.menu?.title ?? "View") menu, "
                + "\(BossMode.shared.isOn ? "on" : "off")")
     }
@@ -127,6 +129,26 @@ final class BossModeMenu: NSObject {
 
     @objc private func toggle(_ sender: Any?) {
         BossMode.shared.toggle()
+    }
+
+    /// F6 is taken here, before the menu sees it.
+    ///
+    /// Left to the menu's key equivalent, every other press was lost. Logged on
+    /// 2026-10-22: two F6 key-downs reached the app 769 ms apart, identical in
+    /// flags and window, with the item attached to the View menu both times,
+    /// and only the second toggled. So the press is dropped inside AppKit's
+    /// key-equivalent matching on SwiftUI's menu, which this app cannot see
+    /// into. A local monitor sees every press. It swallows the event, so the
+    /// item never fires as well; the item stays for its menu title and F6 label.
+    /// A held key's repeats are ignored, so holding F6 does not flicker.
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                .subtracting([.function, .numericPad, .capsLock])
+            guard event.keyCode == 97, mods.isEmpty else { return event }  // F6
+            if !event.isARepeat { BossMode.shared.toggle() }
+            return nil
+        }
     }
 
     @objc private func menusWillOpen(_ note: Notification) {
