@@ -1227,19 +1227,7 @@ final class AppStore {
         let limit = Self.leadPreflightSeconds
         let widthPx = Self.leadPreflightWidthPx
         Task { [weak self] in
-            // Unstructured, so the download outlives a timeout and still
-            // lands in the cache for the view that asks next.
-            let download = Task { await ImageCache.shared.image(for: url, drawWidthPx: widthPx) != nil }
-            let loaded: Bool? = await withTaskGroup(of: Bool?.self) { group in
-                group.addTask { await download.value }
-                group.addTask {
-                    try? await Task.sleep(for: .seconds(limit))
-                    return nil
-                }
-                let first = await group.next() ?? nil
-                group.cancelAll()
-                return first
-            }
+            let loaded = await Self.fetchLeadPicture(url, widthPx: widthPx, limit: limit)
             guard let self, self.leadPreflight == url else { return }
             let ms = Int(Date().timeIntervalSince(started) * 1000)
             let outcome = loaded.map { $0 ? "loaded" : "failed" } ?? "timed out"
@@ -1247,6 +1235,17 @@ final class AppStore {
             self.leadPreflight = nil
             self.leadPreflightDone = url
             self.recomputeVisibleEdition()
+        }
+    }
+
+    /// True when the picture loaded, false when it failed, nil when `limit`
+    /// passed first. `FirstAnswer`, because a task group waits for its
+    /// download however long it takes: written that way first, 22 of 60 lead
+    /// waits on a slow connection (2026-10-22) ran past the 1.5 s limit, the
+    /// longest 9.9 s. The download runs on and lands in the cache.
+    private static func fetchLeadPicture(_ url: URL, widthPx: Int, limit: TimeInterval) async -> Bool? {
+        await FirstAnswer.of(limit, fallback: nil) {
+            await ImageCache.shared.image(for: url, drawWidthPx: widthPx) != nil
         }
     }
 
