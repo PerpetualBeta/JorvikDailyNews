@@ -1114,7 +1114,10 @@ final class AppStore {
         }
 
         let previousLead = visibleEdition?.lead
-        let built = builder.build(from: kept, date: base.date)
+        // Today's lead stays put across rebuilds; a new day's paper picks afresh.
+        let sameDay = visibleEdition?.date == Calendar.current.startOfDay(for: base.date)
+        let built = builder.build(from: kept, date: base.date,
+                                  keepingLead: sameDay ? visibleEdition?.lead?.itemId : nil)
         if let url = leadNeedingPreflight(built) {
             preflightLead(url)
             return

@@ -137,7 +137,10 @@ struct EditionBuilder {
         return kept
     }
 
-    func build(from items: [FeedItem], date: Date) -> Edition {
+    /// `keepingLead` is the item id of the lead already on the page. While that
+    /// item is still in the paper and its picture has not failed, it stays the
+    /// lead; see the note where the lead is chosen.
+    func build(from items: [FeedItem], date: Date, keepingLead: String? = nil) -> Edition {
         // Daily News means: only items whose published date falls inside today
         // (local calendar). Older items never appear, even if they'd otherwise
         // rank highly — hence "Daily". Refreshes during the day pick up new
@@ -225,7 +228,19 @@ struct EditionBuilder {
         // and left a front page that opened on a column of small headlines.
         // Losing the picture is a fair consequence of a bad cache. Losing the
         // lead is not.
-        let candidate = remaining.first(where: { Self.canAnchorLead($0) })
+        //
+        // The lead on the page stays the lead while it can. Without this every
+        // rebuild chose again from the whole unread pool, so a refresh or a
+        // batch of new pictures landing could swap the headline under the
+        // reader with no key pressed: 946 ms after a delete on 2026-10-22, the
+        // launch refresh replaced the new lead with another. So the lead now
+        // changes only when its story leaves the paper (read, paused, excluded)
+        // or its picture fails, and a new day starts from nothing.
+        let kept = keepingLead
+            .flatMap { id in remaining.first { $0.itemId == id } }
+            .flatMap { $0.imageURL == nil || Self.hasUsableImage($0) ? $0 : nil }
+        let candidate = kept
+            ?? remaining.first(where: { Self.canAnchorLead($0) })
             ?? remaining.first(where: { Self.hasUsableImage($0) })
             ?? remaining.first(where: { !$0.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
             ?? remaining.first

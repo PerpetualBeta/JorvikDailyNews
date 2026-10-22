@@ -327,6 +327,27 @@ enum EditionBuilderTests {
                 "whitespace is not a standfirst")
         }
 
+        T.suite("Lead: the one on the page stays while it is in the paper") {
+            let now = date("2026-09-09 12:00")
+            let feeds = (0..<3).map { _ in UUID() }
+            let items = ["first", "second", "third"].enumerated().map { i, title in
+                item(title, at: now.addingTimeInterval(Double(-i) * 60), feedId: feeds[i])
+            }
+            let fresh = EditionBuilder().build(from: items, date: now)
+            guard let chosen = fresh.lead else { T.expect(false, "a paper of three has a lead"); return }
+            let other = items.first { $0.itemId != chosen.itemId }!
+            let kept = EditionBuilder().build(from: items, date: now, keepingLead: other.itemId)
+            T.equal(kept.lead?.itemId, other.itemId, "the lead asked for is kept over the builder's own pick")
+            T.equal(all(kept).count, items.count, "and nothing is lost or doubled")
+            let gone = EditionBuilder().build(from: items.filter { $0.itemId != other.itemId },
+                                              date: now, keepingLead: other.itemId)
+            T.expect(gone.lead != nil && gone.lead?.itemId != other.itemId,
+                     "a lead that has left the paper is replaced")
+            let textLead = item("words only", at: now, feedId: UUID(), image: nil)
+            let text = EditionBuilder().build(from: items + [textLead], date: now, keepingLead: textLead.itemId)
+            T.equal(text.lead?.itemId, textLead.itemId, "a lead with no picture has no picture to fail, so it stays")
+        }
+
         T.suite("Nothing to build") {
             let edition = EditionBuilder().build(from: [], date: date("2026-09-09 12:00"))
             T.expect(edition.isEmpty, "an empty paper reports itself empty")
