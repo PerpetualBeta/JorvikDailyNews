@@ -1178,6 +1178,10 @@ final class AppStore {
         let sameDay = visibleEdition?.date == Calendar.current.startOfDay(for: base.date)
         let built = builder.build(from: kept, date: base.date,
                                   keepingLead: leadToRestore ?? (sameDay ? visibleEdition?.lead?.itemId : nil))
+        if built.isEmpty || caller == "onLaunch()" {
+            jdnLog("paper: \(all.count) stored for \(Self.dayFormatter.string(from: base.date)), "
+                   + "\(kept.count) after filters, \(built.itemCount) in the paper (from \(caller))")
+        }
         if let url = leadNeedingPreflight(built) {
             preflightLead(url)
             return

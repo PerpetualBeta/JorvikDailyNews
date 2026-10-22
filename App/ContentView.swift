@@ -184,14 +184,16 @@ struct ContentView: View {
         } else if store.isRefreshing {
             VStack(spacing: 12) {
                 ProgressView()
-                Text("Printing today\u{2019}s edition\u{2026}")
+                Text(readEverything
+                     ? "You have read everything so far. Checking for new stories\u{2026}"
+                     : "Printing today\u{2019}s edition\u{2026}")
                     .font(.custom("Charter", size: 14))
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             VStack(spacing: 16) {
-                Text("No news today")
+                Text(readEverything ? "You have read everything so far" : "No news today")
                     .font(.custom("Didot", size: 36))
                 if let err = store.lastRefreshError {
                     Text(err)
@@ -207,6 +209,14 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// Today's paper exists, but Unread only has hidden all of it. Said as
+    /// such, because "Printing today's edition" read as if there were no paper
+    /// yet: after reading everything, a relaunch showed it for the whole of a
+    /// 79 s refresh on 2026-10-22.
+    private var readEverything: Bool {
+        store.hideReadItems && !(store.editionStore.today?.isEmpty ?? true)
     }
 
     /// Height of the visible page, which is the scroll view's own frame rather
