@@ -10,6 +10,10 @@ struct FrontPage: View {
     /// was built, not here, so it cannot change while the reader is looking.
     private var repeated: Set<String> { edition.repeatedPictures }
 
+    /// How long a new lead takes to fade in: the same as a page turn, so the
+    /// paper has one speed of change.
+    private static let leadCrossfade: TimeInterval = 0.18
+
     // All post-lead items flow through one masonry — secondaries first
     // (they carry images and summaries more often so anchor the top of
     // each column), briefs behind them. Shortest-column-wins distribution
@@ -63,9 +67,17 @@ struct FrontPage: View {
 
             Rectangle().fill(Color.primary).frame(height: 3)
 
-            if let lead = edition.lead {
-                LeadStoryView(item: lead, width: pageWidth, pageHeight: pageHeight)
+            // A new lead fades in over the old one rather than cutting to it.
+            // Only the lead is animated: the columns below reflow at once, as
+            // they always have.
+            ZStack {
+                if let lead = edition.lead {
+                    LeadStoryView(item: lead, width: pageWidth, pageHeight: pageHeight)
+                        .id(lead.itemId)
+                        .transition(.opacity)
+                }
             }
+            .animation(.easeInOut(duration: Self.leadCrossfade), value: edition.lead?.itemId)
 
             if !masonryItems.isEmpty {
                 // Divider only when a lead sits above it; with no lead the

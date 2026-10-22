@@ -46,6 +46,34 @@ final class AppStore {
     /// identities this launch. Once is enough; the operation is idempotent.
     private var migratedLegacyIDs = false
 
+    /// The picture being fetched for a lead that is not on the page yet. See
+    /// `leadNeedingPreflight`.
+    private var leadPreflight: URL?
+    /// The last lead picture whose preflight finished, however it finished.
+    /// Its story goes on the page without a second preflight, which is what
+    /// stops a picture the cache will not report as held from fetching for ever.
+    private var leadPreflightDone: URL?
+
+    /// How long a new lead may wait for its picture before it goes on the page
+    /// anyway. A failure measured on 2026-10-22 took 323 ms (HTTP 400), so this
+    /// is several of those; a server slower than this still has the lead's own
+    /// failure handler behind it. A knob, to tune by eye:
+    ///
+    ///     defaults write cc.jorviksoftware.JorvikDailyNews leadPreflightSeconds -float 1.5
+    static let leadPreflightSecondsDefault: TimeInterval = 1.5
+    static var leadPreflightSeconds: TimeInterval {
+        let stored = UserDefaults.standard.double(forKey: "leadPreflightSeconds")
+        return stored > 0 ? stored : leadPreflightSecondsDefault
+    }
+
+    /// The widest the lead's picture is ever drawn, in pixels: the full printed
+    /// width on this screen. Asking for this much means the view's own request,
+    /// which is never wider, is answered from the cache.
+    private static var leadPreflightWidthPx: Int {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        return Int((Paper.maxContentWidth * scale).rounded(.up))
+    }
+
     /// When the day-scoped state was last cleared, so it happens once a day
     /// and not once per refresh. See `DayRollover`.
     private var lastDayRollover: Date?
@@ -1086,13 +1114,76 @@ final class AppStore {
         }
 
         let previousLead = visibleEdition?.lead
-        visibleEdition = builder.build(from: kept, date: base.date)
+        let built = builder.build(from: kept, date: base.date)
+        if let url = leadNeedingPreflight(built) {
+            preflightLead(url)
+            return
+        }
+        leadPreflight = nil
+        visibleEdition = built
         if let lead = visibleEdition?.lead, lead.itemId != previousLead?.itemId {
             jdnLog("lead: \(previousLead?.displayTitle ?? "none") -> \(lead.displayTitle)"
                 + " (\(lead.imageURL?.host ?? "no picture"), reader \(selectedArticle == nil ? "closed" : "open"), from \(caller))")
         }
         if pageIndex >= totalPages { pageIndex = 0 }
         topUpEnrichment(for: kept)
+    }
+
+    /// The picture a new lead needs fetched before its story may replace the
+    /// one on the page, or nil when it can go on now.
+    ///
+    /// The builder accepts a picture nobody has tried yet, because only a
+    /// recorded failure disqualifies one. So a new lead could reach the page,
+    /// fail to load and be demoted a moment later, and the reader saw one
+    /// headline replaced by another: 323 ms apart on 2026-10-22, after a
+    /// delete in KeyNav. Fetching first keeps the old paper up for that long
+    /// instead, and the recompute that follows either shows the picture from
+    /// the cache or skips the story the failure was recorded against.
+    ///
+    /// Only a REPLACEMENT waits. The first paper of a launch goes up at once,
+    /// with the lead's failure handler behind it as before.
+    private func leadNeedingPreflight(_ edition: Edition) -> URL? {
+        guard let current = visibleEdition, let lead = edition.lead,
+              lead.itemId != current.lead?.itemId,
+              let url = lead.imageURL, url != leadPreflightDone,
+              ImageCache.picturesEnabled, !BossMode.shared.isOn,
+              !ImageCache.shared.isFailed(url),
+              ImageCache.shared.cachedImage(for: url, wideEnoughFor: Self.leadPreflightWidthPx) == nil
+        else { return nil }
+        return url
+    }
+
+    /// Fetch a new lead's picture, then recompute. A recompute that picks
+    /// another lead meanwhile starts its own preflight, and this one finishes
+    /// without recomputing, so only the latest answer reaches the page.
+    private func preflightLead(_ url: URL) {
+        guard leadPreflight != url else { return }
+        leadPreflight = url
+        let started = Date()
+        let limit = Self.leadPreflightSeconds
+        let widthPx = Self.leadPreflightWidthPx
+        Task { [weak self] in
+            // Unstructured, so the download outlives a timeout and still
+            // lands in the cache for the view that asks next.
+            let download = Task { await ImageCache.shared.image(for: url, drawWidthPx: widthPx) != nil }
+            let loaded: Bool? = await withTaskGroup(of: Bool?.self) { group in
+                group.addTask { await download.value }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(limit))
+                    return nil
+                }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
+            guard let self, self.leadPreflight == url else { return }
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            let outcome = loaded.map { $0 ? "loaded" : "failed" } ?? "timed out"
+            jdnLog("lead: picture \(outcome) in \(ms) ms before going on the page (\(url.host ?? "?"))")
+            self.leadPreflight = nil
+            self.leadPreflightDone = url
+            self.recomputeVisibleEdition()
+        }
     }
 
     /// Fetch pictures for what the reader can still SEE, not for what the
